@@ -7,7 +7,7 @@ import (
 	"github.com/gorilla/csrf"
 )
 
-// CSRFMiddleware provides CSRF protection using gorilla/csrf
+// CSRFMiddleware provides CSRF protection using gorilla/csrf.
 type CSRFMiddleware struct {
 	csrfKey    []byte
 	secure     bool
@@ -15,7 +15,7 @@ type CSRFMiddleware struct {
 	headerName string
 }
 
-// NewCSRFMiddleware creates a new CSRF middleware instance
+// NewCSRFMiddleware creates a new CSRF middleware instance.
 func NewCSRFMiddleware(csrfKey string, secure bool) *CSRFMiddleware {
 	return &CSRFMiddleware{
 		csrfKey:    []byte(csrfKey),
@@ -25,11 +25,11 @@ func NewCSRFMiddleware(csrfKey string, secure bool) *CSRFMiddleware {
 	}
 }
 
-// Middleware returns a gin.HandlerFunc that provides CSRF protection
+// Middleware returns a gin.HandlerFunc that provides CSRF protection.
 func (m *CSRFMiddleware) Middleware() gin.HandlerFunc {
-	errorHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	errorHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte("CSRF token invalid"))
+		_, _ = w.Write([]byte("CSRF token invalid"))
 	})
 
 	// csrf.Protect returns func(http.Handler) http.Handler
@@ -47,13 +47,14 @@ func (m *CSRFMiddleware) Middleware() gin.HandlerFunc {
 		if c.Request.Method == http.MethodGet ||
 			c.Request.Method == http.MethodHead ||
 			c.Request.Method == http.MethodOptions {
+
 			c.Next()
 			return
 		}
 
-		// Wrap the gin handler chain with CSRF protection
+		// Wrap the gin handler chain with CSRF protection.
 		var csrfPassed bool
-		nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			csrfPassed = true
 			c.Request = r
 			c.Next()
@@ -67,7 +68,7 @@ func (m *CSRFMiddleware) Middleware() gin.HandlerFunc {
 	}
 }
 
-// GetCSRFToken extracts the CSRF token from the request context
+// GetCSRFToken extracts the CSRF token from the request context.
 func GetCSRFToken(c *gin.Context) string {
 	return csrf.Token(c.Request)
 }

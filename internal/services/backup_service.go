@@ -14,13 +14,13 @@ import (
 	"gorm.io/gorm"
 )
 
-// BackupService handles backup and export functionality
+// BackupService handles backup and export functionality.
 type BackupService struct {
 	db     *gorm.DB
 	config *config.Config
 }
 
-// NewBackupService creates a new backup service
+// NewBackupService creates a new backup service.
 func NewBackupService(cfg *config.Config) *BackupService {
 	return &BackupService{
 		db:     database.GetDB(),
@@ -28,7 +28,7 @@ func NewBackupService(cfg *config.Config) *BackupService {
 	}
 }
 
-// ExportFormat represents the export format
+// ExportFormat represents the export format.
 type ExportFormat string
 
 const (
@@ -36,8 +36,8 @@ const (
 	YAMLFormat ExportFormat = "yaml"
 )
 
-// ExportData exports configuration data
-func (s *BackupService) ExportData(ctx context.Context, format ExportFormat) ([]byte, error) {
+// ExportData exports configuration data.
+func (s *BackupService) ExportData(_ context.Context, format ExportFormat) ([]byte, error) {
 	// Export repositories
 	var repos []models.Repository
 	if err := s.db.Find(&repos).Error; err != nil {
@@ -75,8 +75,8 @@ func (s *BackupService) ExportData(ctx context.Context, format ExportFormat) ([]
 	}
 }
 
-// ImportData imports configuration data
-func (s *BackupService) ImportData(ctx context.Context, data []byte, format ExportFormat) error {
+// ImportData imports configuration data.
+func (s *BackupService) ImportData(_ context.Context, data []byte, format ExportFormat) error {
 	var importData map[string]interface{}
 
 	switch format {
@@ -127,23 +127,24 @@ func (s *BackupService) ImportData(ctx context.Context, data []byte, format Expo
 	return nil
 }
 
-// DatabaseBackup creates a database backup file
-func (s *BackupService) DatabaseBackup(ctx context.Context) (string, error) {
+// DatabaseBackup creates a database backup file.
+func (s *BackupService) DatabaseBackup(_ context.Context) (string, error) {
 	// This is a simplified implementation
 	// In practice, you'd use pg_dump or similar for PostgreSQL
 	backupPath := fmt.Sprintf("%s/backup_%s.sql", s.config.Storage.BackupPath, time.Now().Format("20060102_150405"))
 
-	// Ensure backup directory exists
-	if err := os.MkdirAll(s.config.Storage.BackupPath, 0755); err != nil {
+	// Ensure backup directory exists.
+	if err := os.MkdirAll(s.config.Storage.BackupPath, 0o750); err != nil {
 		return "", err
 	}
 
-	// Create empty file as placeholder
+	// Create empty file as placeholder.
+	// #nosec G304
 	file, err := os.Create(backupPath)
 	if err != nil {
 		return "", err
 	}
-	file.Close()
+	_ = file.Close()
 
 	return backupPath, nil
 }

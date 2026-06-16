@@ -10,6 +10,7 @@ import (
 	"github.com/go-playground/validator/v10"
 )
 
+//nolint:gochecknoglobals
 var (
 	validate        *validator.Validate
 	gitURLRegex     = regexp.MustCompile(`^(https?|git|ssh|git@[\w.-]+):\/\/?[\w.-]+(:\d+)?[\/\w.-]+\.git$`)
@@ -17,12 +18,12 @@ var (
 	branchNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 )
 
-// Init initializes the validator
+// Init initializes the validator.
 func Init() {
 	validate = validator.New()
 }
 
-// GetValidator returns the validator instance
+// GetValidator returns the validator instance.
 func GetValidator() *validator.Validate {
 	if validate == nil {
 		validate = validator.New()
@@ -30,7 +31,7 @@ func GetValidator() *validator.Validate {
 	return validate
 }
 
-// ValidateStruct validates a struct using go-playground/validator
+// ValidateStruct validates a struct using go-playground/validator.
 func ValidateStruct(s interface{}) error {
 	if validate == nil {
 		validate = validator.New()
@@ -38,13 +39,13 @@ func ValidateStruct(s interface{}) error {
 	return validate.Struct(s)
 }
 
-// ValidateEmail checks if a string is a valid email address
+// ValidateEmail checks if a string is a valid email address.
 func ValidateEmail(email string) bool {
 	_, err := mail.ParseAddress(email)
 	return err == nil
 }
 
-// ValidateGitURL checks if a string is a valid git URL
+// ValidateGitURL checks if a string is a valid git URL.
 func ValidateGitURL(rawURL string) bool {
 	rawURL = strings.TrimSpace(rawURL)
 
@@ -73,7 +74,7 @@ func ValidateGitURL(rawURL string) bool {
 	return strings.HasSuffix(parsed.Path, ".git")
 }
 
-// ValidateBranchName checks if a branch name is valid
+// ValidateBranchName checks if a branch name is valid.
 func ValidateBranchName(name string) bool {
 	if name == "" {
 		return false
@@ -81,7 +82,7 @@ func ValidateBranchName(name string) bool {
 	return branchNameRegex.MatchString(name)
 }
 
-// ValidateUsername checks if a username is valid
+// ValidateUsername checks if a username is valid.
 func ValidateUsername(username string) bool {
 	if len(username) < 3 || len(username) > 64 {
 		return false
@@ -89,7 +90,7 @@ func ValidateUsername(username string) bool {
 	return regexp.MustCompile(`^[a-zA-Z0-9_-]+$`).MatchString(username)
 }
 
-// ValidatePassword checks if a password meets requirements
+// ValidatePassword checks if a password meets requirements.
 func ValidatePassword(password string) bool {
 	if len(password) < 8 {
 		return false
@@ -100,7 +101,7 @@ func ValidatePassword(password string) bool {
 	return hasLetter && hasNumber
 }
 
-// ValidateTagName checks if a tag name is valid
+// ValidateTagName checks if a tag name is valid.
 func ValidateTagName(name string) bool {
 	if len(name) < 1 || len(name) > 50 {
 		return false
@@ -108,7 +109,7 @@ func ValidateTagName(name string) bool {
 	return regexp.MustCompile(`^[a-zA-Z0-9_-]+$`).MatchString(name)
 }
 
-// ValidateColor checks if a string is a valid hex color
+// ValidateColor checks if a string is a valid hex color.
 func ValidateColor(color string) bool {
 	if len(color) != 7 {
 		return false
@@ -119,23 +120,23 @@ func ValidateColor(color string) bool {
 	return regexp.MustCompile(`^#[0-9a-fA-F]{6}$`).MatchString(color)
 }
 
-// SanitizeString trims whitespace and removes potentially dangerous characters
+// SanitizeString trims whitespace and removes potentially dangerous characters.
 func SanitizeString(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// ValidateRequired checks if a string is not empty
+// ValidateRequired checks if a string is not empty.
 func ValidateRequired(s string) bool {
 	return strings.TrimSpace(s) != ""
 }
 
-// ValidateURL checks if a string is a valid URL
+// ValidateURL checks if a string is a valid URL.
 func ValidateURL(rawURL string) bool {
 	_, err := url.ParseRequestURI(rawURL)
 	return err == nil
 }
 
-// ParseInt parses a string to an integer with a default value
+// ParseInt parses a string to an integer with a default value.
 func ParseInt(s string, defaultVal int) int {
 	if s == "" {
 		return defaultVal

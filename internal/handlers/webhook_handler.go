@@ -2,7 +2,7 @@ package handlers
 
 import (
 	"crypto/hmac"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -19,19 +19,26 @@ import (
 	"github.com/google/uuid"
 )
 
-// WebhookHandler handles webhook requests
+const (
+	providerGitHub    = "github"
+	providerGitLab    = "gitlab"
+	providerBitbucket = "bitbucket"
+	providerGeneric   = "generic"
+)
+
+// WebhookHandler handles webhook requests.
 type WebhookHandler struct {
 	webhookService *services.WebhookService
 }
 
-// NewWebhookHandler creates a new webhook handler
+// NewWebhookHandler creates a new webhook handler.
 func NewWebhookHandler(webhookService *services.WebhookService) *WebhookHandler {
 	return &WebhookHandler{
 		webhookService: webhookService,
 	}
 }
 
-// ListWebhooks handles GET /api/v1/webhooks
+// ListWebhooks handles GET /api/v1/webhooks.
 func (h *WebhookHandler) ListWebhooks(c *gin.Context) {
 	filter := &services.WebhookFilter{
 		Page:    1,
@@ -65,7 +72,7 @@ func (h *WebhookHandler) ListWebhooks(c *gin.Context) {
 	})
 }
 
-// GetWebhook handles GET /api/v1/webhooks/:id
+// GetWebhook handles GET /api/v1/webhooks/:id.
 func (h *WebhookHandler) GetWebhook(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -82,7 +89,7 @@ func (h *WebhookHandler) GetWebhook(c *gin.Context) {
 	response.Success(c, webhook)
 }
 
-// CreateWebhook handles POST /api/v1/webhooks
+// CreateWebhook handles POST /api/v1/webhooks.
 func (h *WebhookHandler) CreateWebhook(c *gin.Context) {
 	user, ok := middleware.GetCurrentUser(c)
 	if !ok {
@@ -91,13 +98,13 @@ func (h *WebhookHandler) CreateWebhook(c *gin.Context) {
 	}
 
 	var req services.CreateWebhookRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "INVALID_REQUEST", err.Error())
+	if bindErr := c.ShouldBindJSON(&req); bindErr != nil {
+		response.BadRequest(c, "INVALID_REQUEST", bindErr.Error())
 		return
 	}
 
-	if err := validator.ValidateStruct(&req); err != nil {
-		response.BadRequest(c, "VALIDATION_ERROR", err.Error())
+	if valErr := validator.ValidateStruct(&req); valErr != nil {
+		response.BadRequest(c, "VALIDATION_ERROR", valErr.Error())
 		return
 	}
 
@@ -110,7 +117,7 @@ func (h *WebhookHandler) CreateWebhook(c *gin.Context) {
 	response.Created(c, webhook)
 }
 
-// UpdateWebhook handles PUT /api/v1/webhooks/:id
+// UpdateWebhook handles PUT /api/v1/webhooks/:id.
 func (h *WebhookHandler) UpdateWebhook(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -119,8 +126,8 @@ func (h *WebhookHandler) UpdateWebhook(c *gin.Context) {
 	}
 
 	var req services.UpdateWebhookRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "INVALID_REQUEST", err.Error())
+	if bindErr := c.ShouldBindJSON(&req); bindErr != nil {
+		response.BadRequest(c, "INVALID_REQUEST", bindErr.Error())
 		return
 	}
 
@@ -133,7 +140,7 @@ func (h *WebhookHandler) UpdateWebhook(c *gin.Context) {
 	response.Success(c, webhook)
 }
 
-// DeleteWebhook handles DELETE /api/v1/webhooks/:id
+// DeleteWebhook handles DELETE /api/v1/webhooks/:id.
 func (h *WebhookHandler) DeleteWebhook(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -141,15 +148,15 @@ func (h *WebhookHandler) DeleteWebhook(c *gin.Context) {
 		return
 	}
 
-	if err := h.webhookService.DeleteWebhook(c, id); err != nil {
-		response.BadRequest(c, "DELETE_ERROR", err.Error())
+	if deleteErr := h.webhookService.DeleteWebhook(c, id); deleteErr != nil {
+		response.BadRequest(c, "DELETE_ERROR", deleteErr.Error())
 		return
 	}
 
 	response.SuccessWithMessage(c, "Webhook deleted", nil)
 }
 
-// GetWebhookDeliveries handles GET /api/v1/webhooks/:id/deliveries
+// GetWebhookDeliveries handles GET /api/v1/webhooks/:id/deliveries.
 func (h *WebhookHandler) GetWebhookDeliveries(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -158,16 +165,16 @@ func (h *WebhookHandler) GetWebhookDeliveries(c *gin.Context) {
 	}
 
 	limit := validator.ParseInt(c.Query("limit"), 50)
-	deliveries, err := h.webhookService.GetWebhookDeliveries(c, id, limit)
-	if err != nil {
-		response.InternalError(c, err.Error())
+	deliveries, delivErr := h.webhookService.GetWebhookDeliveries(c, id, limit)
+	if delivErr != nil {
+		response.InternalError(c, delivErr.Error())
 		return
 	}
 
 	response.Success(c, deliveries)
 }
 
-// TestWebhook handles POST /api/v1/webhooks/:id/test
+// TestWebhook handles POST /api/v1/webhooks/:id/test.
 func (h *WebhookHandler) TestWebhook(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -175,31 +182,31 @@ func (h *WebhookHandler) TestWebhook(c *gin.Context) {
 		return
 	}
 
-	if err := h.webhookService.TestWebhook(c, id); err != nil {
-		response.BadRequest(c, "TEST_ERROR", err.Error())
+	if testErr := h.webhookService.TestWebhook(c, id); testErr != nil {
+		response.BadRequest(c, "TEST_ERROR", testErr.Error())
 		return
 	}
 
 	response.SuccessWithMessage(c, "Test webhook queued", nil)
 }
 
-// ReceiveWebhook handles POST /api/v1/webhooks/receive
+// ReceiveWebhook handles POST /api/v1/webhooks/receive.
 func (h *WebhookHandler) ReceiveWebhook(c *gin.Context) {
-	// Read raw body for signature verification
+	// Read raw body for signature verification.
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		response.BadRequest(c, "INVALID_REQUEST", "Failed to read request body")
 		return
 	}
 
-	// Try to find matching webhook by URL or custom headers
-	webhook, provider, err := h.findMatchingWebhook(c, body)
-	if err != nil {
+	// Try to find matching webhook by URL or custom headers.
+	webhook, provider, matchErr := h.findMatchingWebhook(c, body)
+	if matchErr != nil {
 		response.NotFound(c, "No matching webhook found")
 		return
 	}
 
-	// Verify HMAC signature if webhook has a secret
+	// Verify HMAC signature if webhook has a secret.
 	if webhook.Secret != "" {
 		if !h.verifySignature(c, webhook.Secret, body, provider) {
 			response.Unauthorized(c, "Invalid signature")
@@ -207,110 +214,81 @@ func (h *WebhookHandler) ReceiveWebhook(c *gin.Context) {
 		}
 	}
 
-	// Parse payload based on provider
-	payload, err := h.parseWebhookPayload(provider, body)
-	if err != nil {
-		response.BadRequest(c, "INVALID_PAYLOAD", "Failed to parse webhook payload: "+err.Error())
+	// Parse payload based on provider.
+	payload, parseErr := h.parseWebhookPayload(provider, body)
+	if parseErr != nil {
+		response.BadRequest(c, "INVALID_PAYLOAD", "Failed to parse webhook payload: "+parseErr.Error())
 		return
 	}
 
-	// Trigger clone jobs for matching repositories
-	if err := h.triggerCloneJobs(c, webhook, payload); err != nil {
-		response.InternalError(c, "Failed to trigger clone jobs: "+err.Error())
+	// Trigger clone jobs for matching repositories.
+	if triggerErr := h.triggerCloneJobs(c, webhook, payload); triggerErr != nil {
+		response.InternalError(c, "Failed to trigger clone jobs: "+triggerErr.Error())
 		return
 	}
 
 	response.SuccessWithMessage(c, "Webhook processed successfully", nil)
 }
 
-// findMatchingWebhook finds a webhook that matches the incoming request
+// findMatchingWebhook finds a webhook that matches the incoming request.
 func (h *WebhookHandler) findMatchingWebhook(c *gin.Context, body []byte) (*models.WebhookConfig, string, error) {
-	// First, try to match by X-GitHub-Event header (GitHub)
-	if event := c.GetHeader("X-GitHub-Event"); event != "" {
-		// GitHub webhook
-		var webhooks []models.WebhookConfig
-		if err := h.webhookService.DB().Where("provider = ? AND is_active = ?", "github", true).Find(&webhooks).Error; err != nil {
-			return nil, "", err
-		}
-		for _, wh := range webhooks {
-			if h.matchesGitHubWebhook(&wh, c, body) {
-				return &wh, "github", nil
-			}
-		}
+	if c.GetHeader("X-GitHub-Event") != "" {
+		return h.matchProvider(c, providerGitHub, body, h.matchesGitHubWebhook)
 	}
-
-	// Try GitLab
 	if c.GetHeader("X-Gitlab-Event") != "" {
-		var webhooks []models.WebhookConfig
-		if err := h.webhookService.DB().Where("provider = ? AND is_active = ?", "gitlab", true).Find(&webhooks).Error; err != nil {
-			return nil, "", err
-		}
-		for _, wh := range webhooks {
-			if h.matchesGitLabWebhook(&wh, c, body) {
-				return &wh, "gitlab", nil
-			}
-		}
+		return h.matchProvider(c, providerGitLab, body, h.matchesGitLabWebhook)
 	}
-
-	// Try Bitbucket
 	if c.GetHeader("X-Event-Key") != "" {
-		var webhooks []models.WebhookConfig
-		if err := h.webhookService.DB().Where("provider = ? AND is_active = ?", "bitbucket", true).Find(&webhooks).Error; err != nil {
-			return nil, "", err
-		}
-		for _, wh := range webhooks {
-			if h.matchesBitbucketWebhook(&wh, c, body) {
-				return &wh, "bitbucket", nil
-			}
-		}
+		return h.matchProvider(c, providerBitbucket, body, h.matchesBitbucketWebhook)
 	}
+	return h.matchProvider(c, providerGeneric, body, h.matchesGenericWebhook)
+}
 
-	// Generic webhook matching by URL pattern or custom logic
+func (h *WebhookHandler) matchProvider(c *gin.Context, provider string, body []byte, matchFunc func(*models.WebhookConfig, *gin.Context, []byte) bool) (*models.WebhookConfig, string, error) {
 	var webhooks []models.WebhookConfig
-	if err := h.webhookService.DB().Where("provider = ? AND is_active = ?", "generic", true).Find(&webhooks).Error; err != nil {
+	if err := h.webhookService.DB().Where("provider = ? AND is_active = ?", provider, true).Find(&webhooks).Error; err != nil {
 		return nil, "", err
 	}
 	for _, wh := range webhooks {
-		if h.matchesGenericWebhook(&wh, c, body) {
-			return &wh, "generic", nil
+		if matchFunc(&wh, c, body) {
+			return &wh, provider, nil
 		}
 	}
-
-	return nil, "", fmt.Errorf("no matching webhook found")
+	return nil, "", fmt.Errorf("no matching webhook found for provider %s", provider)
 }
 
-// matchesGitHubWebhook checks if the request matches a GitHub webhook
-func (h *WebhookHandler) matchesGitHubWebhook(webhook *models.WebhookConfig, c *gin.Context, body []byte) bool {
-	// For GitHub, we can match by repository URL in the payload
+// matchesGitHubWebhook checks if the request matches a GitHub webhook.
+func (h *WebhookHandler) matchesGitHubWebhook(_ *models.WebhookConfig, _ *gin.Context, _ []byte) bool {
+	// For GitHub, we can match by repository URL in the payload.
 	// This is a simplified implementation - in practice, you'd parse the payload
-	// and match against webhook.RepositoryID or webhook.URLPattern
-	return true // Assume match if provider matches
+	// and match against webhook.RepositoryID or webhook.URLPattern.
+	return true // Assume match if provider matches.
 }
 
-// matchesGitLabWebhook checks if the request matches a GitLab webhook
-func (h *WebhookHandler) matchesGitLabWebhook(webhook *models.WebhookConfig, c *gin.Context, body []byte) bool {
+// matchesGitLabWebhook checks if the request matches a GitLab webhook.
+func (h *WebhookHandler) matchesGitLabWebhook(_ *models.WebhookConfig, _ *gin.Context, _ []byte) bool {
 	return true
 }
 
-// matchesBitbucketWebhook checks if the request matches a Bitbucket webhook
-func (h *WebhookHandler) matchesBitbucketWebhook(webhook *models.WebhookConfig, c *gin.Context, body []byte) bool {
+// matchesBitbucketWebhook checks if the request matches a Bitbucket webhook.
+func (h *WebhookHandler) matchesBitbucketWebhook(_ *models.WebhookConfig, _ *gin.Context, _ []byte) bool {
 	return true
 }
 
-// matchesGenericWebhook checks if the request matches a generic webhook
-func (h *WebhookHandler) matchesGenericWebhook(webhook *models.WebhookConfig, c *gin.Context, body []byte) bool {
-	// Custom matching logic based on webhook configuration
+// matchesGenericWebhook checks if the request matches a generic webhook.
+func (h *WebhookHandler) matchesGenericWebhook(_ *models.WebhookConfig, _ *gin.Context, _ []byte) bool {
+	// Custom matching logic based on webhook configuration.
 	// This could include URL patterns, custom headers, etc.
 	return true
 }
 
-// verifySignature verifies the HMAC signature of the webhook
+// verifySignature verifies the HMAC signature of the webhook.
 func (h *WebhookHandler) verifySignature(c *gin.Context, secret string, body []byte, provider string) bool {
 	var signature string
 	var hashFunc func() hash.Hash
 
 	switch provider {
-	case "github":
+	case providerGitHub:
 		signature = c.GetHeader("X-Hub-Signature-256")
 		if signature == "" {
 			signature = c.GetHeader("X-Hub-Signature")
@@ -319,11 +297,11 @@ func (h *WebhookHandler) verifySignature(c *gin.Context, secret string, body []b
 			hashFunc = sha256.New
 			signature = signature[7:] // Remove "sha256=" prefix
 		}
-	case "gitlab":
+	case providerGitLab:
 		signature = c.GetHeader("X-Gitlab-Token")
 		// GitLab uses simple token comparison, not HMAC
 		return signature == secret
-	case "bitbucket":
+	case providerBitbucket:
 		signature = c.GetHeader("X-Hub-Signature")
 		hashFunc = sha256.New
 		signature = signature[7:] // Remove "sha256=" prefix
@@ -337,7 +315,7 @@ func (h *WebhookHandler) verifySignature(c *gin.Context, secret string, body []b
 		return false
 	}
 
-	if provider == "gitlab" {
+	if provider == providerGitLab {
 		// GitLab uses simple token, not HMAC
 		return signature == secret
 	}
@@ -350,8 +328,8 @@ func (h *WebhookHandler) verifySignature(c *gin.Context, secret string, body []b
 	return expectedMAC == signature
 }
 
-// parseWebhookPayload parses the webhook payload based on provider
-func (h *WebhookHandler) parseWebhookPayload(provider string, body []byte) (map[string]interface{}, error) {
+// parseWebhookPayload parses the webhook payload based on provider.
+func (h *WebhookHandler) parseWebhookPayload(_ string, body []byte) (map[string]interface{}, error) {
 	var payload map[string]interface{}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, err
@@ -359,8 +337,8 @@ func (h *WebhookHandler) parseWebhookPayload(provider string, body []byte) (map[
 	return payload, nil
 }
 
-// triggerCloneJobs triggers clone jobs for repositories matching the webhook
-func (h *WebhookHandler) triggerCloneJobs(c *gin.Context, webhook *models.WebhookConfig, payload map[string]interface{}) error {
+// triggerCloneJobs triggers clone jobs for repositories matching the webhook.
+func (h *WebhookHandler) triggerCloneJobs(c *gin.Context, webhook *models.WebhookConfig, _ map[string]interface{}) error {
 	// If webhook is associated with a specific repository
 	if webhook.RepositoryID != nil {
 		_, err := h.webhookService.CloneService().CreateCloneJob(c, *webhook.RepositoryID, "webhook")

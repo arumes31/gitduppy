@@ -8,19 +8,19 @@ import (
 	"github.com/google/uuid"
 )
 
-// CloneHandler handles clone job requests
+// CloneHandler handles clone job requests.
 type CloneHandler struct {
 	cloneService *services.CloneService
 }
 
-// NewCloneHandler creates a new clone handler
+// NewCloneHandler creates a new clone handler.
 func NewCloneHandler(cloneService *services.CloneService) *CloneHandler {
 	return &CloneHandler{
 		cloneService: cloneService,
 	}
 }
 
-// ListCloneJobs handles GET /api/v1/clone-jobs
+// ListCloneJobs handles GET /api/v1/clone-jobs.
 func (h *CloneHandler) ListCloneJobs(c *gin.Context) {
 	filter := &services.CloneFilter{
 		Page:    1,
@@ -66,7 +66,7 @@ func (h *CloneHandler) ListCloneJobs(c *gin.Context) {
 	})
 }
 
-// GetCloneJob handles GET /api/v1/clone-jobs/:id
+// GetCloneJob handles GET /api/v1/clone-jobs/:id.
 func (h *CloneHandler) GetCloneJob(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -83,7 +83,7 @@ func (h *CloneHandler) GetCloneJob(c *gin.Context) {
 	response.Success(c, job)
 }
 
-// CancelCloneJob handles POST /api/v1/clone-jobs/:id/cancel
+// CancelCloneJob handles POST /api/v1/clone-jobs/:id/cancel.
 func (h *CloneHandler) CancelCloneJob(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -99,7 +99,7 @@ func (h *CloneHandler) CancelCloneJob(c *gin.Context) {
 	response.SuccessWithMessage(c, "Clone job cancelled", nil)
 }
 
-// ListRepositoryJobs handles GET /api/v1/repositories/:id/jobs
+// ListRepositoryJobs handles GET /api/v1/repositories/:id/jobs.
 func (h *CloneHandler) ListRepositoryJobs(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -139,7 +139,7 @@ func (h *CloneHandler) ListRepositoryJobs(c *gin.Context) {
 	})
 }
 
-// GetCloneJobLogs handles GET /api/v1/clone-jobs/:id/logs
+// GetCloneJobLogs handles GET /api/v1/clone-jobs/:id/logs.
 func (h *CloneHandler) GetCloneJobLogs(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {

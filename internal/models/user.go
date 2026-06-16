@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// User represents an application user with authentication details
+// User represents an application user with authentication details.
 type User struct {
 	ID            uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`
 	Username      string     `gorm:"size:64;uniqueIndex;not null" json:"username"`
@@ -21,12 +21,12 @@ type User struct {
 	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
-// TableName specifies the table name for the User model
+// TableName specifies the table name for the User model.
 func (User) TableName() string {
 	return "users"
 }
 
-// IsAdmin returns true if the user has admin role
+// IsAdmin returns true if the user has admin role.
 func (u *User) IsAdmin() bool {
 	return u.Role == "admin"
 }

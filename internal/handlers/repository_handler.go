@@ -10,7 +10,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// RepositoryHandler handles repository management requests
+const stringTrue = "true"
+
+// RepositoryHandler handles repository management requests.
 type RepositoryHandler struct {
 	repoService  *services.RepositoryService
 	cloneService *services.CloneService
@@ -18,13 +20,13 @@ type RepositoryHandler struct {
 	auditService *services.AuditService
 }
 
-// NewRepositoryHandler creates a new repository handler
+// NewRepositoryHandler creates a new repository handler.
 func NewRepositoryHandler(
 	repoService *services.RepositoryService,
 	cloneService *services.CloneService,
 	tagService *services.TagService,
 	auditService *services.AuditService,
-) *RepositoryHandler {
+) *RepositoryHandler { //nolint:whitespace
 	return &RepositoryHandler{
 		repoService:  repoService,
 		cloneService: cloneService,
@@ -33,7 +35,7 @@ func NewRepositoryHandler(
 	}
 }
 
-// ListRepositories handles GET /api/v1/repositories
+// ListRepositories handles GET /api/v1/repositories.
 func (h *RepositoryHandler) ListRepositories(c *gin.Context) {
 	filter := &services.RepositoryFilter{
 		Page:    1,
@@ -64,7 +66,7 @@ func (h *RepositoryHandler) ListRepositories(c *gin.Context) {
 
 	isActive := c.Query("is_active")
 	if isActive != "" {
-		active := isActive == "true"
+		active := isActive == stringTrue
 		filter.IsActive = &active
 	}
 
@@ -87,7 +89,7 @@ func (h *RepositoryHandler) ListRepositories(c *gin.Context) {
 	})
 }
 
-// GetRepository handles GET /api/v1/repositories/:id
+// GetRepository handles GET /api/v1/repositories/:id.
 func (h *RepositoryHandler) GetRepository(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -104,7 +106,7 @@ func (h *RepositoryHandler) GetRepository(c *gin.Context) {
 	response.Success(c, repo)
 }
 
-// CreateRepository handles POST /api/v1/repositories
+// CreateRepository handles POST /api/v1/repositories.
 func (h *RepositoryHandler) CreateRepository(c *gin.Context) {
 	user, ok := middleware.GetCurrentUser(c)
 	if !ok {
@@ -159,13 +161,13 @@ func (h *RepositoryHandler) CreateRepository(c *gin.Context) {
 		return
 	}
 
-	// Log the action
-	h.auditService.Log(c, &user.ID, &repo.ID, "repository.create", gin.H{"name": repo.Name}, c.ClientIP(), c.Request.UserAgent())
+	// Log the action.
+	_ = h.auditService.Log(c, &user.ID, &repo.ID, "repository.create", gin.H{"name": repo.Name}, c.ClientIP(), c.Request.UserAgent())
 
 	response.Created(c, repo)
 }
 
-// UpdateRepository handles PUT /api/v1/repositories/:id
+// UpdateRepository handles PUT /api/v1/repositories/:id.
 func (h *RepositoryHandler) UpdateRepository(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -174,8 +176,8 @@ func (h *RepositoryHandler) UpdateRepository(c *gin.Context) {
 	}
 
 	var req services.UpdateRepositoryRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "INVALID_REQUEST", err.Error())
+	if bindErr := c.ShouldBindJSON(&req); bindErr != nil {
+		response.BadRequest(c, "INVALID_REQUEST", bindErr.Error())
 		return
 	}
 
@@ -187,13 +189,13 @@ func (h *RepositoryHandler) UpdateRepository(c *gin.Context) {
 
 	user, _ := middleware.GetCurrentUser(c)
 	if user != nil {
-		h.auditService.Log(c, &user.ID, &repo.ID, "repository.update", gin.H{"name": repo.Name}, c.ClientIP(), c.Request.UserAgent())
+		_ = h.auditService.Log(c, &user.ID, &repo.ID, "repository.update", gin.H{"name": repo.Name}, c.ClientIP(), c.Request.UserAgent())
 	}
 
 	response.Success(c, repo)
 }
 
-// DeleteRepository handles DELETE /api/v1/repositories/:id
+// DeleteRepository handles DELETE /api/v1/repositories/:id.
 func (h *RepositoryHandler) DeleteRepository(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -203,20 +205,20 @@ func (h *RepositoryHandler) DeleteRepository(c *gin.Context) {
 
 	repo, _ := h.repoService.GetRepositoryByID(c, id)
 
-	if err := h.repoService.DeleteRepository(c, id); err != nil {
-		response.BadRequest(c, "DELETE_ERROR", err.Error())
+	if deleteErr := h.repoService.DeleteRepository(c, id); deleteErr != nil {
+		response.BadRequest(c, "DELETE_ERROR", deleteErr.Error())
 		return
 	}
 
 	user, _ := middleware.GetCurrentUser(c)
 	if user != nil && repo != nil {
-		h.auditService.Log(c, &user.ID, &repo.ID, "repository.delete", gin.H{"name": repo.Name}, c.ClientIP(), c.Request.UserAgent())
+		_ = h.auditService.Log(c, &user.ID, &repo.ID, "repository.delete", gin.H{"name": repo.Name}, c.ClientIP(), c.Request.UserAgent())
 	}
 
 	response.SuccessWithMessage(c, "Repository deleted successfully", nil)
 }
 
-// SetRepositoryStatus handles PATCH /api/v1/repositories/:id/status
+// SetRepositoryStatus handles PATCH /api/v1/repositories/:id/status.
 func (h *RepositoryHandler) SetRepositoryStatus(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -227,20 +229,20 @@ func (h *RepositoryHandler) SetRepositoryStatus(c *gin.Context) {
 	var req struct {
 		IsActive bool `json:"is_active"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "INVALID_REQUEST", err.Error())
+	if bindErr := c.ShouldBindJSON(&req); bindErr != nil {
+		response.BadRequest(c, "INVALID_REQUEST", bindErr.Error())
 		return
 	}
 
-	if err := h.repoService.SetRepositoryStatus(c, id, req.IsActive); err != nil {
-		response.BadRequest(c, "UPDATE_ERROR", err.Error())
+	if statusErr := h.repoService.SetRepositoryStatus(c, id, req.IsActive); statusErr != nil {
+		response.BadRequest(c, "UPDATE_ERROR", statusErr.Error())
 		return
 	}
 
 	response.SuccessWithMessage(c, "Repository status updated", nil)
 }
 
-// TriggerClone handles POST /api/v1/repositories/:id/clone
+// TriggerClone handles POST /api/v1/repositories/:id/clone.
 func (h *RepositoryHandler) TriggerClone(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -261,7 +263,7 @@ func (h *RepositoryHandler) TriggerClone(c *gin.Context) {
 	})
 }
 
-// GetRepositoryLogs handles GET /api/v1/repositories/:id/logs
+// GetRepositoryLogs handles GET /api/v1/repositories/:id/logs.
 func (h *RepositoryHandler) GetRepositoryLogs(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {

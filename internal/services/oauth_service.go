@@ -20,13 +20,13 @@ import (
 	"gorm.io/gorm"
 )
 
-// OAuthService handles OAuth2/OIDC authentication
+// OAuthService handles OAuth2/OIDC authentication.
 type OAuthService struct {
 	db     *gorm.DB
 	config *config.Config
 }
 
-// NewOAuthService creates a new OAuth service
+// NewOAuthService creates a new OAuth service.
 func NewOAuthService(cfg *config.Config) *OAuthService {
 	return &OAuthService{
 		db:     database.GetDB(),
@@ -34,7 +34,7 @@ func NewOAuthService(cfg *config.Config) *OAuthService {
 	}
 }
 
-// OAuthProvider represents an OAuth provider
+// OAuthProvider represents an OAuth provider.
 type OAuthProvider string
 
 const (
@@ -43,7 +43,7 @@ const (
 	GoogleProvider OAuthProvider = "google"
 )
 
-// GetOAuthConfig returns the OAuth2 config for a provider
+// GetOAuthConfig returns the OAuth2 config for a provider.
 func (s *OAuthService) GetOAuthConfig(provider OAuthProvider) (*oauth2.Config, error) {
 	switch provider {
 	case GitHubProvider:
@@ -84,27 +84,27 @@ func (s *OAuthService) GetOAuthConfig(provider OAuthProvider) (*oauth2.Config, e
 	}
 }
 
-// GitHubUser represents a GitHub user API response
+// GitHubUser represents a GitHub user API response.
 type GitHubUser struct {
 	Email *string `json:"email"`
 	Login string  `json:"login"`
 }
 
-// GitHubEmail represents a GitHub email API response
+// GitHubEmail represents a GitHub email API response.
 type GitHubEmail struct {
 	Email    string `json:"email"`
 	Primary  bool   `json:"primary"`
 	Verified bool   `json:"verified"`
 }
 
-// GitLabUser represents a GitLab user API response
+// GitLabUser represents a GitLab user API response.
 type GitLabUser struct {
 	Email string `json:"email"`
 }
 
-// GetUserEmailFromProvider extracts email from OAuth provider response
+// GetUserEmailFromProvider extracts email from OAuth provider response.
 func (s *OAuthService) GetUserEmailFromProvider(ctx context.Context, provider OAuthProvider, token *oauth2.Token) (string, error) {
-	httpClient := s.getHTTPClient(token)
+	httpClient := s.getHTTPClient(ctx, token)
 
 	switch provider {
 	case GitHubProvider:
@@ -118,34 +118,42 @@ func (s *OAuthService) GetUserEmailFromProvider(ctx context.Context, provider OA
 	}
 }
 
-// getGitHubEmail fetches the user's email from GitHub API
+// getGitHubEmail fetches the user's email from GitHub API.
 func (s *OAuthService) getGitHubEmail(ctx context.Context, httpClient *http.Client) (string, error) {
-	// Try to get user first
-	userResp, err := httpClient.Get("https://api.github.com/user")
+	// Try to get user first.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user", nil)
+	if err != nil {
+		return "", err
+	}
+	userResp, err := httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to get github user: %w", err)
 	}
 	defer userResp.Body.Close()
 
 	var user GitHubUser
-	if err := json.NewDecoder(userResp.Body).Decode(&user); err != nil {
-		return "", fmt.Errorf("failed to decode github user: %w", err)
+	if decodeErr := json.NewDecoder(userResp.Body).Decode(&user); decodeErr != nil {
+		return "", fmt.Errorf("failed to decode github user: %w", decodeErr)
 	}
 
 	if user.Email != nil && *user.Email != "" {
 		return *user.Email, nil
 	}
 
-	// Try to get email from emails endpoint
-	emailsResp, err := httpClient.Get("https://api.github.com/user/emails")
+	// Try to get email from emails endpoint.
+	emailReq, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user/emails", nil)
+	if err != nil {
+		return "", err
+	}
+	emailsResp, err := httpClient.Do(emailReq)
 	if err != nil {
 		return "", fmt.Errorf("failed to get github emails: %w", err)
 	}
 	defer emailsResp.Body.Close()
 
 	var emails []GitHubEmail
-	if err := json.NewDecoder(emailsResp.Body).Decode(&emails); err != nil {
-		return "", fmt.Errorf("failed to decode github emails: %w", err)
+	if decodeErr := json.NewDecoder(emailsResp.Body).Decode(&emails); decodeErr != nil {
+		return "", fmt.Errorf("failed to decode github emails: %w", decodeErr)
 	}
 
 	for _, email := range emails {
@@ -157,25 +165,29 @@ func (s *OAuthService) getGitHubEmail(ctx context.Context, httpClient *http.Clie
 	return "", errors.New("no verified primary email found")
 }
 
-// getGitLabEmail fetches the user's email from GitLab API
+// getGitLabEmail fetches the user's email from GitLab API.
 func (s *OAuthService) getGitLabEmail(ctx context.Context, httpClient *http.Client) (string, error) {
 	baseURL := "https://gitlab.com"
 
-	resp, err := httpClient.Get(fmt.Sprintf("%s/api/v4/user", baseURL))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/api/v4/user", baseURL), nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to get gitlab user: %w", err)
 	}
 	defer resp.Body.Close()
 
 	var user GitLabUser
-	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
-		return "", fmt.Errorf("failed to decode gitlab user: %w", err)
+	if decodeErr := json.NewDecoder(resp.Body).Decode(&user); decodeErr != nil {
+		return "", fmt.Errorf("failed to decode gitlab user: %w", decodeErr)
 	}
 
 	return user.Email, nil
 }
 
-// getGoogleEmail extracts email from Google OIDC token
+// getGoogleEmail extracts email from Google OIDC token.
 func (s *OAuthService) getGoogleEmail(ctx context.Context, token *oauth2.Token) (string, error) {
 	provider, err := oidc.NewProvider(ctx, "https://accounts.google.com")
 	if err != nil {
@@ -200,13 +212,13 @@ func (s *OAuthService) getGoogleEmail(ctx context.Context, token *oauth2.Token) 
 	return email, nil
 }
 
-// getHTTPClient returns an HTTP client with the given token
-func (s *OAuthService) getHTTPClient(token *oauth2.Token) *http.Client {
-	return oauth2.NewClient(context.Background(), oauth2.StaticTokenSource(token))
+// getHTTPClient returns an HTTP client with the given token.
+func (s *OAuthService) getHTTPClient(ctx context.Context, token *oauth2.Token) *http.Client {
+	return oauth2.NewClient(ctx, oauth2.StaticTokenSource(token))
 }
 
-// LinkOAuthAccount links an OAuth account to an existing user
-func (s *OAuthService) LinkOAuthAccount(ctx context.Context, userID uuid.UUID, provider OAuthProvider, subject string) error {
+// LinkOAuthAccount links an OAuth account to an existing user.
+func (s *OAuthService) LinkOAuthAccount(_ context.Context, userID uuid.UUID, provider OAuthProvider, subject string) error {
 	var user models.User
 	if err := s.db.First(&user, userID).Error; err != nil {
 		return errors.New("user not found")
@@ -228,8 +240,8 @@ func (s *OAuthService) LinkOAuthAccount(ctx context.Context, userID uuid.UUID, p
 	return s.db.Save(&user).Error
 }
 
-// CreateOrUpdateUserFromOAuth creates or updates a user from OAuth data
-func (s *OAuthService) CreateOrUpdateUserFromOAuth(ctx context.Context, provider OAuthProvider, subject string, email string, username string) (*models.User, error) {
+// CreateOrUpdateUserFromOAuth creates or updates a user from OAuth data.
+func (s *OAuthService) CreateOrUpdateUserFromOAuth(_ context.Context, provider OAuthProvider, subject string, email string, username string) (*models.User, error) {
 	// First, try to find existing user by OAuth provider and subject
 	var existingUser models.User
 	if err := s.db.Where("oauth_provider = ? AND oauth_subject = ?", string(provider), subject).First(&existingUser).Error; err == nil {
@@ -269,7 +281,7 @@ func (s *OAuthService) CreateOrUpdateUserFromOAuth(ctx context.Context, provider
 	return newUser, nil
 }
 
-// stringPtr returns a pointer to a string
+// stringPtr returns a pointer to a string.
 func stringPtr(s string) *string {
 	return &s
 }

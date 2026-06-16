@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// WebhookConfig represents a webhook configuration for sending notifications
+// WebhookConfig represents a webhook configuration for sending notifications.
 type WebhookConfig struct {
 	ID             uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`
 	UserID         uuid.UUID  `gorm:"type:uuid;not null;index" json:"user_id"`
@@ -29,12 +29,12 @@ type WebhookConfig struct {
 	Deliveries []WebhookDelivery `gorm:"foreignKey:WebhookConfigID" json:"-"`
 }
 
-// TableName specifies the table name for the WebhookConfig model
+// TableName specifies the table name for the WebhookConfig model.
 func (WebhookConfig) TableName() string {
 	return "webhook_configs"
 }
 
-// WebhookDelivery represents a single webhook delivery attempt
+// WebhookDelivery represents a single webhook delivery attempt.
 type WebhookDelivery struct {
 	ID              uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`
 	WebhookConfigID uuid.UUID `gorm:"type:uuid;not null;index" json:"webhook_config_id"`
@@ -50,7 +50,7 @@ type WebhookDelivery struct {
 	WebhookConfig *WebhookConfig `gorm:"foreignKey:WebhookConfigID" json:"-"`
 }
 
-// TableName specifies the table name for the WebhookDelivery model
+// TableName specifies the table name for the WebhookDelivery model.
 func (WebhookDelivery) TableName() string {
 	return "webhook_deliveries"
 }

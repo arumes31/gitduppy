@@ -9,14 +9,14 @@ import (
 	"github.com/gitduppy/gitduppy/pkg/response"
 )
 
-// HealthHandler handles health check requests
+// HealthHandler handles health check requests.
 type HealthHandler struct {
 	version   string
 	buildTime string
 	startTime time.Time
 }
 
-// NewHealthHandler creates a new health handler
+// NewHealthHandler creates a new health handler.
 func NewHealthHandler(version, buildTime string) *HealthHandler {
 	return &HealthHandler{
 		version:   version,
@@ -25,7 +25,7 @@ func NewHealthHandler(version, buildTime string) *HealthHandler {
 	}
 }
 
-// GetHealth handles GET /api/v1/health
+// GetHealth handles GET /api/v1/health.
 func (h *HealthHandler) GetHealth(c *gin.Context) {
 	db := database.GetDB()
 	dbStatus := "disconnected"
@@ -47,14 +47,14 @@ func (h *HealthHandler) GetHealth(c *gin.Context) {
 	})
 }
 
-// GetHealthLive handles GET /api/v1/health/live
+// GetHealthLive handles GET /api/v1/health/live.
 func (h *HealthHandler) GetHealthLive(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status": "ok",
 	})
 }
 
-// GetHealthReady handles GET /api/v1/health/ready
+// GetHealthReady handles GET /api/v1/health/ready.
 func (h *HealthHandler) GetHealthReady(c *gin.Context) {
 	db := database.GetDB()
 	if db == nil {

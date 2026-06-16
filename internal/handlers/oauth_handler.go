@@ -15,13 +15,13 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// OAuthHandler handles OAuth2/OIDC requests
+// OAuthHandler handles OAuth2/OIDC requests.
 type OAuthHandler struct {
 	oauthService *services.OAuthService
 	authService  *services.AuthService
 }
 
-// NewOAuthHandler creates a new OAuth handler
+// NewOAuthHandler creates a new OAuth handler.
 func NewOAuthHandler(oauthService *services.OAuthService, authService *services.AuthService) *OAuthHandler {
 	return &OAuthHandler{
 		oauthService: oauthService,
@@ -29,7 +29,7 @@ func NewOAuthHandler(oauthService *services.OAuthService, authService *services.
 	}
 }
 
-// LoginWithProvider handles GET /api/v1/oauth/:provider/login
+// LoginWithProvider handles GET /api/v1/oauth/:provider/login.
 func (h *OAuthHandler) LoginWithProvider(c *gin.Context) {
 	provider := c.Param("provider")
 	oauthProvider := services.OAuthProvider(provider)
@@ -48,7 +48,7 @@ func (h *OAuthHandler) LoginWithProvider(c *gin.Context) {
 	c.Redirect(http.StatusFound, url)
 }
 
-// Callback handles GET /api/v1/oauth/:provider/callback
+// Callback handles GET /api/v1/oauth/:provider/callback.
 func (h *OAuthHandler) Callback(c *gin.Context) {
 	provider := c.Param("provider")
 	oauthProvider := services.OAuthProvider(provider)
@@ -103,7 +103,11 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 	}
 
 	// Create session
-	sessionToken := h.authService.GenerateSessionToken()
+	sessionToken, err := h.authService.GenerateSessionToken()
+	if err != nil {
+		response.InternalError(c, "Failed to generate session token: "+err.Error())
+		return
+	}
 	expiresAt := time.Now().Add(h.authService.SessionDuration())
 
 	session := &models.Session{
@@ -132,7 +136,7 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 	}
 }
 
-// LinkAccount handles POST /api/v1/oauth/:provider/link
+// LinkAccount handles POST /api/v1/oauth/:provider/link.
 func (h *OAuthHandler) LinkAccount(c *gin.Context) {
 	_, ok := middleware.GetCurrentUser(c)
 	if !ok {
@@ -157,7 +161,7 @@ func (h *OAuthHandler) LinkAccount(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"auth_url": url})
 }
 
-// LinkCallback handles GET /api/v1/oauth/:provider/link/callback
+// LinkCallback handles GET /api/v1/oauth/:provider/link/callback.
 func (h *OAuthHandler) LinkCallback(c *gin.Context) {
 	user, ok := middleware.GetCurrentUser(c)
 	if !ok {
@@ -204,7 +208,7 @@ func (h *OAuthHandler) LinkCallback(c *gin.Context) {
 	response.SuccessWithMessage(c, "OAuth account linked successfully", nil)
 }
 
-// UnlinkAccount handles POST /api/v1/oauth/:provider/unlink
+// UnlinkAccount handles POST /api/v1/oauth/:provider/unlink.
 func (h *OAuthHandler) UnlinkAccount(c *gin.Context) {
 	user, ok := middleware.GetCurrentUser(c)
 	if !ok {

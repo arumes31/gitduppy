@@ -9,19 +9,19 @@ import (
 	"gorm.io/gorm"
 )
 
-// DashboardService handles dashboard statistics
+// DashboardService handles dashboard statistics.
 type DashboardService struct {
 	db *gorm.DB
 }
 
-// NewDashboardService creates a new dashboard service
+// NewDashboardService creates a new dashboard service.
 func NewDashboardService() *DashboardService {
 	return &DashboardService{
 		db: database.GetDB(),
 	}
 }
 
-// DashboardStats represents dashboard statistics
+// DashboardStats represents dashboard statistics.
 type DashboardStats struct {
 	TotalRepositories         int64            `json:"total_repositories"`
 	ActiveRepositories        int64            `json:"active_repositories"`
@@ -35,14 +35,14 @@ type DashboardStats struct {
 	RepositoryStatusBreakdown *StatusBreakdown `json:"repository_status_breakdown"`
 }
 
-// RecentActivity represents recent activity statistics
+// RecentActivity represents recent activity statistics.
 type RecentActivity struct {
 	ClonesLast24h   int64 `json:"clones_last_24h"`
 	FailuresLast24h int64 `json:"failures_last_24h"`
 	NewReposLast7d  int64 `json:"new_repos_last_7d"`
 }
 
-// StatusBreakdown represents a count by status
+// StatusBreakdown represents a count by status.
 type StatusBreakdown struct {
 	Pending   int64 `json:"pending"`
 	Running   int64 `json:"running"`
@@ -51,8 +51,8 @@ type StatusBreakdown struct {
 	Cancelled int64 `json:"cancelled"`
 }
 
-// GetStats returns dashboard statistics
-func (s *DashboardService) GetStats(ctx context.Context) (*DashboardStats, error) {
+// GetStats returns dashboard statistics.
+func (s *DashboardService) GetStats(_ context.Context) (*DashboardStats, error) {
 	stats := &DashboardStats{}
 
 	// Repository counts
@@ -107,16 +107,15 @@ func (s *DashboardService) GetStats(ctx context.Context) (*DashboardStats, error
 	return stats, nil
 }
 
-// GetChartData returns data for dashboard charts
-func (s *DashboardService) GetChartData(ctx context.Context, days int) ([]ChartDay, error) {
+// GetChartData returns data for dashboard charts.
+func (s *DashboardService) GetChartData(_ context.Context, days int) ([]ChartDay, error) {
 	if days <= 0 {
 		days = 30
 	}
 
-	var chartData []ChartDay
 	startDate := time.Now().AddDate(0, 0, -days)
 
-	// Get daily clone job counts using a simpler query
+	// Get daily clone job counts using a simpler query.
 	type DayStats struct {
 		Day     time.Time
 		Total   int64
@@ -135,6 +134,7 @@ func (s *DashboardService) GetChartData(ctx context.Context, days int) ([]ChartD
 		return nil, err
 	}
 
+	chartData := make([]ChartDay, 0, len(stats))
 	for _, stat := range stats {
 		chartData = append(chartData, ChartDay{
 			Date:    stat.Day,
@@ -147,7 +147,7 @@ func (s *DashboardService) GetChartData(ctx context.Context, days int) ([]ChartD
 	return chartData, nil
 }
 
-// ChartDay represents a day in the chart data
+// ChartDay represents a day in the chart data.
 type ChartDay struct {
 	Date    time.Time `json:"date"`
 	Total   int64     `json:"total"`
@@ -155,8 +155,8 @@ type ChartDay struct {
 	Failed  int64     `json:"failed"`
 }
 
-// GetTopRepositories returns the most active repositories
-func (s *DashboardService) GetTopRepositories(ctx context.Context, limit int) ([]models.Repository, error) {
+// GetTopRepositories returns the most active repositories.
+func (s *DashboardService) GetTopRepositories(_ context.Context, limit int) ([]models.Repository, error) {
 	if limit <= 0 {
 		limit = 10
 	}

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gitduppy/gitduppy/internal/database"
@@ -17,13 +18,13 @@ import (
 	"gorm.io/gorm"
 )
 
-// WebhookService handles webhook configuration and delivery
+// WebhookService handles webhook configuration and delivery.
 type WebhookService struct {
 	db           *gorm.DB
 	cloneService *CloneService
 }
 
-// NewWebhookService creates a new webhook service
+// NewWebhookService creates a new webhook service.
 func NewWebhookService(cloneService *CloneService) *WebhookService {
 	return &WebhookService{
 		db:           database.GetDB(),
@@ -31,15 +32,15 @@ func NewWebhookService(cloneService *CloneService) *WebhookService {
 	}
 }
 
-// WebhookFilter represents filters for listing webhooks
+// WebhookFilter represents filters for listing webhooks.
 type WebhookFilter struct {
 	IsActive *bool
 	Page     int
 	PerPage  int
 }
 
-// ListWebhooks returns a paginated list of webhooks
-func (s *WebhookService) ListWebhooks(ctx context.Context, filter *WebhookFilter) ([]models.WebhookConfig, int64, error) {
+// ListWebhooks returns a paginated list of webhooks.
+func (s *WebhookService) ListWebhooks(_ context.Context, filter *WebhookFilter) ([]models.WebhookConfig, int64, error) {
 	if filter == nil {
 		filter = &WebhookFilter{Page: 1, PerPage: 20}
 	}
@@ -69,8 +70,8 @@ func (s *WebhookService) ListWebhooks(ctx context.Context, filter *WebhookFilter
 	return webhooks, total, err
 }
 
-// GetWebhookByID retrieves a webhook by ID
-func (s *WebhookService) GetWebhookByID(ctx context.Context, id uuid.UUID) (*models.WebhookConfig, error) {
+// GetWebhookByID retrieves a webhook by ID.
+func (s *WebhookService) GetWebhookByID(_ context.Context, id uuid.UUID) (*models.WebhookConfig, error) {
 	var webhook models.WebhookConfig
 	if err := s.db.First(&webhook, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -81,7 +82,7 @@ func (s *WebhookService) GetWebhookByID(ctx context.Context, id uuid.UUID) (*mod
 	return &webhook, nil
 }
 
-// CreateWebhookRequest represents a create webhook request
+// CreateWebhookRequest represents a create webhook request.
 type CreateWebhookRequest struct {
 	Name           string   `json:"name" validate:"required"`
 	URL            string   `json:"url" validate:"required,url"`
@@ -92,8 +93,8 @@ type CreateWebhookRequest struct {
 	TimeoutSeconds int      `json:"timeout_seconds"`
 }
 
-// CreateWebhook creates a new webhook
-func (s *WebhookService) CreateWebhook(ctx context.Context, userID uuid.UUID, req *CreateWebhookRequest) (*models.WebhookConfig, error) {
+// CreateWebhook creates a new webhook.
+func (s *WebhookService) CreateWebhook(_ context.Context, userID uuid.UUID, req *CreateWebhookRequest) (*models.WebhookConfig, error) {
 	webhook := &models.WebhookConfig{
 		ID:             uuid.New(),
 		UserID:         userID,
@@ -122,7 +123,7 @@ func (s *WebhookService) CreateWebhook(ctx context.Context, userID uuid.UUID, re
 	return webhook, nil
 }
 
-// UpdateWebhookRequest represents an update webhook request
+// UpdateWebhookRequest represents an update webhook request.
 type UpdateWebhookRequest struct {
 	Name           *string  `json:"name,omitempty"`
 	URL            *string  `json:"url,omitempty"`
@@ -133,7 +134,7 @@ type UpdateWebhookRequest struct {
 	TimeoutSeconds *int     `json:"timeout_seconds,omitempty"`
 }
 
-// UpdateWebhook updates a webhook
+// UpdateWebhook updates a webhook.
 func (s *WebhookService) UpdateWebhook(ctx context.Context, id uuid.UUID, req *UpdateWebhookRequest) (*models.WebhookConfig, error) {
 	webhook, err := s.GetWebhookByID(ctx, id)
 	if err != nil {
@@ -170,8 +171,8 @@ func (s *WebhookService) UpdateWebhook(ctx context.Context, id uuid.UUID, req *U
 	return webhook, nil
 }
 
-// DeleteWebhook deletes a webhook
-func (s *WebhookService) DeleteWebhook(ctx context.Context, id uuid.UUID) error {
+// DeleteWebhook deletes a webhook.
+func (s *WebhookService) DeleteWebhook(_ context.Context, id uuid.UUID) error {
 	result := s.db.Delete(&models.WebhookConfig{}, id)
 	if result.Error != nil {
 		return result.Error
@@ -182,8 +183,8 @@ func (s *WebhookService) DeleteWebhook(ctx context.Context, id uuid.UUID) error 
 	return nil
 }
 
-// SendEvent sends a webhook event to all subscribed webhooks
-func (s *WebhookService) SendEvent(ctx context.Context, eventType string, payload map[string]interface{}) error {
+// SendEvent sends a webhook event to all subscribed webhooks.
+func (s *WebhookService) SendEvent(_ context.Context, eventType string, payload map[string]interface{}) error {
 	var webhooks []models.WebhookConfig
 	if err := s.db.Where("is_active = ? AND events @> ?", true, []string{eventType}).Find(&webhooks).Error; err != nil {
 		return err
@@ -196,9 +197,13 @@ func (s *WebhookService) SendEvent(ctx context.Context, eventType string, payloa
 	return nil
 }
 
-// deliverWebhook delivers a webhook payload to a single webhook
+// deliverWebhook delivers a webhook payload to a single webhook.
 func (s *WebhookService) deliverWebhook(webhook models.WebhookConfig, eventType string, payload map[string]interface{}) {
-	payloadJSON, _ := json.Marshal(payload)
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		// Log error if payload cannot be marshaled.
+		return
+	}
 
 	for attempt := 1; attempt <= webhook.RetryCount; attempt++ {
 		success := s.attemptDelivery(webhook, eventType, payloadJSON, attempt)
@@ -209,10 +214,13 @@ func (s *WebhookService) deliverWebhook(webhook models.WebhookConfig, eventType 
 	}
 }
 
-// attemptDelivery attempts a single webhook delivery
+// attemptDelivery attempts a single webhook delivery.
 func (s *WebhookService) attemptDelivery(webhook models.WebhookConfig, eventType string, payloadJSON []byte, attempt int) bool {
-	// Create request
-	req, err := http.NewRequest("POST", webhook.URL, bytes.NewBuffer(payloadJSON))
+	// Create request.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(webhook.TimeoutSeconds)*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", webhook.URL, bytes.NewBuffer(payloadJSON))
 	if err != nil {
 		s.recordDelivery(webhook.ID, eventType, string(payloadJSON), 0, err.Error(), false, attempt)
 		return false
@@ -220,18 +228,16 @@ func (s *WebhookService) attemptDelivery(webhook models.WebhookConfig, eventType
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitMirrors-Event", eventType)
-	req.Header.Set("X-GitMirrors-Delivery-Attempt", string(rune(attempt)))
+	req.Header.Set("X-GitMirrors-Delivery-Attempt", strconv.Itoa(attempt))
 
-	// Add HMAC signature if secret is set
+	// Add HMAC signature if secret is set.
 	if webhook.Secret != "" {
 		signature := s.generateHMACSignature(payloadJSON, webhook.Secret)
 		req.Header.Set("X-GitMirrors-Signature", signature)
 	}
 
-	// Send request
-	client := &http.Client{
-		Timeout: time.Duration(webhook.TimeoutSeconds) * time.Second,
-	}
+	// Send request.
+	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
 		s.recordDelivery(webhook.ID, eventType, string(payloadJSON), 0, err.Error(), false, attempt)
@@ -244,14 +250,14 @@ func (s *WebhookService) attemptDelivery(webhook models.WebhookConfig, eventType
 	return success
 }
 
-// generateHMACSignature generates an HMAC signature for the payload
+// generateHMACSignature generates an HMAC signature for the payload.
 func (s *WebhookService) generateHMACSignature(payload []byte, secret string) string {
 	h := hmac.New(sha256.New, []byte(secret))
 	h.Write(payload)
 	return "sha256=" + hex.EncodeToString(h.Sum(nil))
 }
 
-// recordDelivery records a webhook delivery attempt
+// recordDelivery records a webhook delivery attempt.
 func (s *WebhookService) recordDelivery(webhookID uuid.UUID, eventType, payload string, httpStatus int, responseBody string, success bool, attempt int) {
 	delivery := &models.WebhookDelivery{
 		ID:              uuid.New(),
@@ -267,8 +273,8 @@ func (s *WebhookService) recordDelivery(webhookID uuid.UUID, eventType, payload 
 	s.db.Create(delivery)
 }
 
-// GetWebhookDeliveries retrieves deliveries for a webhook
-func (s *WebhookService) GetWebhookDeliveries(ctx context.Context, webhookID uuid.UUID, limit int) ([]models.WebhookDelivery, error) {
+// GetWebhookDeliveries retrieves deliveries for a webhook.
+func (s *WebhookService) GetWebhookDeliveries(_ context.Context, webhookID uuid.UUID, limit int) ([]models.WebhookDelivery, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -281,7 +287,7 @@ func (s *WebhookService) GetWebhookDeliveries(ctx context.Context, webhookID uui
 	return deliveries, err
 }
 
-// TestWebhook sends a test webhook event
+// TestWebhook sends a test webhook event.
 func (s *WebhookService) TestWebhook(ctx context.Context, webhookID uuid.UUID) error {
 	webhook, err := s.GetWebhookByID(ctx, webhookID)
 	if err != nil {
@@ -299,18 +305,18 @@ func (s *WebhookService) TestWebhook(ctx context.Context, webhookID uuid.UUID) e
 	return nil
 }
 
-// DB returns the database connection
+// DB returns the database connection.
 func (s *WebhookService) DB() *gorm.DB {
 	return s.db
 }
 
-// CloneService returns the clone service instance
+// CloneService returns the clone service instance.
 func (s *WebhookService) CloneService() *CloneService {
 	return s.cloneService
 }
 
-// FindRepositoriesByURLPattern finds repositories matching a URL pattern
-func (s *WebhookService) FindRepositoriesByURLPattern(ctx context.Context, pattern string) ([]models.Repository, error) {
+// FindRepositoriesByURLPattern finds repositories matching a URL pattern.
+func (s *WebhookService) FindRepositoriesByURLPattern(_ context.Context, pattern string) ([]models.Repository, error) {
 	var repos []models.Repository
 	// Simple implementation - match URL containing the pattern
 	err := s.db.Where("url LIKE ?", "%"+pattern+"%").Find(&repos).Error

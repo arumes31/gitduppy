@@ -8,26 +8,26 @@ import (
 	"github.com/gitduppy/gitduppy/pkg/validator"
 )
 
-// AuthHandler handles authentication requests
+// AuthHandler handles authentication requests.
 type AuthHandler struct {
 	authService *services.AuthService
 }
 
-// NewAuthHandler creates a new auth handler
+// NewAuthHandler creates a new auth handler.
 func NewAuthHandler(authService *services.AuthService) *AuthHandler {
 	return &AuthHandler{
 		authService: authService,
 	}
 }
 
-// LoginRequest represents a login request
+// LoginRequest represents a login request.
 type LoginRequest struct {
 	Username   string `json:"username" validate:"required"`
 	Password   string `json:"password" validate:"required"`
 	RememberMe bool   `json:"remember_me"`
 }
 
-// Login handles POST /api/v1/auth/login
+// Login handles POST /api/v1/auth/login.
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -60,11 +60,11 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	})
 }
 
-// Logout handles POST /api/v1/auth/logout
+// Logout handles POST /api/v1/auth/logout.
 func (h *AuthHandler) Logout(c *gin.Context) {
 	sessionToken, err := c.Cookie("session")
 	if err == nil && sessionToken != "" {
-		h.authService.Logout(c, sessionToken)
+		_ = h.authService.Logout(c, sessionToken)
 	}
 
 	// Clear cookie
@@ -73,7 +73,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 	response.SuccessWithMessage(c, "Logout successful", nil)
 }
 
-// Me handles GET /api/v1/auth/me
+// Me handles GET /api/v1/auth/me.
 func (h *AuthHandler) Me(c *gin.Context) {
 	user, ok := middleware.GetCurrentUser(c)
 	if !ok {
@@ -91,7 +91,7 @@ func (h *AuthHandler) Me(c *gin.Context) {
 	})
 }
 
-// Refresh handles POST /api/v1/auth/refresh
+// Refresh handles POST /api/v1/auth/refresh.
 func (h *AuthHandler) Refresh(c *gin.Context) {
 	sessionToken, err := c.Cookie("session")
 	if err != nil || sessionToken == "" {
@@ -111,7 +111,7 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 	})
 }
 
-// ChangePassword handles POST /api/v1/auth/change-password
+// ChangePassword handles POST /api/v1/auth/change-password.
 func (h *AuthHandler) ChangePassword(c *gin.Context) {
 	user, ok := middleware.GetCurrentUser(c)
 	if !ok {

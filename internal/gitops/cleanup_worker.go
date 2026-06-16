@@ -10,7 +10,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// CleanupWorker handles periodic cleanup of old logs and jobs
+// CleanupWorker handles periodic cleanup of old logs and jobs.
 type CleanupWorker struct {
 	db        *gorm.DB
 	logger    *zap.Logger
@@ -19,13 +19,13 @@ type CleanupWorker struct {
 	retention time.Duration
 }
 
-// CleanupConfig holds configuration for the cleanup worker
+// CleanupConfig holds configuration for the cleanup worker.
 type CleanupConfig struct {
 	Interval  time.Duration
 	Retention time.Duration
 }
 
-// DefaultCleanupConfig returns default cleanup configuration
+// DefaultCleanupConfig returns default cleanup configuration.
 func DefaultCleanupConfig() *CleanupConfig {
 	return &CleanupConfig{
 		Interval:  24 * time.Hour,
@@ -33,7 +33,7 @@ func DefaultCleanupConfig() *CleanupConfig {
 	}
 }
 
-// NewCleanupWorker creates a new cleanup worker
+// NewCleanupWorker creates a new cleanup worker.
 func NewCleanupWorker(config *CleanupConfig) *CleanupWorker {
 	if config == nil {
 		config = DefaultCleanupConfig()
@@ -47,19 +47,19 @@ func NewCleanupWorker(config *CleanupConfig) *CleanupWorker {
 	}
 }
 
-// Start starts the cleanup worker
+// Start starts the cleanup worker.
 func (w *CleanupWorker) Start() {
 	w.logger.Info("starting cleanup worker", zap.Duration("interval", w.interval), zap.Duration("retention", w.retention))
 	go w.run()
 }
 
-// Stop stops the cleanup worker
+// Stop stops the cleanup worker.
 func (w *CleanupWorker) Stop() {
 	w.logger.Info("stopping cleanup worker")
 	w.done <- true
 }
 
-// run is the main cleanup loop
+// run is the main cleanup loop.
 func (w *CleanupWorker) run() {
 	// Run cleanup immediately on start
 	w.performCleanup()
@@ -77,7 +77,7 @@ func (w *CleanupWorker) run() {
 	}
 }
 
-// performCleanup removes old clone logs, completed jobs, and expired sessions data
+// performCleanup removes old clone logs, completed jobs, and expired sessions data.
 func (w *CleanupWorker) performCleanup() {
 	w.logger.Info("performing cleanup of old data")
 

@@ -11,19 +11,19 @@ import (
 	"gorm.io/gorm"
 )
 
-// AuditService handles audit logging
+// AuditService handles audit logging.
 type AuditService struct {
 	db *gorm.DB
 }
 
-// NewAuditService creates a new audit service
+// NewAuditService creates a new audit service.
 func NewAuditService() *AuditService {
 	return &AuditService{
 		db: database.GetDB(),
 	}
 }
 
-// AuditFilter represents filters for listing audit logs
+// AuditFilter represents filters for listing audit logs.
 type AuditFilter struct {
 	UserID       *uuid.UUID
 	RepositoryID *uuid.UUID
@@ -34,8 +34,8 @@ type AuditFilter struct {
 	PerPage      int
 }
 
-// ListAuditLogs returns a paginated list of audit logs
-func (s *AuditService) ListAuditLogs(ctx context.Context, filter *AuditFilter) ([]models.AuditLog, int64, error) {
+// ListAuditLogs returns a paginated list of audit logs.
+func (s *AuditService) ListAuditLogs(_ context.Context, filter *AuditFilter) ([]models.AuditLog, int64, error) {
 	if filter == nil {
 		filter = &AuditFilter{Page: 1, PerPage: 50}
 	}
@@ -78,8 +78,8 @@ func (s *AuditService) ListAuditLogs(ctx context.Context, filter *AuditFilter) (
 	return logs, total, err
 }
 
-// Log creates a new audit log entry
-func (s *AuditService) Log(ctx context.Context, userID *uuid.UUID, repositoryID *uuid.UUID, action string, details interface{}, ipAddress, userAgent string) error {
+// Log creates a new audit log entry.
+func (s *AuditService) Log(_ context.Context, userID *uuid.UUID, repositoryID *uuid.UUID, action string, details interface{}, ipAddress, userAgent string) error {
 	var detailsJSON string
 	if details != nil {
 		bytes, err := json.Marshal(details)
@@ -104,7 +104,7 @@ func (s *AuditService) Log(ctx context.Context, userID *uuid.UUID, repositoryID 
 	return s.db.Create(log).Error
 }
 
-// LogAction logs a user action with the given context
+// LogAction logs a user action with the given context.
 func (s *AuditService) LogAction(ctx context.Context, userID *uuid.UUID, repositoryID *uuid.UUID, action string, details map[string]interface{}, c interface{}) error {
 	var ipAddress, userAgent string
 
@@ -116,8 +116,8 @@ func (s *AuditService) LogAction(ctx context.Context, userID *uuid.UUID, reposit
 	return s.Log(ctx, userID, repositoryID, action, details, ipAddress, userAgent)
 }
 
-// GetUserActions retrieves all actions for a specific user
-func (s *AuditService) GetUserActions(ctx context.Context, userID uuid.UUID, limit int) ([]models.AuditLog, error) {
+// GetUserActions retrieves all actions for a specific user.
+func (s *AuditService) GetUserActions(_ context.Context, userID uuid.UUID, limit int) ([]models.AuditLog, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -130,8 +130,8 @@ func (s *AuditService) GetUserActions(ctx context.Context, userID uuid.UUID, lim
 	return logs, err
 }
 
-// GetRepositoryActions retrieves all actions for a specific repository
-func (s *AuditService) GetRepositoryActions(ctx context.Context, repositoryID uuid.UUID, limit int) ([]models.AuditLog, error) {
+// GetRepositoryActions retrieves all actions for a specific repository.
+func (s *AuditService) GetRepositoryActions(_ context.Context, repositoryID uuid.UUID, limit int) ([]models.AuditLog, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -144,8 +144,8 @@ func (s *AuditService) GetRepositoryActions(ctx context.Context, repositoryID uu
 	return logs, err
 }
 
-// CleanupOldLogs deletes audit logs older than the specified duration
-func (s *AuditService) CleanupOldLogs(ctx context.Context, olderThan time.Duration) (int64, error) {
+// CleanupOldLogs deletes audit logs older than the specified duration.
+func (s *AuditService) CleanupOldLogs(_ context.Context, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-olderThan)
 	result := s.db.Where("created_at < ?", cutoff).Delete(&models.AuditLog{})
 	return result.RowsAffected, result.Error

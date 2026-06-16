@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/gitduppy/gitduppy/internal/database"
@@ -14,14 +15,14 @@ import (
 	"gorm.io/gorm"
 )
 
-// AuthService handles authentication logic
+// AuthService handles authentication logic.
 type AuthService struct {
 	db              *gorm.DB
 	passwordService *crypto.PasswordService
 	sessionDuration time.Duration
 }
 
-// NewAuthService creates a new auth service
+// NewAuthService creates a new auth service.
 func NewAuthService(sessionDuration time.Duration) *AuthService {
 	return &AuthService{
 		db:              database.GetDB(),
@@ -30,22 +31,22 @@ func NewAuthService(sessionDuration time.Duration) *AuthService {
 	}
 }
 
-// LoginRequest represents a login request
+// LoginRequest represents a login request.
 type LoginRequest struct {
 	Username   string `json:"username" validate:"required"`
 	Password   string `json:"password" validate:"required"`
 	RememberMe bool   `json:"remember_me"`
 }
 
-// LoginResponse represents a login response
+// LoginResponse represents a login response.
 type LoginResponse struct {
 	User         *models.User `json:"user"`
 	SessionToken string       `json:"session_token,omitempty"`
 	ExpiresAt    time.Time    `json:"expires_at"`
 }
 
-// Login authenticates a user and creates a session
-func (s *AuthService) Login(ctx context.Context, req *LoginRequest) (*LoginResponse, error) {
+// Login authenticates a user and creates a session.
+func (s *AuthService) Login(_ context.Context, req *LoginRequest) (*LoginResponse, error) {
 	// Find user by username
 	var user models.User
 	if err := s.db.Where("username = ?", req.Username).First(&user).Error; err != nil {
@@ -71,7 +72,10 @@ func (s *AuthService) Login(ctx context.Context, req *LoginRequest) (*LoginRespo
 	s.db.Save(&user)
 
 	// Generate session token
-	sessionToken := s.GenerateSessionToken()
+	sessionToken, err := s.GenerateSessionToken()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate session token: %w", err)
+	}
 	expiresAt := time.Now().Add(s.sessionDuration)
 
 	// Create session
@@ -92,13 +96,13 @@ func (s *AuthService) Login(ctx context.Context, req *LoginRequest) (*LoginRespo
 	}, nil
 }
 
-// Logout invalidates a session
-func (s *AuthService) Logout(ctx context.Context, sessionToken string) error {
+// Logout invalidates a session.
+func (s *AuthService) Logout(_ context.Context, sessionToken string) error {
 	return s.db.Where("token = ?", sessionToken).Delete(&models.Session{}).Error
 }
 
-// RefreshSession extends a session's expiry
-func (s *AuthService) RefreshSession(ctx context.Context, sessionToken string) (*models.Session, error) {
+// RefreshSession extends a session's expiry.
+func (s *AuthService) RefreshSession(_ context.Context, sessionToken string) (*models.Session, error) {
 	var session models.Session
 	if err := s.db.Where("token = ? AND expiry > ?", sessionToken, time.Now()).First(&session).Error; err != nil {
 		return nil, errors.New("invalid or expired session")
@@ -113,8 +117,8 @@ func (s *AuthService) RefreshSession(ctx context.Context, sessionToken string) (
 	return &session, nil
 }
 
-// ValidateSession checks if a session is valid and returns the user
-func (s *AuthService) ValidateSession(ctx context.Context, sessionToken string) (*models.User, error) {
+// ValidateSession checks if a session is valid and returns the user.
+func (s *AuthService) ValidateSession(_ context.Context, sessionToken string) (*models.User, error) {
 	var session models.Session
 	if err := s.db.Where("token = ? AND expiry > ?", sessionToken, time.Now()).First(&session).Error; err != nil {
 		return nil, errors.New("invalid or expired session")
@@ -132,25 +136,27 @@ func (s *AuthService) ValidateSession(ctx context.Context, sessionToken string) 
 	return &user, nil
 }
 
-// GenerateSessionToken creates a random session token
-func (s *AuthService) GenerateSessionToken() string {
+// GenerateSessionToken creates a random session token.
+func (s *AuthService) GenerateSessionToken() (string, error) {
 	bytes := make([]byte, 32)
-	rand.Read(bytes)
-	return base64.URLEncoding.EncodeToString(bytes)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return base64.URLEncoding.EncodeToString(bytes), nil
 }
 
-// SessionDuration returns the configured session duration
+// SessionDuration returns the configured session duration.
 func (s *AuthService) SessionDuration() time.Duration {
 	return s.sessionDuration
 }
 
-// DB returns the database connection
+// DB returns the database connection.
 func (s *AuthService) DB() *gorm.DB {
 	return s.db
 }
 
-// ChangePassword changes a user's password
-func (s *AuthService) ChangePassword(ctx context.Context, userID uuid.UUID, oldPassword, newPassword string) error {
+// ChangePassword changes a user's password.
+func (s *AuthService) ChangePassword(_ context.Context, userID uuid.UUID, oldPassword, newPassword string) error {
 	var user models.User
 	if err := s.db.First(&user, userID).Error; err != nil {
 		return errors.New("user not found")
@@ -171,8 +177,8 @@ func (s *AuthService) ChangePassword(ctx context.Context, userID uuid.UUID, oldP
 	return s.db.Save(&user).Error
 }
 
-// GetUserByID retrieves a user by ID
-func (s *AuthService) GetUserByID(ctx context.Context, id uuid.UUID) (*models.User, error) {
+// GetUserByID retrieves a user by ID.
+func (s *AuthService) GetUserByID(_ context.Context, id uuid.UUID) (*models.User, error) {
 	var user models.User
 	if err := s.db.First(&user, id).Error; err != nil {
 		return nil, err

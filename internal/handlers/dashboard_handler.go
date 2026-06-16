@@ -7,13 +7,13 @@ import (
 	"github.com/gitduppy/gitduppy/pkg/validator"
 )
 
-// DashboardHandler handles dashboard requests
+// DashboardHandler handles dashboard requests.
 type DashboardHandler struct {
 	dashboardService *services.DashboardService
 	cloneService     *services.CloneService
 }
 
-// NewDashboardHandler creates a new dashboard handler
+// NewDashboardHandler creates a new dashboard handler.
 func NewDashboardHandler(dashboardService *services.DashboardService, cloneService *services.CloneService) *DashboardHandler {
 	return &DashboardHandler{
 		dashboardService: dashboardService,
@@ -21,7 +21,7 @@ func NewDashboardHandler(dashboardService *services.DashboardService, cloneServi
 	}
 }
 
-// GetStats handles GET /api/v1/dashboard/stats
+// GetStats handles GET /api/v1/dashboard/stats.
 func (h *DashboardHandler) GetStats(c *gin.Context) {
 	stats, err := h.dashboardService.GetStats(c)
 	if err != nil {
@@ -32,7 +32,7 @@ func (h *DashboardHandler) GetStats(c *gin.Context) {
 	response.Success(c, stats)
 }
 
-// GetChartData handles GET /api/v1/dashboard/chart-data
+// GetChartData handles GET /api/v1/dashboard/chart-data.
 func (h *DashboardHandler) GetChartData(c *gin.Context) {
 	days := validator.ParseInt(c.Query("days"), 30)
 	chartData, err := h.dashboardService.GetChartData(c, days)
@@ -44,7 +44,7 @@ func (h *DashboardHandler) GetChartData(c *gin.Context) {
 	response.Success(c, chartData)
 }
 
-// GetTopRepositories handles GET /api/v1/dashboard/top-repositories
+// GetTopRepositories handles GET /api/v1/dashboard/top-repositories.
 func (h *DashboardHandler) GetTopRepositories(c *gin.Context) {
 	limit := validator.ParseInt(c.Query("limit"), 10)
 	repos, err := h.dashboardService.GetTopRepositories(c, limit)
@@ -56,7 +56,7 @@ func (h *DashboardHandler) GetTopRepositories(c *gin.Context) {
 	response.Success(c, repos)
 }
 
-// GetRecentJobs handles GET /api/v1/dashboard/recent-jobs
+// GetRecentJobs handles GET /api/v1/dashboard/recent-jobs.
 func (h *DashboardHandler) GetRecentJobs(c *gin.Context) {
 	limit := validator.ParseInt(c.Query("limit"), 10)
 	jobs, err := h.cloneService.GetRecentJobs(c, limit)

@@ -11,19 +11,19 @@ import (
 	"gorm.io/gorm"
 )
 
-// CloneService handles clone job management
+// CloneService handles clone job management.
 type CloneService struct {
 	db *gorm.DB
 }
 
-// NewCloneService creates a new clone service
+// NewCloneService creates a new clone service.
 func NewCloneService() *CloneService {
 	return &CloneService{
 		db: database.GetDB(),
 	}
 }
 
-// CloneFilter represents filters for listing clone jobs
+// CloneFilter represents filters for listing clone jobs.
 type CloneFilter struct {
 	RepositoryID *uuid.UUID
 	Status       *string
@@ -32,8 +32,8 @@ type CloneFilter struct {
 	PerPage      int
 }
 
-// ListCloneJobs returns a paginated list of clone jobs
-func (s *CloneService) ListCloneJobs(ctx context.Context, filter *CloneFilter) ([]models.CloneJob, int64, error) {
+// ListCloneJobs returns a paginated list of clone jobs.
+func (s *CloneService) ListCloneJobs(_ context.Context, filter *CloneFilter) ([]models.CloneJob, int64, error) {
 	if filter == nil {
 		filter = &CloneFilter{Page: 1, PerPage: 20}
 	}
@@ -70,8 +70,8 @@ func (s *CloneService) ListCloneJobs(ctx context.Context, filter *CloneFilter) (
 	return jobs, total, err
 }
 
-// GetCloneJobByID retrieves a clone job by ID
-func (s *CloneService) GetCloneJobByID(ctx context.Context, id uuid.UUID) (*models.CloneJob, error) {
+// GetCloneJobByID retrieves a clone job by ID.
+func (s *CloneService) GetCloneJobByID(_ context.Context, id uuid.UUID) (*models.CloneJob, error) {
 	var job models.CloneJob
 	if err := s.db.Preload("Repository").Preload("CloneLogs").First(&job, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -82,8 +82,8 @@ func (s *CloneService) GetCloneJobByID(ctx context.Context, id uuid.UUID) (*mode
 	return &job, nil
 }
 
-// CreateCloneJob creates a new clone job
-func (s *CloneService) CreateCloneJob(ctx context.Context, repoID uuid.UUID, triggerType string) (*models.CloneJob, error) {
+// CreateCloneJob creates a new clone job.
+func (s *CloneService) CreateCloneJob(_ context.Context, repoID uuid.UUID, triggerType string) (*models.CloneJob, error) {
 	// Verify repository exists
 	var repo models.Repository
 	if err := s.db.First(&repo, repoID).Error; err != nil {
@@ -107,8 +107,8 @@ func (s *CloneService) CreateCloneJob(ctx context.Context, repoID uuid.UUID, tri
 	return job, nil
 }
 
-// UpdateCloneJobStatus updates the status of a clone job
-func (s *CloneService) UpdateCloneJobStatus(ctx context.Context, id uuid.UUID, status string, outputLog string, exitCode *int) error {
+// UpdateCloneJobStatus updates the status of a clone job.
+func (s *CloneService) UpdateCloneJobStatus(_ context.Context, id uuid.UUID, status string, outputLog string, exitCode *int) error {
 	updates := map[string]interface{}{
 		"status": status,
 	}
@@ -131,16 +131,16 @@ func (s *CloneService) UpdateCloneJobStatus(ctx context.Context, id uuid.UUID, s
 	return s.db.Model(&models.CloneJob{}).Where("id = ?", id).Updates(updates).Error
 }
 
-// UpdateCloneJobProgress updates the progress of a clone job
-func (s *CloneService) UpdateCloneJobProgress(ctx context.Context, id uuid.UUID, percent int, message string) error {
+// UpdateCloneJobProgress updates the progress of a clone job.
+func (s *CloneService) UpdateCloneJobProgress(_ context.Context, id uuid.UUID, percent int, message string) error {
 	return s.db.Model(&models.CloneJob{}).Where("id = ?", id).Updates(map[string]interface{}{
 		"progress_percent": percent,
 		"output_log":       message,
 	}).Error
 }
 
-// AddCloneLog adds a log entry to a clone job
-func (s *CloneService) AddCloneLog(ctx context.Context, jobID uuid.UUID, level, message string) error {
+// AddCloneLog adds a log entry to a clone job.
+func (s *CloneService) AddCloneLog(_ context.Context, jobID uuid.UUID, level, message string) error {
 	log := &models.CloneLog{
 		ID:         uuid.New(),
 		CloneJobID: jobID,
@@ -150,15 +150,15 @@ func (s *CloneService) AddCloneLog(ctx context.Context, jobID uuid.UUID, level, 
 	return s.db.Create(log).Error
 }
 
-// GetCloneLogs retrieves logs for a clone job
-func (s *CloneService) GetCloneLogs(ctx context.Context, jobID uuid.UUID) ([]models.CloneLog, error) {
+// GetCloneLogs retrieves logs for a clone job.
+func (s *CloneService) GetCloneLogs(_ context.Context, jobID uuid.UUID) ([]models.CloneLog, error) {
 	var logs []models.CloneLog
 	err := s.db.Where("clone_job_id = ?", jobID).Order("created_at ASC").Find(&logs).Error
 	return logs, err
 }
 
-// GetRepositoryLogs retrieves all clone logs for a repository
-func (s *CloneService) GetRepositoryLogs(ctx context.Context, repoID uuid.UUID, limit int) ([]models.CloneLog, error) {
+// GetRepositoryLogs retrieves all clone logs for a repository.
+func (s *CloneService) GetRepositoryLogs(_ context.Context, repoID uuid.UUID, limit int) ([]models.CloneLog, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -173,8 +173,8 @@ func (s *CloneService) GetRepositoryLogs(ctx context.Context, repoID uuid.UUID, 
 	return logs, err
 }
 
-// CancelCloneJob cancels a running clone job
-func (s *CloneService) CancelCloneJob(ctx context.Context, id uuid.UUID) error {
+// CancelCloneJob cancels a running clone job.
+func (s *CloneService) CancelCloneJob(_ context.Context, id uuid.UUID) error {
 	var job models.CloneJob
 	if err := s.db.First(&job, id).Error; err != nil {
 		return err
@@ -190,8 +190,8 @@ func (s *CloneService) CancelCloneJob(ctx context.Context, id uuid.UUID) error {
 	}).Error
 }
 
-// GetRecentJobs retrieves recent clone jobs
-func (s *CloneService) GetRecentJobs(ctx context.Context, limit int) ([]models.CloneJob, error) {
+// GetRecentJobs retrieves recent clone jobs.
+func (s *CloneService) GetRecentJobs(_ context.Context, limit int) ([]models.CloneJob, error) {
 	if limit <= 0 {
 		limit = 10
 	}

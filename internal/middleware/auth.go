@@ -13,13 +13,13 @@ import (
 	"github.com/gitduppy/gitduppy/pkg/response"
 )
 
-// AuthMiddleware handles session and API key authentication
+// AuthMiddleware handles session and API key authentication.
 type AuthMiddleware struct {
 	// Optional: exclude paths from authentication
 	excludePaths []string
 }
 
-// NewAuthMiddleware creates a new auth middleware
+// NewAuthMiddleware creates a new auth middleware.
 func NewAuthMiddleware() *AuthMiddleware {
 	return &AuthMiddleware{
 		excludePaths: []string{
@@ -32,7 +32,7 @@ func NewAuthMiddleware() *AuthMiddleware {
 	}
 }
 
-// Middleware returns the authentication middleware function
+// Middleware returns the authentication middleware function.
 func (m *AuthMiddleware) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Check if path is excluded
@@ -72,7 +72,7 @@ func (m *AuthMiddleware) Middleware() gin.HandlerFunc {
 	}
 }
 
-// isExcluded checks if a path should be excluded from authentication
+// isExcluded checks if a path should be excluded from authentication.
 func (m *AuthMiddleware) isExcluded(path string) bool {
 	for _, excluded := range m.excludePaths {
 		if strings.HasPrefix(path, excluded) {
@@ -82,7 +82,7 @@ func (m *AuthMiddleware) isExcluded(path string) bool {
 	return false
 }
 
-// validateAPIKey validates an API key and returns the associated user
+// validateAPIKey validates an API key and returns the associated user.
 func (m *AuthMiddleware) validateAPIKey(key string) (*models.User, error) {
 	db := database.GetDB()
 	if db == nil {
@@ -121,7 +121,7 @@ func (m *AuthMiddleware) validateAPIKey(key string) (*models.User, error) {
 	return &user, nil
 }
 
-// validateSession validates a session token and returns the associated user
+// validateSession validates a session token and returns the associated user.
 func (m *AuthMiddleware) validateSession(token string) (*models.User, error) {
 	db := database.GetDB()
 	if db == nil {
@@ -148,7 +148,7 @@ func (m *AuthMiddleware) validateSession(token string) (*models.User, error) {
 	return &user, nil
 }
 
-// RequireAdmin returns a middleware that requires admin role
+// RequireAdmin returns a middleware that requires admin role.
 func RequireAdmin() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		user, exists := c.Get("user")
@@ -169,7 +169,7 @@ func RequireAdmin() gin.HandlerFunc {
 	}
 }
 
-// GetCurrentUser returns the current authenticated user from context
+// GetCurrentUser returns the current authenticated user from context.
 func GetCurrentUser(c *gin.Context) (*models.User, bool) {
 	user, exists := c.Get("user")
 	if !exists {

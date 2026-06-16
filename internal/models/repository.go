@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Repository represents a git repository mirror configuration
+// Repository represents a git repository mirror configuration.
 type Repository struct {
 	ID                   uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`
 	Name                 string     `gorm:"size:255;not null" json:"name"`
@@ -35,7 +35,7 @@ type Repository struct {
 	CloneJobs     []CloneJob `gorm:"foreignKey:RepositoryID" json:"-"`
 }
 
-// TableName specifies the table name for the Repository model
+// TableName specifies the table name for the Repository model.
 func (Repository) TableName() string {
 	return "repositories"
 }

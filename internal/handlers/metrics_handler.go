@@ -5,21 +5,22 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// MetricsHandler handles Prometheus metrics requests
+// MetricsHandler handles Prometheus metrics requests.
 type MetricsHandler struct {
 	registry *prometheus.Registry
 }
 
-// NewMetricsHandler creates a new metrics handler with registered metrics
+// NewMetricsHandler creates a new metrics handler with registered metrics.
 func NewMetricsHandler() *MetricsHandler {
 	registry := prometheus.NewRegistry()
 
 	// Register standard Go metrics
-	registry.MustRegister(prometheus.NewGoCollector())
-	registry.MustRegister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+	registry.MustRegister(collectors.NewGoCollector())
+	registry.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 
 	// Register custom application metrics
 	registerCustomMetrics(registry)
@@ -29,12 +30,12 @@ func NewMetricsHandler() *MetricsHandler {
 	}
 }
 
-// GetRegistry returns the Prometheus registry
+// GetRegistry returns the Prometheus registry.
 func (h *MetricsHandler) GetRegistry() *prometheus.Registry {
 	return h.registry
 }
 
-// MetricsHandlerFunc returns a gin handler that serves Prometheus metrics
+// MetricsHandlerFunc returns a gin handler that serves Prometheus metrics.
 func (h *MetricsHandler) MetricsHandlerFunc() gin.HandlerFunc {
 	handler := promhttp.HandlerFor(h.registry, promhttp.HandlerOpts{
 		EnableOpenMetrics: true,
@@ -45,7 +46,7 @@ func (h *MetricsHandler) MetricsHandlerFunc() gin.HandlerFunc {
 	}
 }
 
-// GetMetrics handles GET /metrics
+// GetMetrics handles GET /metrics.
 func (h *MetricsHandler) GetMetrics(c *gin.Context) {
 	handler := promhttp.HandlerFor(h.registry, promhttp.HandlerOpts{
 		EnableOpenMetrics: true,
@@ -53,7 +54,7 @@ func (h *MetricsHandler) GetMetrics(c *gin.Context) {
 	handler.ServeHTTP(c.Writer, c.Request)
 }
 
-// GetGitServerHealth handles GET /api/v1/health/git-servers
+// GetGitServerHealth handles GET /api/v1/health/git-servers.
 func (h *MetricsHandler) GetGitServerHealth(c *gin.Context) {
 	// This endpoint provides health status of configured git servers
 	// In a full implementation, this would check connectivity to GitHub, GitLab, etc.
@@ -75,7 +76,9 @@ func (h *MetricsHandler) GetGitServerHealth(c *gin.Context) {
 	})
 }
 
-// Custom Prometheus metrics
+// Custom Prometheus metrics.
+//
+//nolint:gochecknoglobals
 var (
 	HTTPRequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -119,7 +122,7 @@ var (
 
 	RepositoriesTotal = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "gitduppy_repositories_total",
+			Name: "gitduppy_repositories",
 			Help: "Total number of repositories by status",
 		},
 		[]string{"status"},

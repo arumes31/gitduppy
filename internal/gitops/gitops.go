@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,19 +21,19 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 )
 
-// GitOperations handles git operations
+// GitOperations handles git operations.
 type GitOperations struct {
 	BasePath string
 }
 
-// NewGitOperations creates a new git operations instance
+// NewGitOperations creates a new git operations instance.
 func NewGitOperations(basePath string) *GitOperations {
 	return &GitOperations{
 		BasePath: basePath,
 	}
 }
 
-// CloneOptions holds options for cloning a repository
+// CloneOptions holds options for cloning a repository.
 type CloneOptions struct {
 	URL      string
 	Path     string
@@ -46,10 +47,10 @@ type CloneOptions struct {
 	Token    string
 }
 
-// CloneRepository clones a git repository
+// CloneRepository clones a git repository.
 func (g *GitOperations) CloneRepository(ctx context.Context, opts *CloneOptions) error {
 	// Create target directory
-	if err := os.MkdirAll(filepath.Dir(opts.Path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(opts.Path), 0o750); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -92,7 +93,7 @@ func (g *GitOperations) CloneRepository(ctx context.Context, opts *CloneOptions)
 	return nil
 }
 
-// FetchRepository fetches updates for a repository
+// FetchRepository fetches updates for a repository.
 func (g *GitOperations) FetchRepository(ctx context.Context, opts *CloneOptions) error {
 	repo, err := git.PlainOpen(opts.Path)
 	if err != nil {
@@ -115,7 +116,7 @@ func (g *GitOperations) FetchRepository(ctx context.Context, opts *CloneOptions)
 	// Perform fetch
 	if err := repo.FetchContext(ctx, fetchOpts); err != nil {
 		// Ignore "already up-to-date" errors
-		if err != git.NoErrAlreadyUpToDate {
+		if !errors.Is(err, git.NoErrAlreadyUpToDate) {
 			return err
 		}
 	}
@@ -130,28 +131,31 @@ func (g *GitOperations) FetchRepository(ctx context.Context, opts *CloneOptions)
 	return nil
 }
 
-// runLFSInstall installs Git LFS hooks in the repository
+// runLFSInstall installs Git LFS hooks in the repository.
 func (g *GitOperations) runLFSInstall(ctx context.Context, path string) error {
+	// #nosec G204
 	cmd := exec.CommandContext(ctx, GetGitExecutable(), "lfs", "install")
 	cmd.Dir = path
 	return cmd.Run()
 }
 
-// runLFSPull pulls Git LFS objects
+// runLFSPull pulls Git LFS objects.
 func (g *GitOperations) runLFSPull(ctx context.Context, path string) error {
+	// #nosec G204
 	cmd := exec.CommandContext(ctx, GetGitExecutable(), "lfs", "pull")
 	cmd.Dir = path
 	return cmd.Run()
 }
 
-// runLFSFetch fetches Git LFS objects
+// runLFSFetch fetches Git LFS objects.
 func (g *GitOperations) runLFSFetch(ctx context.Context, path string) error {
+	// #nosec G204
 	cmd := exec.CommandContext(ctx, GetGitExecutable(), "lfs", "fetch")
 	cmd.Dir = path
 	return cmd.Run()
 }
 
-// PushRepository pushes changes to a repository
+// PushRepository pushes changes to a repository.
 func (g *GitOperations) PushRepository(ctx context.Context, opts *CloneOptions) error {
 	repo, err := git.PlainOpen(opts.Path)
 	if err != nil {
@@ -175,7 +179,7 @@ func (g *GitOperations) PushRepository(ctx context.Context, opts *CloneOptions) 
 	return repo.PushContext(ctx, pushOpts)
 }
 
-// buildAuth builds authentication for git operations
+// buildAuth builds authentication for git operations.
 func (g *GitOperations) buildAuth(opts *CloneOptions) (transport.AuthMethod, error) {
 	// SSH key authentication
 	if opts.SSHKey != "" {
@@ -198,33 +202,33 @@ func (g *GitOperations) buildAuth(opts *CloneOptions) (transport.AuthMethod, err
 		}, nil
 	}
 
-	return nil, nil
+	return nil, nil //nolint:nilnil
 }
 
-// SetupSSHKey writes an SSH key to a temporary file with proper permissions
+// SetupSSHKey writes an SSH key to a temporary file with proper permissions.
 func (g *GitOperations) SetupSSHKey(keyContent string) (string, error) {
 	// Create temp directory if needed
 	sshDir := filepath.Join(g.BasePath, "ssh")
-	if err := os.MkdirAll(sshDir, 0700); err != nil {
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
 		return "", err
 	}
 
 	// Write key to file
 	keyPath := filepath.Join(sshDir, fmt.Sprintf("key_%d", time.Now().UnixNano()))
-	if err := os.WriteFile(keyPath, []byte(keyContent), 0600); err != nil {
+	if err := os.WriteFile(keyPath, []byte(keyContent), 0o600); err != nil {
 		return "", err
 	}
 
 	return keyPath, nil
 }
 
-// CleanupSSHKey removes an SSH key file
+// CleanupSSHKey removes an SSH key file.
 func (g *GitOperations) CleanupSSHKey(path string) error {
 	return os.Remove(path)
 }
 
-// GetRepoStatus checks if a path is a valid git repository
-func (g *GitOperations) GetRepoStatus(ctx context.Context, path string) (bool, error) {
+// GetRepoStatus checks if a path is a valid git repository.
+func (g *GitOperations) GetRepoStatus(_ context.Context, path string) (bool, error) {
 	_, err := git.PlainOpen(path)
 	if err != nil {
 		return false, err
@@ -232,8 +236,8 @@ func (g *GitOperations) GetRepoStatus(ctx context.Context, path string) (bool, e
 	return true, nil
 }
 
-// ValidateRepoURL validates a git repository URL
-func (g *GitOperations) ValidateRepoURL(ctx context.Context, url string) bool {
+// ValidateRepoURL validates a git repository URL.
+func (g *GitOperations) ValidateRepoURL(_ context.Context, url string) bool {
 	url = strings.TrimSpace(url)
 
 	// Check SSH format: git@github.com:user/repo.git
@@ -250,14 +254,10 @@ func (g *GitOperations) ValidateRepoURL(ctx context.Context, url string) bool {
 
 	// Check git:// format
 	gitPattern := regexp.MustCompile(`^git://[\w.-]+[\/\w.-]+\.git$`)
-	if gitPattern.MatchString(url) {
-		return true
-	}
-
-	return false
+	return gitPattern.MatchString(url)
 }
 
-// GetRemoteURL gets the remote URL of a repository
+// GetRemoteURL gets the remote URL of a repository.
 func (g *GitOperations) GetRemoteURL(path string) (string, error) {
 	repo, err := git.PlainOpen(path)
 	if err != nil {
@@ -276,7 +276,7 @@ func (g *GitOperations) GetRemoteURL(path string) (string, error) {
 	return remote.Config().URLs[0], nil
 }
 
-// GetCurrentBranch gets the current branch of a repository
+// GetCurrentBranch gets the current branch of a repository.
 func (g *GitOperations) GetCurrentBranch(path string) (string, error) {
 	repo, err := git.PlainOpen(path)
 	if err != nil {
@@ -291,7 +291,7 @@ func (g *GitOperations) GetCurrentBranch(path string) (string, error) {
 	return head.Name().Short(), nil
 }
 
-// GetLastCommit gets the last commit hash of a repository
+// GetLastCommit gets the last commit hash of a repository.
 func (g *GitOperations) GetLastCommit(path string) (string, error) {
 	repo, err := git.PlainOpen(path)
 	if err != nil {
@@ -306,7 +306,7 @@ func (g *GitOperations) GetLastCommit(path string) (string, error) {
 	return head.Hash().String(), nil
 }
 
-// ListRemotes lists all remotes of a repository
+// ListRemotes lists all remotes of a repository.
 func (g *GitOperations) ListRemotes(path string) ([]*config.RemoteConfig, error) {
 	repo, err := git.PlainOpen(path)
 	if err != nil {
@@ -326,7 +326,7 @@ func (g *GitOperations) ListRemotes(path string) ([]*config.RemoteConfig, error)
 	return remoteConfigs, nil
 }
 
-// IsRepositoryCloned checks if a repository is already cloned at the given path
+// IsRepositoryCloned checks if a repository is already cloned at the given path.
 func (g *GitOperations) IsRepositoryCloned(path string) bool {
 	gitDir := filepath.Join(path, ".git")
 	if _, err := os.Stat(gitDir); err == nil {
@@ -341,7 +341,7 @@ func (g *GitOperations) IsRepositoryCloned(path string) bool {
 	return false
 }
 
-// GetGitExecutable returns the path to the git executable
+// GetGitExecutable returns the path to the git executable.
 func GetGitExecutable() string {
 	if runtime.GOOS == "windows" {
 		// Try common git installation paths on Windows
@@ -360,8 +360,9 @@ func GetGitExecutable() string {
 	return "git"
 }
 
-// RunGitCommand runs a git command and returns the output
+// RunGitCommand runs a git command and returns the output.
 func RunGitCommand(ctx context.Context, dir string, args ...string) (string, error) {
+	// #nosec G204
 	cmd := exec.CommandContext(ctx, GetGitExecutable(), args...)
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()

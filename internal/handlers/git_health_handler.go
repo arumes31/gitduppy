@@ -8,19 +8,19 @@ import (
 	"github.com/gitduppy/gitduppy/pkg/response"
 )
 
-// GitHealthHandler handles git server health check requests
+// GitHealthHandler handles git server health check requests.
 type GitHealthHandler struct {
 	healthService *services.HealthService
 }
 
-// NewGitHealthHandler creates a new git health handler
+// NewGitHealthHandler creates a new git health handler.
 func NewGitHealthHandler(healthService *services.HealthService) *GitHealthHandler {
 	return &GitHealthHandler{
 		healthService: healthService,
 	}
 }
 
-// GetGitServerHealth handles GET /api/v1/health/git-servers
+// GetGitServerHealth handles GET /api/v1/health/git-servers.
 func (h *GitHealthHandler) GetGitServerHealth(c *gin.Context) {
 	healthChecks, err := h.healthService.GetLatestHealthChecks(c)
 	if err != nil {

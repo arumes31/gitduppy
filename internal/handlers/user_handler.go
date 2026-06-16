@@ -9,19 +9,19 @@ import (
 	"github.com/google/uuid"
 )
 
-// UserHandler handles user management requests
+// UserHandler handles user management requests.
 type UserHandler struct {
 	userService *services.UserService
 }
 
-// NewUserHandler creates a new user handler
+// NewUserHandler creates a new user handler.
 func NewUserHandler(userService *services.UserService) *UserHandler {
 	return &UserHandler{
 		userService: userService,
 	}
 }
 
-// ListUsers handles GET /api/v1/users
+// ListUsers handles GET /api/v1/users.
 func (h *UserHandler) ListUsers(c *gin.Context) {
 	filter := &services.UserFilter{
 		Page:    1,
@@ -65,7 +65,7 @@ func (h *UserHandler) ListUsers(c *gin.Context) {
 	})
 }
 
-// GetUser handles GET /api/v1/users/:id
+// GetUser handles GET /api/v1/users/:id.
 func (h *UserHandler) GetUser(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -82,7 +82,7 @@ func (h *UserHandler) GetUser(c *gin.Context) {
 	response.Success(c, user)
 }
 
-// CreateUser handles POST /api/v1/users
+// CreateUser handles POST /api/v1/users.
 func (h *UserHandler) CreateUser(c *gin.Context) {
 	var req services.CreateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -104,7 +104,7 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 	response.Created(c, user)
 }
 
-// UpdateUser handles PUT /api/v1/users/:id
+// UpdateUser handles PUT /api/v1/users/:id.
 func (h *UserHandler) UpdateUser(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -113,8 +113,8 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 	}
 
 	var req services.UpdateUserRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "INVALID_REQUEST", err.Error())
+	if bindErr := c.ShouldBindJSON(&req); bindErr != nil {
+		response.BadRequest(c, "INVALID_REQUEST", bindErr.Error())
 		return
 	}
 
@@ -127,7 +127,7 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 	response.Success(c, user)
 }
 
-// DeleteUser handles DELETE /api/v1/users/:id
+// DeleteUser handles DELETE /api/v1/users/:id.
 func (h *UserHandler) DeleteUser(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -143,7 +143,7 @@ func (h *UserHandler) DeleteUser(c *gin.Context) {
 	response.SuccessWithMessage(c, "User deleted successfully", nil)
 }
 
-// SetUserStatus handles PATCH /api/v1/users/:id/status
+// SetUserStatus handles PATCH /api/v1/users/:id/status.
 func (h *UserHandler) SetUserStatus(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -167,7 +167,7 @@ func (h *UserHandler) SetUserStatus(c *gin.Context) {
 	response.SuccessWithMessage(c, "User status updated", nil)
 }
 
-// GetCurrentUser handles GET /api/v1/users/me
+// GetCurrentUser handles GET /api/v1/users/me.
 func (h *UserHandler) GetCurrentUser(c *gin.Context) {
 	user, ok := middleware.GetCurrentUser(c)
 	if !ok {

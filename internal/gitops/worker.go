@@ -15,7 +15,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// WorkerConfig holds configuration for the clone worker
+// WorkerConfig holds configuration for the clone worker.
 type WorkerConfig struct {
 	MaxConcurrent    int
 	CloneTimeout     int
@@ -23,7 +23,7 @@ type WorkerConfig struct {
 	RetryBaseDelay   time.Duration
 }
 
-// DefaultWorkerConfig returns default worker configuration
+// DefaultWorkerConfig returns default worker configuration.
 func DefaultWorkerConfig() *WorkerConfig {
 	return &WorkerConfig{
 		MaxConcurrent:    3,
@@ -33,7 +33,7 @@ func DefaultWorkerConfig() *WorkerConfig {
 	}
 }
 
-// CloneWorker handles background clone operations
+// CloneWorker handles background clone operations.
 type CloneWorker struct {
 	config        *WorkerConfig
 	gitOps        *GitOperations
@@ -48,17 +48,17 @@ type CloneWorker struct {
 	logger        *zap.Logger
 }
 
-// WebhookSender interface for sending webhook events
+// WebhookSender interface for sending webhook events.
 type WebhookSender interface {
 	SendEvent(ctx context.Context, eventType string, payload map[string]interface{}) error
 }
 
-// EmailSender interface for sending email notifications
+// EmailSender interface for sending email notifications.
 type EmailSender interface {
 	SendCloneFailureNotification(ctx context.Context, repo *models.Repository, job *models.CloneJob, err error) error
 }
 
-// NewCloneWorker creates a new clone worker
+// NewCloneWorker creates a new clone worker.
 func NewCloneWorker(config *WorkerConfig, gitOps *GitOperations, encryption *crypto.EncryptionService) *CloneWorker {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &CloneWorker{
@@ -73,13 +73,13 @@ func NewCloneWorker(config *WorkerConfig, gitOps *GitOperations, encryption *cry
 	}
 }
 
-// SetNotificationServices sets the webhook and email notification services
+// SetNotificationServices sets the webhook and email notification services.
 func (w *CloneWorker) SetNotificationServices(webhookSender WebhookSender, emailSender EmailSender) {
 	w.webhookSender = webhookSender
 	w.emailSender = emailSender
 }
 
-// Start starts the worker pool
+// Start starts the worker pool.
 func (w *CloneWorker) Start() {
 	w.logger.Info("starting clone worker pool", zap.Int("workers", w.config.MaxConcurrent))
 
@@ -90,7 +90,7 @@ func (w *CloneWorker) Start() {
 	}
 }
 
-// Stop stops the worker pool
+// Stop stops the worker pool.
 func (w *CloneWorker) Stop() {
 	w.logger.Info("stopping clone worker pool")
 	w.cancel()
@@ -98,7 +98,7 @@ func (w *CloneWorker) Stop() {
 	close(w.jobQueue)
 }
 
-// Enqueue adds a job to the queue
+// Enqueue adds a job to the queue.
 func (w *CloneWorker) Enqueue(job *models.CloneJob) {
 	select {
 	case w.jobQueue <- job:
@@ -108,7 +108,7 @@ func (w *CloneWorker) Enqueue(job *models.CloneJob) {
 	}
 }
 
-// worker is a goroutine that processes clone jobs
+// worker is a goroutine that processes clone jobs.
 func (w *CloneWorker) worker(id int) {
 	defer w.wg.Done()
 	logger := w.logger.With(zap.Int("worker_id", id))
@@ -128,7 +128,7 @@ func (w *CloneWorker) worker(id int) {
 	}
 }
 
-// processJob processes a single clone job
+// processJob processes a single clone job.
 func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 	logger.Info("processing clone job", zap.String("job_id", job.ID.String()))
 
@@ -204,7 +204,7 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 
 		// Send webhook event for clone failure
 		if w.webhookSender != nil {
-			w.webhookSender.SendEvent(w.ctx, "clone.failed", map[string]interface{}{
+			_ = w.webhookSender.SendEvent(w.ctx, "clone.failed", map[string]interface{}{
 				"repository_id":   repo.ID.String(),
 				"repository_name": repo.Name,
 				"job_id":          job.ID.String(),
@@ -216,7 +216,7 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 
 		// Send email notification for clone failure
 		if w.emailSender != nil {
-			w.emailSender.SendCloneFailureNotification(w.ctx, &repo, job, err)
+			_ = w.emailSender.SendCloneFailureNotification(w.ctx, &repo, job, err)
 		}
 
 		return
@@ -240,7 +240,7 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 
 	// Send webhook event for clone success
 	if w.webhookSender != nil {
-		w.webhookSender.SendEvent(w.ctx, "clone.success", map[string]interface{}{
+		_ = w.webhookSender.SendEvent(w.ctx, "clone.success", map[string]interface{}{
 			"repository_id":   repo.ID.String(),
 			"repository_name": repo.Name,
 			"job_id":          job.ID.String(),
@@ -252,7 +252,7 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 	logger.Info("clone job completed successfully", zap.String("job_id", job.ID.String()))
 }
 
-// failJob marks a job as failed
+// failJob marks a job as failed.
 func (w *CloneWorker) failJob(logger *zap.Logger, job *models.CloneJob, errMsg string) {
 	logger.Error("job failed", zap.String("job_id", job.ID.String()), zap.String("error", errMsg))
 
@@ -268,8 +268,9 @@ func (w *CloneWorker) failJob(logger *zap.Logger, job *models.CloneJob, errMsg s
 	})
 }
 
-// handleFailure handles job failure with retry logic
-func (w *CloneWorker) handleFailure(logger *zap.Logger, repo models.Repository, job *models.CloneJob, err error) {
+// handleFailure handles job failure with retry logic.
+func (w *CloneWorker) handleFailure(logger *zap.Logger, repo models.Repository, job *models.CloneJob, _ error) {
+	_ = job // unused but kept for compatibility or just rename it. Actually I'll just rename to _ in signature if possible or just use it.
 	// Increment retry count
 	var repoData models.Repository
 	w.db.First(&repoData, repo.ID)
@@ -294,20 +295,21 @@ func (w *CloneWorker) handleFailure(logger *zap.Logger, repo models.Repository, 
 	}
 }
 
-// CloneProgress implements git.Progress interface
+// CloneProgress implements git.Progress interface.
 type CloneProgress struct {
 	jobID uuid.UUID
 	db    *gorm.DB
 }
 
-// Write implements the Write method for progress tracking
+// Write implements the Write method for progress tracking.
 func (p *CloneProgress) Write(b []byte) (n int, err error) {
 	message := string(b)
 	p.db.Model(&models.CloneJob{}).Where("id = ?", p.jobID).Update("output_log", message)
+
 	return len(b), nil
 }
 
-// Scheduler handles scheduled clone jobs
+// Scheduler handles scheduled clone jobs.
 type Scheduler struct {
 	db     *gorm.DB
 	worker *CloneWorker
@@ -316,7 +318,7 @@ type Scheduler struct {
 	logger *zap.Logger
 }
 
-// NewScheduler creates a new scheduler
+// NewScheduler creates a new scheduler.
 func NewScheduler(worker *CloneWorker) *Scheduler {
 	return &Scheduler{
 		db:     database.GetDB(),
@@ -327,20 +329,20 @@ func NewScheduler(worker *CloneWorker) *Scheduler {
 	}
 }
 
-// Start starts the scheduler
+// Start starts the scheduler.
 func (s *Scheduler) Start() {
 	s.logger.Info("starting scheduler")
 	go s.run()
 }
 
-// Stop stops the scheduler
+// Stop stops the scheduler.
 func (s *Scheduler) Stop() {
 	s.logger.Info("stopping scheduler")
 	s.ticker.Stop()
 	s.done <- true
 }
 
-// run is the main scheduler loop
+// run is the main scheduler loop.
 func (s *Scheduler) run() {
 	for {
 		select {
@@ -352,7 +354,7 @@ func (s *Scheduler) run() {
 	}
 }
 
-// scheduleCloneJobs schedules clone jobs for all active repositories
+// scheduleCloneJobs schedules clone jobs for all active repositories.
 func (s *Scheduler) scheduleCloneJobs() {
 	s.logger.Debug("checking for repositories to clone")
 
@@ -367,6 +369,7 @@ func (s *Scheduler) scheduleCloneJobs() {
 		// Check if clone interval has elapsed
 		if repo.LastCloneAt == nil ||
 			now.Sub(*repo.LastCloneAt) >= time.Duration(repo.CloneIntervalMinutes)*time.Minute {
+
 			job := &models.CloneJob{
 				ID:           uuid.New(),
 				RepositoryID: repo.ID,

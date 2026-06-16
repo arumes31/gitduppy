@@ -7,19 +7,19 @@ import (
 	"github.com/gitduppy/gitduppy/pkg/response"
 )
 
-// ConfigHandler handles configuration API requests
+// ConfigHandler handles configuration API requests.
 type ConfigHandler struct {
 	configService *services.ConfigService
 }
 
-// NewConfigHandler creates a new config handler
+// NewConfigHandler creates a new config handler.
 func NewConfigHandler(configService *services.ConfigService) *ConfigHandler {
 	return &ConfigHandler{
 		configService: configService,
 	}
 }
 
-// GetConfig handles GET /api/v1/config
+// GetConfig handles GET /api/v1/config.
 func (h *ConfigHandler) GetConfig(c *gin.Context) {
 	user, ok := middleware.GetCurrentUser(c)
 	if !ok || !user.IsAdmin() {
@@ -31,7 +31,7 @@ func (h *ConfigHandler) GetConfig(c *gin.Context) {
 	response.Success(c, cfg)
 }
 
-// UpdateConfig handles PUT /api/v1/config
+// UpdateConfig handles PUT /api/v1/config.
 func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 	user, ok := middleware.GetCurrentUser(c)
 	if !ok || !user.IsAdmin() {

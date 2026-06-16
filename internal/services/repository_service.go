@@ -12,13 +12,13 @@ import (
 	"gorm.io/gorm"
 )
 
-// RepositoryService handles repository CRUD operations
+// RepositoryService handles repository CRUD operations.
 type RepositoryService struct {
 	db                *gorm.DB
 	encryptionService *crypto.EncryptionService
 }
 
-// NewRepositoryService creates a new repository service
+// NewRepositoryService creates a new repository service.
 func NewRepositoryService(encryptionService *crypto.EncryptionService) *RepositoryService {
 	return &RepositoryService{
 		db:                database.GetDB(),
@@ -26,7 +26,7 @@ func NewRepositoryService(encryptionService *crypto.EncryptionService) *Reposito
 	}
 }
 
-// RepositoryFilter represents filters for listing repositories
+// RepositoryFilter represents filters for listing repositories.
 type RepositoryFilter struct {
 	Status   *string
 	Tag      *string
@@ -37,8 +37,8 @@ type RepositoryFilter struct {
 	Sort     string
 }
 
-// ListRepositories returns a paginated list of repositories
-func (s *RepositoryService) ListRepositories(ctx context.Context, filter *RepositoryFilter) ([]models.Repository, int64, error) {
+// ListRepositories returns a paginated list of repositories.
+func (s *RepositoryService) ListRepositories(_ context.Context, filter *RepositoryFilter) ([]models.Repository, int64, error) {
 	if filter == nil {
 		filter = &RepositoryFilter{Page: 1, PerPage: 20}
 	}
@@ -92,8 +92,8 @@ func (s *RepositoryService) ListRepositories(ctx context.Context, filter *Reposi
 	return repos, total, err
 }
 
-// GetRepositoryByID retrieves a repository by ID
-func (s *RepositoryService) GetRepositoryByID(ctx context.Context, id uuid.UUID) (*models.Repository, error) {
+// GetRepositoryByID retrieves a repository by ID.
+func (s *RepositoryService) GetRepositoryByID(_ context.Context, id uuid.UUID) (*models.Repository, error) {
 	var repo models.Repository
 	if err := s.db.Preload("Tags").Preload("CreatedByUser").First(&repo, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -104,7 +104,7 @@ func (s *RepositoryService) GetRepositoryByID(ctx context.Context, id uuid.UUID)
 	return &repo, nil
 }
 
-// CreateRepositoryRequest represents a create repository request
+// CreateRepositoryRequest represents a create repository request.
 type CreateRepositoryRequest struct {
 	Name                 string                     `json:"name" validate:"required"`
 	URL                  string                     `json:"url" validate:"required"`
@@ -119,8 +119,8 @@ type CreateRepositoryRequest struct {
 	TagIDs               []uuid.UUID                `json:"tag_ids,omitempty"`
 }
 
-// CreateRepository creates a new repository
-func (s *RepositoryService) CreateRepository(ctx context.Context, req *CreateRepositoryRequest, createdBy uuid.UUID) (*models.Repository, error) {
+// CreateRepository creates a new repository.
+func (s *RepositoryService) CreateRepository(_ context.Context, req *CreateRepositoryRequest, createdBy uuid.UUID) (*models.Repository, error) {
 	// Encrypt credentials if provided
 	var encryptedCredentials string
 	if req.Credentials != nil {
@@ -166,7 +166,7 @@ func (s *RepositoryService) CreateRepository(ctx context.Context, req *CreateRep
 	return repo, nil
 }
 
-// UpdateRepositoryRequest represents an update repository request
+// UpdateRepositoryRequest represents an update repository request.
 type UpdateRepositoryRequest struct {
 	Name                 *string                    `json:"name,omitempty"`
 	URL                  *string                    `json:"url,omitempty"`
@@ -182,50 +182,15 @@ type UpdateRepositoryRequest struct {
 	TagIDs               []uuid.UUID                `json:"tag_ids,omitempty"`
 }
 
-// UpdateRepository updates a repository
+// UpdateRepository updates a repository.
 func (s *RepositoryService) UpdateRepository(ctx context.Context, id uuid.UUID, req *UpdateRepositoryRequest) (*models.Repository, error) {
 	repo, err := s.GetRepositoryByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 
-	// Update fields if provided
-	if req.Name != nil {
-		repo.Name = *req.Name
-	}
-	if req.URL != nil {
-		repo.URL = *req.URL
-	}
-	if req.Branch != nil {
-		repo.Branch = *req.Branch
-	}
-	if req.AuthType != nil {
-		repo.AuthType = *req.AuthType
-	}
-	if req.Credentials != nil {
-		encrypted, err := s.encryptionService.Encrypt(*req.Credentials)
-		if err != nil {
-			return nil, err
-		}
-		repo.EncryptedCredentials = encrypted
-	}
-	if req.StoragePath != nil {
-		repo.StoragePath = *req.StoragePath
-	}
-	if req.IsBare != nil {
-		repo.IsBare = *req.IsBare
-	}
-	if req.LFSEnabled != nil {
-		repo.LFSEnabled = *req.LFSEnabled
-	}
-	if req.IsActive != nil {
-		repo.IsActive = *req.IsActive
-	}
-	if req.CloneIntervalMinutes != nil {
-		repo.CloneIntervalMinutes = *req.CloneIntervalMinutes
-	}
-	if req.Description != nil {
-		repo.Description = req.Description
+	if err := s.applyUpdateFields(repo, req); err != nil {
+		return nil, err
 	}
 
 	repo.UpdatedAt = time.Now()
@@ -247,8 +212,49 @@ func (s *RepositoryService) UpdateRepository(ctx context.Context, id uuid.UUID, 
 	return repo, nil
 }
 
-// DeleteRepository deletes a repository
-func (s *RepositoryService) DeleteRepository(ctx context.Context, id uuid.UUID) error {
+func (s *RepositoryService) applyUpdateFields(repo *models.Repository, req *UpdateRepositoryRequest) error {
+	if req.Name != nil {
+		repo.Name = *req.Name
+	}
+	if req.URL != nil {
+		repo.URL = *req.URL
+	}
+	if req.Branch != nil {
+		repo.Branch = *req.Branch
+	}
+	if req.AuthType != nil {
+		repo.AuthType = *req.AuthType
+	}
+	if req.Credentials != nil {
+		encrypted, err := s.encryptionService.Encrypt(*req.Credentials)
+		if err != nil {
+			return err
+		}
+		repo.EncryptedCredentials = encrypted
+	}
+	if req.StoragePath != nil {
+		repo.StoragePath = *req.StoragePath
+	}
+	if req.IsBare != nil {
+		repo.IsBare = *req.IsBare
+	}
+	if req.LFSEnabled != nil {
+		repo.LFSEnabled = *req.LFSEnabled
+	}
+	if req.IsActive != nil {
+		repo.IsActive = *req.IsActive
+	}
+	if req.CloneIntervalMinutes != nil {
+		repo.CloneIntervalMinutes = *req.CloneIntervalMinutes
+	}
+	if req.Description != nil {
+		repo.Description = req.Description
+	}
+	return nil
+}
+
+// DeleteRepository deletes a repository.
+func (s *RepositoryService) DeleteRepository(_ context.Context, id uuid.UUID) error {
 	result := s.db.Delete(&models.Repository{}, id)
 	if result.Error != nil {
 		return result.Error
@@ -259,13 +265,13 @@ func (s *RepositoryService) DeleteRepository(ctx context.Context, id uuid.UUID) 
 	return nil
 }
 
-// SetRepositoryStatus enables or disables a repository
-func (s *RepositoryService) SetRepositoryStatus(ctx context.Context, id uuid.UUID, isActive bool) error {
+// SetRepositoryStatus enables or disables a repository.
+func (s *RepositoryService) SetRepositoryStatus(_ context.Context, id uuid.UUID, isActive bool) error {
 	return s.db.Model(&models.Repository{}).Where("id = ?", id).Update("is_active", isActive).Error
 }
 
-// GetDecryptedCredentials returns the decrypted credentials for a repository
-func (s *RepositoryService) GetDecryptedCredentials(ctx context.Context, repoID uuid.UUID) (*crypto.CredentialsPayload, error) {
+// GetDecryptedCredentials returns the decrypted credentials for a repository.
+func (s *RepositoryService) GetDecryptedCredentials(_ context.Context, repoID uuid.UUID) (*crypto.CredentialsPayload, error) {
 	var repo models.Repository
 	if err := s.db.First(&repo, repoID).Error; err != nil {
 		return nil, err

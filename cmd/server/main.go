@@ -268,7 +268,7 @@ func setupRouter(
 	router.Use(middleware.GinLogger())
 	router.Use(middleware.CORS(corsConfig))
 	router.Use(rateLimiter.Middleware())
-	router.Use(middleware.SecurityHeaders())
+	router.Use(middleware.SecurityHeaders(cfg))
 
 	// Prometheus metrics endpoint (no auth required)
 	if cfg.Monitoring.MetricsEnabled {

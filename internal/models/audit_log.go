@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// AuditLog represents an audit log entry for tracking user actions
+// AuditLog represents an audit log entry for tracking user actions.
 type AuditLog struct {
 	ID           uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`
 	UserID       *uuid.UUID `gorm:"type:uuid;index" json:"user_id,omitempty"`
@@ -22,7 +22,7 @@ type AuditLog struct {
 	Repository *Repository `gorm:"foreignKey:RepositoryID" json:"repository,omitempty"`
 }
 
-// TableName specifies the table name for the AuditLog model
+// TableName specifies the table name for the AuditLog model.
 func (AuditLog) TableName() string {
 	return "audit_logs"
 }
