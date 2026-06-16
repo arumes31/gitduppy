@@ -1,8 +1,18 @@
 # GitDuppy
 
-GitDuppy is a modern, secure Git repository mirroring and management platform designed for enterprise environments. It provides automated repository synchronization, access control, audit logging, and webhook integrations while maintaining security and compliance standards.
+![GitDuppy Logo](static/images/logo.png)
+
+[![Go Version](https://img.shields.io/badge/go-1.25.0-blue)](https://go.dev)
+[![CI/CD](https://github.com/gitduppy/gitduppy/actions/workflows/ci.yml/badge.svg)](https://github.com/gitduppy/gitduppy/actions)
+[![Code Quality](https://img.shields.io/badge/golangci--lint-passing-brightgreen)](https://golangci-lint.run/)
+[![Security Scans](https://img.shields.io/badge/gosec-passing-brightgreen)](https://github.com/securego/gosec)
+[![Secret Scanning](https://img.shields.io/badge/gitleaks-passing-brightgreen)](https://gitleaks.io/)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+A modern, secure Git repository mirroring and management platform designed for enterprise environments. GitDuppy provides automated repository synchronization, access control, audit logging, and webhook integrations while maintaining security and compliance standards.
 
 ## Features
+
 - Automated Git repository mirroring with configurable schedules
 - Role-based access control (RBAC) with fine-grained permissions
 - Comprehensive audit logging for all operations
@@ -22,8 +32,8 @@ The easiest way to get started is using Docker Compose:
 git clone https://github.com/yourorg/gitduppy.git
 cd gitduppy
 
-# Copy the example environment file
-cp .env.example .env
+# Copy the example configuration file
+cp config.example.yaml config.yaml
 
 # Start the services
 docker-compose up -d
@@ -43,44 +53,33 @@ GitDuppy can be configured via environment variables or a YAML configuration fil
 - `ADMIN_EMAIL`: Initial admin user email (required on first run)
 
 ### Configuration File
-Create a `config.yaml` file in the root directory or specify its path with `CONFIG_FILE` environment variable.
+Reference the provided `config.example.yaml` file for complete configuration options. Create a `config.yaml` file in the root directory or specify its path with `CONFIG_FILE` environment variable.
 
-## API Documentation
+## Usage
 
-Key endpoints:
-
-### Authentication
-```bash
-# Get JWT token
-curl -X POST http://localhost:8080/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email": "admin@example.com", "password": "yourpassword"}'
-```
-
-### Repository Management
-```bash
-# List repositories
-curl -X GET http://localhost:8080/api/v1/repositories \
-  -H "Authorization: Bearer <your-token>"
-```
-
-## Security Considerations
-
-- Always use HTTPS in production
-- Store encryption keys securely (never in version control)
-- Regularly rotate JWT secrets and encryption keys
-- Enable audit logging for compliance
-- Use strong passwords and enable 2FA for admin accounts
-
-## Production Deployment
-
-For production, use the provided `docker-compose.prod.yml`:
+Build and run the server binary:
 
 ```bash
-docker-compose -f docker-compose.prod.yml up -d
+go build -o gitduppy cmd/server/main.go
+./gitduppy
 ```
 
-This includes Caddy as a reverse proxy with automatic HTTPS.
+## API Reference
+
+See the full API documentation in [docs/api-reference.md](docs/api-reference.md).
+
+## Deployment
+
+For production deployments, use the provided Docker Compose files:
+
+- **Development**: `docker-compose.yml`
+- **Production**: `docker-compose.prod.yml` with Caddy reverse proxy
+
+The Caddy configuration is located at [deployments/caddy/Caddyfile](deployments/caddy/Caddyfile).
+
+## Security
+
+For comprehensive security guidelines, see [docs/security.md](docs/security.md).
 
 ## Contributing
 

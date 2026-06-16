@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go-version: ['1.21', '1.22', 'latest']
+        go-version: ['1.21', '1.22', '1.26.4']
 
     steps:
       - name: Checkout code
