@@ -1,8 +1,8 @@
 # GitDuppy
 
-![GitDuppy Logo](static/images/logo.png)
+<p align="center"><img src="static/images/logo.png" width="300" alt="GitDuppy Logo"></p>
 
-[![Go Version](https://img.shields.io/badge/go-1.25.0-blue)](https://go.dev)
+[![Go Version](https://img.shields.io/badge/go-1.26.4-blue)](https://go.dev)
 [![CI/CD](https://github.com/gitduppy/gitduppy/actions/workflows/ci.yml/badge.svg)](https://github.com/gitduppy/gitduppy/actions)
 [![Code Quality](https://img.shields.io/badge/golangci--lint-passing-brightgreen)](https://golangci-lint.run/)
 [![Security Scans](https://img.shields.io/badge/gosec-passing-brightgreen)](https://github.com/securego/gosec)
