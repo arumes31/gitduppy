@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>{{.AppName}} - Clone Failure</title>
+</head>
+<body>
+    <h2>Clone Failure Notification</h2>
+    <p>A repository clone has failed.</p>
+    <ul>
+        <li><strong>Repository:</strong> {{if .Repository}}{{.Repository.Name}}{{end}}</li>
+        <li><strong>URL:</strong> {{if .Repository}}{{.Repository.URL}}{{end}}</li>
+        <li><strong>Error:</strong> {{.Error}}</li>
+        <li><strong>Time:</strong> {{.Timestamp}}</li>
+    </ul>
+    <p>Please check the repository configuration and try again.</p>
+    <p><a href="{{.BaseURL}}">View Dashboard</a></p>
+</body>
+</html>

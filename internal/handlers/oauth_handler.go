@@ -1,0 +1,232 @@
+package handlers
+
+import (
+	"context"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/gitduppy/gitduppy/internal/middleware"
+	"github.com/gitduppy/gitduppy/internal/models"
+	"github.com/gitduppy/gitduppy/internal/services"
+	"github.com/gitduppy/gitduppy/pkg/response"
+	"github.com/google/uuid"
+	"golang.org/x/oauth2"
+)
+
+// OAuthHandler handles OAuth2/OIDC requests
+type OAuthHandler struct {
+	oauthService *services.OAuthService
+	authService  *services.AuthService
+}
+
+// NewOAuthHandler creates a new OAuth handler
+func NewOAuthHandler(oauthService *services.OAuthService, authService *services.AuthService) *OAuthHandler {
+	return &OAuthHandler{
+		oauthService: oauthService,
+		authService:  authService,
+	}
+}
+
+// LoginWithProvider handles GET /api/v1/oauth/:provider/login
+func (h *OAuthHandler) LoginWithProvider(c *gin.Context) {
+	provider := c.Param("provider")
+	oauthProvider := services.OAuthProvider(provider)
+
+	oauthConfig, err := h.oauthService.GetOAuthConfig(oauthProvider)
+	if err != nil {
+		response.BadRequest(c, "OAUTH_NOT_CONFIGURED", err.Error())
+		return
+	}
+
+	// Generate state parameter to prevent CSRF
+	state := uuid.New().String()
+	c.SetCookie("oauth_state", state, 3600, "/", "", false, true)
+
+	url := oauthConfig.AuthCodeURL(state, oauth2.AccessTypeOffline)
+	c.Redirect(http.StatusFound, url)
+}
+
+// Callback handles GET /api/v1/oauth/:provider/callback
+func (h *OAuthHandler) Callback(c *gin.Context) {
+	provider := c.Param("provider")
+	oauthProvider := services.OAuthProvider(provider)
+
+	// Verify state parameter
+	stateCookie, err := c.Cookie("oauth_state")
+	if err != nil {
+		response.BadRequest(c, "INVALID_STATE", "Invalid or missing state parameter")
+		return
+	}
+	c.SetCookie("oauth_state", "", -1, "/", "", false, true)
+
+	state := c.Query("state")
+	if state != stateCookie {
+		response.BadRequest(c, "INVALID_STATE", "State parameter mismatch")
+		return
+	}
+
+	// Get OAuth config
+	oauthConfig, err := h.oauthService.GetOAuthConfig(oauthProvider)
+	if err != nil {
+		response.BadRequest(c, "OAUTH_NOT_CONFIGURED", err.Error())
+		return
+	}
+
+	// Exchange code for token
+	code := c.Query("code")
+	token, err := oauthConfig.Exchange(context.Background(), code)
+	if err != nil {
+		response.BadRequest(c, "OAUTH_ERROR", "Failed to exchange code for token: "+err.Error())
+		return
+	}
+
+	// Get user email from provider
+	email, err := h.oauthService.GetUserEmailFromProvider(c, oauthProvider, token)
+	if err != nil {
+		response.BadRequest(c, "OAUTH_ERROR", "Failed to get user email: "+err.Error())
+		return
+	}
+
+	// Extract username (use email prefix as fallback)
+	username := email
+	if idx := strings.Index(email, "@"); idx > 0 {
+		username = email[:idx]
+	}
+
+	// Create or update user from OAuth data
+	user, err := h.oauthService.CreateOrUpdateUserFromOAuth(c, oauthProvider, token.AccessToken, email, username)
+	if err != nil {
+		response.InternalError(c, "Failed to create/update user: "+err.Error())
+		return
+	}
+
+	// Create session
+	sessionToken := h.authService.GenerateSessionToken()
+	expiresAt := time.Now().Add(h.authService.SessionDuration())
+
+	session := &models.Session{
+		Token:  sessionToken,
+		UserID: user.ID,
+		Data:   `{"auth_type":"oauth","provider":"` + string(oauthProvider) + `"}`,
+		Expiry: expiresAt,
+	}
+	if err := h.authService.DB().Create(session).Error; err != nil {
+		response.InternalError(c, "Failed to create session: "+err.Error())
+		return
+	}
+
+	// Set session cookie
+	c.SetCookie("session", sessionToken, 86400, "/", "", false, true)
+
+	// Redirect to frontend or return success
+	if c.Query("redirect") != "" {
+		c.Redirect(http.StatusFound, c.Query("redirect"))
+	} else {
+		response.SuccessWithMessage(c, "Login successful", gin.H{
+			"user":          user,
+			"session_token": sessionToken,
+			"expires_at":    expiresAt,
+		})
+	}
+}
+
+// LinkAccount handles POST /api/v1/oauth/:provider/link
+func (h *OAuthHandler) LinkAccount(c *gin.Context) {
+	_, ok := middleware.GetCurrentUser(c)
+	if !ok {
+		response.Unauthorized(c, "Not authenticated")
+		return
+	}
+
+	provider := c.Param("provider")
+	oauthProvider := services.OAuthProvider(provider)
+
+	oauthConfig, err := h.oauthService.GetOAuthConfig(oauthProvider)
+	if err != nil {
+		response.BadRequest(c, "OAUTH_NOT_CONFIGURED", err.Error())
+		return
+	}
+
+	// Generate state parameter
+	state := uuid.New().String()
+	c.SetCookie("oauth_link_state", state, 3600, "/", "", false, true)
+
+	url := oauthConfig.AuthCodeURL(state, oauth2.AccessTypeOffline)
+	c.JSON(http.StatusOK, gin.H{"auth_url": url})
+}
+
+// LinkCallback handles GET /api/v1/oauth/:provider/link/callback
+func (h *OAuthHandler) LinkCallback(c *gin.Context) {
+	user, ok := middleware.GetCurrentUser(c)
+	if !ok {
+		response.Unauthorized(c, "Not authenticated")
+		return
+	}
+
+	provider := c.Param("provider")
+	oauthProvider := services.OAuthProvider(provider)
+
+	// Verify state parameter
+	stateCookie, err := c.Cookie("oauth_link_state")
+	if err != nil {
+		response.BadRequest(c, "INVALID_STATE", "Invalid or missing state parameter")
+		return
+	}
+	c.SetCookie("oauth_link_state", "", -1, "/", "", false, true)
+
+	state := c.Query("state")
+	if state != stateCookie {
+		response.BadRequest(c, "INVALID_STATE", "State parameter mismatch")
+		return
+	}
+
+	oauthConfig, err := h.oauthService.GetOAuthConfig(oauthProvider)
+	if err != nil {
+		response.BadRequest(c, "OAUTH_NOT_CONFIGURED", err.Error())
+		return
+	}
+
+	code := c.Query("code")
+	token, err := oauthConfig.Exchange(context.Background(), code)
+	if err != nil {
+		response.BadRequest(c, "OAUTH_ERROR", "Failed to exchange code for token: "+err.Error())
+		return
+	}
+
+	// Link OAuth account to existing user
+	if err := h.oauthService.LinkOAuthAccount(c, user.ID, oauthProvider, token.AccessToken); err != nil {
+		response.BadRequest(c, "LINK_ERROR", "Failed to link OAuth account: "+err.Error())
+		return
+	}
+
+	response.SuccessWithMessage(c, "OAuth account linked successfully", nil)
+}
+
+// UnlinkAccount handles POST /api/v1/oauth/:provider/unlink
+func (h *OAuthHandler) UnlinkAccount(c *gin.Context) {
+	user, ok := middleware.GetCurrentUser(c)
+	if !ok {
+		response.Unauthorized(c, "Not authenticated")
+		return
+	}
+
+	provider := c.Param("provider")
+
+	// Verify user has this OAuth provider linked
+	if user.OAuthProvider == nil || *user.OAuthProvider != provider {
+		response.BadRequest(c, "NOT_LINKED", "OAuth account not linked")
+		return
+	}
+
+	// Unlink OAuth account
+	user.OAuthProvider = nil
+	user.OAuthSubject = nil
+	if err := h.authService.DB().Save(user).Error; err != nil {
+		response.InternalError(c, "Failed to unlink OAuth account: "+err.Error())
+		return
+	}
+
+	response.SuccessWithMessage(c, "OAuth account unlinked successfully", nil)
+}

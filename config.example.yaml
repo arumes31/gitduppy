@@ -1,0 +1,82 @@
+# Gitduppy Configuration
+# Copy this file to config/config.yaml and modify as needed
+
+server:
+  port: 8080
+  host: "0.0.0.0"
+  read_timeout: "30s"
+  write_timeout: "300s"
+  idle_timeout: "120s"
+  tls:
+    enabled: false
+    cert: ""
+    key: ""
+  trusted_proxies: []
+  base_url: "http://localhost:8080"
+
+database:
+  host: "localhost"
+  port: 5432
+  name: "gitmirrors"
+  user: "gitmirrors"
+  password: ""
+  sslmode: "disable"
+  max_open_conns: 25
+  max_idle_conns: 5
+  conn_max_lifetime: "1h"
+
+security:
+  master_key: ""  # 32-byte AES key for credential encryption (generate with: openssl rand -hex 32)
+  session_secret: ""  # 32-byte key for session signing (generate with: openssl rand -hex 32)
+  csrf_key: ""  # 32-byte key for CSRF tokens (generate with: openssl rand -hex 32)
+  session_duration: "24h"
+  rate_limit:
+    auth_requests_per_minute: 10
+    api_requests_per_minute: 60
+
+oauth:
+  github:
+    client_id: ""
+    client_secret: ""
+    redirect_url: "http://localhost:8080/api/v1/auth/oauth/github/callback"
+    scopes: ["read:user", "repo"]
+  gitlab:
+    client_id: ""
+    client_secret: ""
+    redirect_url: "http://localhost:8080/api/v1/auth/oauth/gitlab/callback"
+    scopes: ["read_api", "read_repository"]
+  google:
+    client_id: ""
+    client_secret: ""
+    redirect_url: "http://localhost:8080/api/v1/auth/oauth/google/callback"
+    scopes: ["email", "profile"]
+
+email:
+  smtp_host: ""
+  smtp_port: 587
+  smtp_user: ""
+  smtp_password: ""
+  from: "noreply@gitmirrors.local"
+  enabled: false
+
+worker:
+  max_concurrent: 3
+  clone_timeout: 3600  # seconds
+  retry_max_attempts: 3
+  retry_base_delay: "30s"
+
+logging:
+  level: "info"
+  format: "json"
+  output: "stdout"  # stdout/file
+  file_path: "/app/logs/app.log"
+
+storage:
+  base_path: "/app/storage/repos"
+  ssh_path: "/app/storage/ssh"
+  backup_path: "/app/storage/backups"
+
+monitoring:
+  metrics_enabled: true
+  metrics_path: "/metrics"
+  health_check_interval: "15m"

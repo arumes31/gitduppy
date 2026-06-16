@@ -1,0 +1,40 @@
+[cfg]
+  # Set the severity level for issues
+  severity = "medium"
+  
+  # Set the confidence level for issues
+  confidence = "high"
+  
+  # Show all issues, not just the highest severity ones
+  showall = true
+  
+  # Fail on high severity issues
+  fail-on-high = true
+  
+  # Output format (sarif is used for GitHub integration)
+  fmt = "sarif"
+  
+  # Output file
+  out = "gosec-results.sarif"
+
+[exclude]
+  # Exclude specific rules that may have false positives in this project
+  rules = [
+    # G101: Look for hardcoded credentials - we'll handle this with gitleaks instead
+    "G101",
+    # G402: Look for bad TLS connection settings - our server config handles this
+    "G402",
+    # G501: Import blocklist - md5/sha1 - these are sometimes needed for legacy compatibility
+    "G501",
+    # G307: Deferring unsafe method calls on cleanup - sometimes necessary for resource management
+    "G307"
+  ]
+
+[include]
+  # Only include these rules if you want to be more restrictive
+  # rules = ["G104", "G201", "G202", "G204", "G301", "G302", "G303", "G304", "G401"]
+
+[secrets]
+  # Custom secret patterns to look for
+  # These are handled by gitleaks, so we don't need gosec to duplicate this
+  global = false

@@ -1,0 +1,130 @@
+# GitDuppy Configuration Example
+# This file contains all available configuration options with their default values
+
+# Server configuration
+server:
+  # Port to run the server on
+  port: 8080
+  # Host to bind to (use "0.0.0.0" to accept connections from any interface)
+  host: "0.0.0.0"
+  # Enable TLS/SSL (requires tls_cert and tls_key to be set)
+  tls_enabled: false
+  # Path to TLS certificate file (PEM format)
+  tls_cert: ""
+  # Path to TLS private key file (PEM format)
+  tls_key: ""
+
+# Database configuration
+database:
+  # Database connection string (PostgreSQL format)
+  # Format: postgres://username:password@host:port/database?sslmode=disable
+  url: "postgres://gitduppy:password@localhost:5432/gitduppy?sslmode=disable"
+  # Maximum number of open connections to the database
+  max_connections: 25
+  # Maximum number of idle connections in the pool
+  max_idle_connections: 5
+  # Maximum amount of time a connection may be reused (seconds)
+  connection_max_lifetime: 300
+
+# Security configuration
+security:
+  # Secret used for JWT token generation (minimum 32 characters recommended)
+  jwt_secret: "change-this-to-a-secure-random-string"
+  # 32-byte encryption key for encrypting sensitive data in the database
+  encryption_key: "change-this-to-a-32-byte-random-key"
+  # Email address for the initial admin user (required on first run)
+  admin_email: "admin@example.com"
+  # Minimum password length requirement
+  password_min_length: 8
+  # Require uppercase letters in passwords
+  password_require_uppercase: true
+  # Require lowercase letters in passwords
+  password_require_lowercase: true
+  # Require numbers in passwords
+  password_require_numbers: true
+  # Require special characters in passwords
+  password_require_special: true
+
+# Git operations configuration
+git:
+  # Timeout for git clone operations (seconds)
+  clone_timeout: 300
+  # Timeout for git fetch operations (seconds)
+  fetch_timeout: 120
+  # Maximum number of concurrent git clone operations
+  max_concurrent_clones: 5
+  # Number of retry attempts for failed operations
+  retry_attempts: 3
+  # Delay between retry attempts (seconds)
+  retry_delay: 30
+
+# Webhook configuration
+webhooks:
+  # Enable webhook notifications
+  enabled: true
+  # Timeout for webhook requests (seconds)
+  timeout: 30
+  # Maximum number of retry attempts for failed webhooks
+  max_retries: 3
+  # Delay between webhook retry attempts (seconds)
+  retry_delay: 60
+
+# Logging configuration
+logging:
+  # Log level (debug, info, warn, error)
+  level: "info"
+  # Log format (json or text)
+  format: "json"
+  # Enable audit logging for security and compliance
+  audit_enabled: true
+  # Number of days to retain audit logs
+  audit_retention_days: 90
+
+# Email configuration (for notifications)
+email:
+  # Enable email notifications
+  enabled: false
+  # SMTP server hostname
+  smtp_host: "smtp.example.com"
+  # SMTP server port
+  smtp_port: 587
+  # SMTP username (usually your email address)
+  smtp_username: ""
+  # SMTP password or app-specific password
+  smtp_password: ""
+  # Email address to send notifications from
+  from_address: "noreply@example.com"
+
+# Middleware configuration
+middleware:
+  # CORS configuration
+  cors:
+    # List of allowed origins (use ["*"] for development only)
+    allowed_origins:
+      - "https://your-frontend.example.com"
+      - "http://localhost:3000"
+    # List of allowed methods
+    allowed_methods:
+      - "GET"
+      - "POST"
+      - "PUT"
+      - "DELETE"
+      - "OPTIONS"
+    # List of allowed headers
+    allowed_headers:
+      - "Authorization"
+      - "Content-Type"
+      - "X-Requested-With"
+    # Allow credentials (cookies, authorization headers)
+    allow_credentials: true
+    # Max age for preflight requests (seconds)
+    max_age: 86400
+  
+  # Rate limiting configuration
+  rate_limit:
+    # Enable rate limiting
+    enabled: true
+    # Maximum requests per minute per IP address
+    requests_per_minute: 60
+    # Burst limit (additional requests allowed temporarily)
+    burst: 10

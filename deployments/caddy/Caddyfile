@@ -1,0 +1,52 @@
+# Caddyfile for gitduppy production deployment
+
+{
+    # Automatic HTTPS
+    email {$EMAIL}
+    
+    # Enable HTTP/3
+    servers {
+        protocol {
+            experimental_http3
+        }
+    }
+}
+
+# Production domain
+{$DOMAIN} {
+    # Reverse proxy to gitduppy service
+    reverse_proxy gitduppy:8080
+    
+    # Health check endpoint (internal only)
+    handle /health {
+        reverse_proxy gitduppy:8080
+    }
+    
+    # TLS configuration
+    tls {
+        protocols tls1.2 tls1.3
+    }
+    
+    # Security headers
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "geolocation=(), microphone=(), camera=()"
+    }
+    
+    # Compression
+    encode zstd gzip
+    
+    # Logging
+    log {
+        output file /data/logs/access.log
+        format json
+    }
+}
+
+# Redirect www to non-www (optional)
+www.{$DOMAIN} {
+    redir https://{$DOMAIN}{uri} permanent
+}

@@ -1,0 +1,64 @@
+[[rules]]
+  description = "GitDuppy API Key"
+  regex = '''(api|API)_KEY.*[=:]\s*["']?([a-zA-Z0-9]{32,})["']?'''
+  tags = ["key", "gitduppy"]
+
+[[rules]]
+  description = "GitDuppy Secret Token"
+  regex = '''(secret|SECRET)_TOKEN.*[=:]\s*["']?([a-zA-Z0-9]{32,})["']?'''
+  tags = ["token", "gitduppy"]
+
+[[rules]]
+  description = "JWT Secret"
+  regex = '''(jwt|JWT)_(secret|SECRET).*[=:]\s*["']?([a-zA-Z0-9_\\/+=]{32,})["']?'''
+  tags = ["secret", "jwt", "token"]
+
+[[rules]]
+  description = "Database URL with credentials"
+  regex = "(mysql|postgres|postgresql)://[a-zA-Z0-9_.+-]+:[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" 
+  tags = ["database", "credentials", "url"]
+
+[[rules]]
+  description = "Private SSH Key"
+  regex = "-----BEGIN (RSA|DSA|EC|OPENSSH) PRIVATE KEY-----"
+  tags = ["key", "private", "ssh"]
+
+[[rules]]
+  description = "AWS Access Key ID"
+  regex = "AKIA[0-9A-Z]{16}"
+  tags = ["key", "aws", "amazon"]
+
+[[rules]]
+  description = "AWS Secret Access Key"
+  regex = "[0-9a-zA-Z/+]{40}"
+  keywords = ["aws_secret_access_key", "aws-secret-access-key", "aws_secret_key", "aws_secret"]
+  tags = ["key", "aws", "amazon"]
+
+[[rules]]
+  description = "Google (GCP) Service Account"
+  regex = "\"type\"\s*:\s*\"service_account\""
+  tags = ["google", "gcp", "service-account"]
+
+[[rules]]
+  description = "Facebook Client ID"
+  regex = "[0-9]{13,17}"
+  keywords = ["facebook_client_id", "facebook-secret", "fb_app_id", "fb_secret"]
+  tags = ["facebook", "client-id", "app-id", "secret"]
+
+[[rules]]
+  description = "Twitter API Key"
+  regex = "[a-zA-Z0-9]{35,44}"
+  keywords = ["twitter_api_key", "twitter-secret", "twitter_bearer_token"]
+  tags = ["twitter", "api-key", "bearer-token"]
+
+[[allowlist]]
+  description = "Allowlist for test files"
+  regex = "(test|example|mock|fixture).*\.go$"
+
+[[allowlist]]
+  description = "Allowlist for config.example.yaml"
+  regex = "config\.example\.yaml$"
+
+[[allowlist]]
+  description = "Allowlist for known false positives in gitduppy"
+  regex = "'dummy_value'|'placeholder'|TODO|FIXME|// INSERT_KEY_HERE"

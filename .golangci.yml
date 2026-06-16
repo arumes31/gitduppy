@@ -1,0 +1,156 @@
+run:
+  timeout: 5m
+  tests: false
+  skip-dirs-use-default: true
+  skip-files:
+    - ".*\.pb\.go$"
+    - ".*\.mock\.go$"
+    - "cmd/server/main.go" # Main entry point, minimal logic
+
+output:
+  formats:
+    - format: tab
+  sort-results: true
+
+linters-settings:
+  govet:
+    check-shadowing: true
+    settings:
+      printf: true
+  gocyclo:
+    min-complexity: 15
+  golint:
+    min-confidence: 0.8
+  gomnd:
+    settings:
+      mnd:
+        - checks: all
+          ignored-numbers: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 100, 1000]
+          ignored-functions:
+            - "time.Since"
+            - "time.NewTimer"
+            - "time.After"
+            - "strings.Repeat"
+  gosec:
+    excludes: []
+  lll:
+    line-length: 120
+    tab-width: 4
+  unparam:
+    algo: cha
+    check-exported: false
+  nakedret:
+    max-func-lines: 30
+  prealloc:
+    simple: true
+    range-loops: true
+    for-loops: true
+  goconst:
+    min-occurrences: 3
+    min-len: 3
+  whitespace:
+    multi-if: true
+    multi-func: true
+  wrapcheck:
+    ignoreSigs: []
+    ignorePackageGlobs: []
+    ignoreSigRegexps: []
+  tparallel:
+    package-scope-only: false
+  testifylint:
+    enabled:
+      - suite-add
+      - assert-nil
+      - bool-compare
+      - error-is-nil
+      - equal-nil
+      - expect-expect
+      - fatalf
+      - http-error
+      - require-equal
+      - require-error
+      - require-no-error
+      - suite-extra
+      - suite-parallel
+      - suite-set-up-t
+      - suite-tear-down-t
+      - suite-wait
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - structcheck
+    - typecheck
+    - unused
+    - varcheck
+    - bodyclose
+    - deadcode
+    - depguard
+    - dogsled
+    - dupl
+    - errchkjson
+    - errname
+    - errorlint
+    - execinquery
+    - exportloopref
+    - forbidigo
+    - gochecknoinits
+    - gochecknoglobals
+    - gocognit
+    - goconst
+    - gocritic
+    - gocyclo
+    - godot
+    - gofmt
+    - gofumpt
+    - goheader
+    - goimports
+    - goprintffuncname
+    - gosec
+    - gosmopolitan
+    - gotypex
+    - grouper
+    - ifshort
+    - importas
+    - ineffassign
+    - makezero
+    - mirror
+    - misspell
+    - nakedret
+    - nestif
+    - nilerr
+    - nilnil
+    - noctx
+    - nolintlint
+    - nosnakecase
+    - nosprintfhostport
+    - paralleltest
+    - prealloc
+    - predeclared
+    - promlinter
+    - protogetter
+    - reassign
+    - revive
+    - rowserrcheck
+    - sqlclosecheck
+    - stylecheck
+    - thelper
+    - tparallel
+    - unconvert
+    - unparam
+    - wastedassign
+    - whitespace
+    - zerologlint
+  disable:
+    - maligned
+    - asciicheck
+    - exhaustivestruct
+    - interfacer
+    - scopelint
+    - gocmt
+    - exhaustivestruct
+  fast: false

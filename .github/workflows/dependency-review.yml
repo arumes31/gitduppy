@@ -1,0 +1,42 @@
+name: Dependency Review
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  dependency-review:
+    name: Audit Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: |
+            go.sum
+            **/go.sum
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          deny-licenses: GPL-3.0, AGPL-3.0
+          allow-licenses: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC
+          comment-summary-in-pr: always
+          base-ref: ${{ github.event.pull_request.base.sha }}
+          head-ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Upload dependency report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dependency-review-report
+          path: dependency-review-report.json
+          retention-days: 30
