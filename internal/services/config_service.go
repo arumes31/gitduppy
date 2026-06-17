@@ -26,10 +26,18 @@ func (s *ConfigService) GetConfig(_ context.Context) *config.Config {
 	cfg := *s.config
 
 	// Mask sensitive fields
-	cfg.Database.Password = mask
-	cfg.Security.MasterKey = mask
-	cfg.Security.SessionSecret = mask
-	cfg.Security.CSRFKey = mask
+	if cfg.Database.Password != "" {
+		cfg.Database.Password = mask
+	}
+	if cfg.Security.MasterKey != "" {
+		cfg.Security.MasterKey = mask
+	}
+	if cfg.Security.SessionSecret != "" {
+		cfg.Security.SessionSecret = mask
+	}
+	if cfg.Security.CSRFKey != "" {
+		cfg.Security.CSRFKey = mask
+	}
 
 	// Mask OAuth secrets
 	if cfg.OAuth.GitHub.ClientSecret != "" {

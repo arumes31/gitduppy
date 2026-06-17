@@ -10,6 +10,7 @@ import (
 	"github.com/gitduppy/gitduppy/internal/config"
 	"github.com/gitduppy/gitduppy/internal/database"
 	"github.com/gitduppy/gitduppy/internal/models"
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
 )
@@ -18,6 +19,7 @@ import (
 type BackupService struct {
 	db     *gorm.DB
 	config *config.Config
+	logger *zap.Logger
 }
 
 // NewBackupService creates a new backup service.
@@ -144,7 +146,9 @@ func (s *BackupService) DatabaseBackup(_ context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	_ = file.Close()
+	if err := file.Close(); err != nil {
+		s.logger.Error("failed to close backup file", zap.String("path", backupPath), zap.Error(err))
+	}
 
 	return backupPath, nil
 }

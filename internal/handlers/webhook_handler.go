@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"log"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gitduppy/gitduppy/internal/middleware"
@@ -249,16 +250,28 @@ func (h *WebhookHandler) matchProvider(c *gin.Context, provider string, body []b
 	if err := h.webhookService.DB().Where("provider = ? AND is_active = ?", provider, true).Find(&webhooks).Error; err != nil {
 		return nil, "", err
 	}
-	for _, wh := range webhooks {
-		if matchFunc(&wh, c, body) {
-			return &wh, provider, nil
+	var matches []*models.WebhookConfig
+	for i := range webhooks {
+		wh := &webhooks[i]
+		if matchFunc(wh, c, body) {
+			matches = append(matches, wh)
 		}
 	}
-	return nil, "", fmt.Errorf("no matching webhook found for provider %s", provider)
+	if len(matches) == 0 {
+		return nil, "", fmt.Errorf("no matching webhook found for provider %s", provider)
+	}
+	if len(matches) > 1 {
+		log.Printf("Warning: Multiple webhooks matched for provider %s", provider)
+	}
+	return matches[0], provider, nil
 }
 
 // matchesGitHubWebhook checks if the request matches a GitHub webhook.
-func (h *WebhookHandler) matchesGitHubWebhook(_ *models.WebhookConfig, _ *gin.Context, _ []byte) bool {
+func (h *WebhookHandler) matchesGitHubWebhook(_ *models.WebhookConfig, c *gin.Context, _ []byte) bool {
+	// TODO: Implement proper matching logic based on payload and webhook configuration
+	if c.GetHeader("X-GitHub-Event") == "" {
+		return false
+	}
 	// For GitHub, we can match by repository URL in the payload.
 	// This is a simplified implementation - in practice, you'd parse the payload
 	// and match against webhook.RepositoryID or webhook.URLPattern.
@@ -266,17 +279,23 @@ func (h *WebhookHandler) matchesGitHubWebhook(_ *models.WebhookConfig, _ *gin.Co
 }
 
 // matchesGitLabWebhook checks if the request matches a GitLab webhook.
-func (h *WebhookHandler) matchesGitLabWebhook(_ *models.WebhookConfig, _ *gin.Context, _ []byte) bool {
+func (h *WebhookHandler) matchesGitLabWebhook(_ *models.WebhookConfig, c *gin.Context, _ []byte) bool {
+	// TODO: Implement proper matching logic based on payload and webhook configuration
+	if c.GetHeader("X-GitLab-Event") == "" {
+		return false
+	}
 	return true
 }
 
 // matchesBitbucketWebhook checks if the request matches a Bitbucket webhook.
 func (h *WebhookHandler) matchesBitbucketWebhook(_ *models.WebhookConfig, _ *gin.Context, _ []byte) bool {
+	// TODO: Implement proper matching logic based on payload and webhook configuration
 	return true
 }
 
 // matchesGenericWebhook checks if the request matches a generic webhook.
 func (h *WebhookHandler) matchesGenericWebhook(_ *models.WebhookConfig, _ *gin.Context, _ []byte) bool {
+	// TODO: Implement proper matching logic based on payload and webhook configuration
 	// Custom matching logic based on webhook configuration.
 	// This could include URL patterns, custom headers, etc.
 	return true

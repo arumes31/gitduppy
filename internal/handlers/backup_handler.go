@@ -84,11 +84,11 @@ func (h *BackupHandler) Import(c *gin.Context) {
 	var importFormat services.ExportFormat
 	filename := file.Filename
 	switch {
-	case len(filename) > 4 && filename[len(filename)-4:] == formatJSON:
+	case len(filename) > 4 && filename[len(filename)-5:] == ".json":
 		importFormat = services.JSONFormat
-	case len(filename) > 4 && filename[len(filename)-4:] == "yaml":
+	case len(filename) > 4 && filename[len(filename)-5:] == ".yaml":
 		importFormat = services.YAMLFormat
-	case len(filename) > 3 && filename[len(filename)-3:] == "yml":
+	case len(filename) > 3 && filename[len(filename)-4:] == ".yml":
 		importFormat = services.YAMLFormat
 	default:
 		response.BadRequest(c, "INVALID_FORMAT", "File must be .json or .yaml/.yml")

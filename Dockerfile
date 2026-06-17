@@ -6,12 +6,12 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o gitduppy .
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o bin/gitduppy ./cmd/server
 
 FROM alpine:latest
 RUN apk --no-cache add ca-certificates
 WORKDIR /root/
-COPY --from=builder /app/gitduppy .
+COPY --from=builder /app/bin/gitduppy .
 
 EXPOSE 8080
 CMD ["./gitduppy"]
