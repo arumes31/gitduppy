@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -229,6 +230,59 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 		"progress_percent": 100,
 		"output_log":       "Clone completed successfully",
 	})
+
+	// Mirror Wiki if requested
+	if repo.MirrorWiki {
+		wikiURL := repo.URL
+		if strings.HasSuffix(wikiURL, ".git") {
+			wikiURL = strings.TrimSuffix(wikiURL, ".git") + ".wiki.git"
+		} else {
+			wikiURL = wikiURL + ".wiki.git"
+		}
+
+		wikiPath := repoPath + ".wiki"
+
+		wikiOpts := &CloneOptions{
+			URL:  wikiURL,
+			Path: wikiPath,
+			Bare: repo.IsBare,
+			LFS:  false,
+		}
+		if creds != nil {
+			wikiOpts.Username = creds.Username
+			wikiOpts.Password = creds.Password
+			wikiOpts.Token = creds.Token
+			wikiOpts.SSHKey = creds.SSHKey
+		}
+		wikiOpts.Progress = progress
+
+		var wikiErr error
+		if repo.LastCloneAt != nil && w.gitOps.IsRepositoryCloned(wikiPath) {
+			logger.Info("performing wiki fetch", zap.String("repo", repo.Name))
+			wikiErr = w.gitOps.FetchRepository(w.ctx, wikiOpts)
+		} else {
+			logger.Info("performing wiki clone", zap.String("repo", repo.Name))
+			wikiErr = w.gitOps.CloneRepository(w.ctx, wikiOpts)
+		}
+		if wikiErr != nil {
+			logger.Warn("wiki clone/fetch failed", zap.Error(wikiErr))
+		}
+	}
+
+	// Fetch GitHub Metadata if any are requested
+	if repo.MirrorIssues || repo.MirrorPullRequests || repo.MirrorReleases {
+		fetcher := NewGitHubMetadataFetcher()
+		token := ""
+		if creds != nil && creds.Token != "" {
+			token = creds.Token
+		} else if creds != nil && creds.Password != "" && repo.AuthType == "basic" {
+			token = creds.Password
+		}
+
+		if err := fetcher.FetchMetadata(w.ctx, repo.URL, repoPath, token, repo.MirrorIssues, repo.MirrorPullRequests, repo.MirrorReleases); err != nil {
+			logger.Warn("failed to fetch github metadata", zap.Error(err))
+		}
+	}
 
 	// Update repository
 	w.db.Model(&repo).Updates(map[string]interface{}{

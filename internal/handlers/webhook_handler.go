@@ -10,6 +10,7 @@ import (
 	"hash"
 	"io"
 	"log"
+	"sort"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gitduppy/gitduppy/internal/middleware"
@@ -257,6 +258,9 @@ func (h *WebhookHandler) matchProvider(c *gin.Context, provider string, body []b
 			matches = append(matches, wh)
 		}
 	}
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].CreatedAt.After(matches[j].CreatedAt)
+	})
 	if len(matches) == 0 {
 		return nil, "", fmt.Errorf("no matching webhook found for provider %s", provider)
 	}
@@ -281,7 +285,7 @@ func (h *WebhookHandler) matchesGitHubWebhook(_ *models.WebhookConfig, c *gin.Co
 // matchesGitLabWebhook checks if the request matches a GitLab webhook.
 func (h *WebhookHandler) matchesGitLabWebhook(_ *models.WebhookConfig, c *gin.Context, _ []byte) bool {
 	// TODO: Implement proper matching logic based on payload and webhook configuration
-	if c.GetHeader("X-GitLab-Event") == "" {
+	if c.GetHeader("X-Gitlab-Event") == "" {
 		return false
 	}
 	return true

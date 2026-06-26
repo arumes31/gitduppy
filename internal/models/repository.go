@@ -18,6 +18,10 @@ type Repository struct {
 	Status               string     `gorm:"size:20;not null;default:pending" json:"status"`
 	IsBare               bool       `gorm:"default:false" json:"is_bare"`
 	LFSEnabled           bool       `gorm:"default:false" json:"lfs_enabled"`
+	MirrorIssues         bool       `gorm:"default:false" json:"mirror_issues"`
+	MirrorPullRequests   bool       `gorm:"default:false" json:"mirror_pull_requests"`
+	MirrorReleases       bool       `gorm:"default:false" json:"mirror_releases"`
+	MirrorWiki           bool       `gorm:"default:false" json:"mirror_wiki"`
 	IsActive             bool       `gorm:"default:true" json:"is_active"`
 	CloneIntervalMinutes int        `gorm:"default:60" json:"clone_interval_minutes"`
 	Description          *string    `gorm:"type:text" json:"description,omitempty"`

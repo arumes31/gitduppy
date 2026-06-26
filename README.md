@@ -14,6 +14,7 @@ A modern, secure Git repository mirroring and management platform designed for e
 ## Features
 
 - Automated Git repository mirroring with configurable schedules
+- **NEW**: Full GitHub Metadata Mirroring (Issues, PRs, Releases, and Wikis)
 - Role-based access control (RBAC) with fine-grained permissions
 - Comprehensive audit logging for all operations
 - Webhook notifications for repository events
