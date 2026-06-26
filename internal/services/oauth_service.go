@@ -301,3 +301,19 @@ func (s *OAuthService) CreateOrUpdateUserFromOAuth(_ context.Context, provider O
 func stringPtr(s string) *string {
 	return &s
 }
+
+// SaveGitHubCredentials saves the GitHub OAuth client credentials in system settings.
+func (s *OAuthService) SaveGitHubCredentials(ctx context.Context, clientID, clientSecret string) error {
+	idKey := "oauth2_github_client_id"
+	secretKey := "oauth2_github_client_secret"
+
+	if err := s.configService.SetSetting(ctx, idKey, clientID, "OAuth Client ID for github", false); err != nil {
+		return err
+	}
+	if clientSecret != "" {
+		if err := s.configService.SetSetting(ctx, secretKey, clientSecret, "OAuth Client Secret for github", true); err != nil {
+			return err
+		}
+	}
+	return nil
+}

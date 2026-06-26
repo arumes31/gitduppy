@@ -9,7 +9,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o bin/gitduppy ./cmd/server
 
 FROM alpine:latest
-RUN apk --no-cache add ca-certificates su-exec
+RUN apk --no-cache add ca-certificates su-exec git git-lfs
 WORKDIR /app
 COPY --from=builder /app/bin/gitduppy .
 COPY --from=builder /app/internal/web ./internal/web

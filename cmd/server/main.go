@@ -344,6 +344,7 @@ func setupRouter(
 		// OAuth routes
 		oauth := v1.Group("/oauth")
 		{
+			oauth.GET("/github/manifest-callback", oauthHandler.ManifestCallback)
 			oauth.GET("/:provider/login", oauthHandler.LoginWithProvider)
 			oauth.GET("/:provider/callback", oauthHandler.Callback)
 			oauth.POST("/:provider/link", authMiddleware.Middleware(), oauthHandler.LinkAccount)

@@ -2,6 +2,9 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -233,4 +236,68 @@ func (h *OAuthHandler) UnlinkAccount(c *gin.Context) {
 	}
 
 	response.SuccessWithMessage(c, "OAuth account unlinked successfully", nil)
+}
+
+// ManifestCallback handles GET /api/v1/oauth/github/manifest-callback.
+// GitHub redirects here with a ?code=CODE parameter after manifest creation.
+func (h *OAuthHandler) ManifestCallback(c *gin.Context) {
+	code := c.Query("code")
+	if code == "" {
+		response.BadRequest(c, "INVALID_REQUEST", "Missing code parameter")
+		return
+	}
+
+	// 1. Exchange manifest code for credentials
+	apiURL := fmt.Sprintf("https://api.github.com/app-manifests/%s/conversions", code)
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, apiURL, nil)
+	if err != nil {
+		c.Redirect(http.StatusFound, "/config?error=failed_to_create_exchange_request")
+		return
+	}
+
+	// GitHub requires User-Agent header for all API calls
+	req.Header.Set("User-Agent", "GitDuppy")
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		c.Redirect(http.StatusFound, "/config?error=failed_to_contact_github")
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		c.Redirect(http.StatusFound, fmt.Sprintf("/config?error=github_returned_status_%d", resp.StatusCode))
+		return
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.Redirect(http.StatusFound, "/config?error=failed_to_read_response")
+		return
+	}
+
+	// Decode credentials response
+	var data struct {
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
+	}
+	if err := json.Unmarshal(body, &data); err != nil {
+		c.Redirect(http.StatusFound, "/config?error=failed_to_decode_credentials")
+		return
+	}
+
+	if data.ClientID == "" {
+		c.Redirect(http.StatusFound, "/config?error=received_empty_client_id")
+		return
+	}
+
+	// 2. Save credentials in database
+	if err := h.oauthService.SaveGitHubCredentials(c.Request.Context(), data.ClientID, data.ClientSecret); err != nil {
+		c.Redirect(http.StatusFound, "/config?error=failed_to_save_settings")
+		return
+	}
+
+	// 3. Redirect back to configuration page with success indicator
+	c.Redirect(http.StatusFound, "/config?success=github_setup")
 }

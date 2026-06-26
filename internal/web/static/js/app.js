@@ -188,6 +188,68 @@ if (oauthForm) {
             btn.disabled = false;
         }
     });
+
+    async function loadConfig() {
+        try {
+            const data = await apiCall('/api/v1/config');
+            const cfg = data.data;
+            if (cfg && cfg.oauth && cfg.oauth.github) {
+                document.getElementById('client_id').value = cfg.oauth.github.client_id || '';
+            }
+        } catch (error) {
+            console.error('Failed to load configuration:', error);
+        }
+    }
+
+    window.registerGitHubAppAutomatically = function() {
+        const origin = window.location.origin;
+        const manifest = {
+            name: "GitDuppy (" + window.location.hostname + ")",
+            url: origin,
+            redirect_url: origin + "/api/v1/oauth/github/manifest-callback",
+            callback_urls: [
+                origin + "/api/v1/oauth/github/callback"
+            ],
+            request_oauth_on_install: true,
+            setup_url: origin + "/config",
+            public: false,
+            default_permissions: {
+                metadata: "read",
+                contents: "read",
+                issues: "read",
+                pull_requests: "read",
+                statuses: "read"
+            },
+            default_events: []
+        };
+
+        const manifestInput = document.getElementById('github-manifest-input');
+        const manifestForm = document.getElementById('github-manifest-form');
+        if (manifestInput && manifestForm) {
+            manifestInput.value = JSON.stringify(manifest);
+            manifestForm.submit();
+        } else {
+            showToast('Failed to find automatic registration form.', 'error');
+        }
+    };
+
+    // Handle URL parameters for success/error messages from automated setup redirection
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.has('success')) {
+        const successType = urlParams.get('success');
+        if (successType === 'github_setup') {
+            showToast('GitHub App registered and configured automatically!', 'success');
+        }
+        window.history.replaceState({}, document.title, window.location.pathname);
+    } else if (urlParams.has('error')) {
+        const errorVal = urlParams.get('error');
+        const errMsg = errorVal ? errorVal.replace(/_/g, ' ') : 'unknown error';
+        showToast('Configuration failed: ' + errMsg, 'error');
+        window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
+    // Load active settings on configuration page load
+    loadConfig();
 }
 
 // Add simple CSS for spinner animation
