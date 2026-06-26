@@ -47,6 +47,17 @@ func (h *OAuthHandler) LoginWithProvider(c *gin.Context) {
 	state := uuid.New().String()
 	c.SetCookie("oauth_state", state, 3600, "/", "", false, true)
 
+	// Remember where to send the browser after a successful login. This makes
+	// browser-initiated logins (including the automated App-setup flow) land on a
+	// real page instead of a raw JSON response.
+	redirectTarget := c.Query("redirect")
+	if redirectTarget == "" && c.Query("setup") != "" {
+		redirectTarget = "/dashboard?success=github_setup"
+	}
+	if redirectTarget != "" {
+		c.SetCookie("oauth_redirect", redirectTarget, 600, "/", "", false, true)
+	}
+
 	url := oauthConfig.AuthCodeURL(state, oauth2.AccessTypeOffline)
 	c.Redirect(http.StatusFound, url)
 }
@@ -127,9 +138,18 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 	// Set session cookie
 	c.SetCookie("session", sessionToken, 86400, "/", "", false, true)
 
-	// Redirect to frontend or return success
-	if c.Query("redirect") != "" {
-		c.Redirect(http.StatusFound, c.Query("redirect"))
+	// Redirect to frontend or return success. A redirect target may come from the
+	// query string or from the oauth_redirect cookie set at login time.
+	redirectTarget := c.Query("redirect")
+	if redirectTarget == "" {
+		if cookie, cErr := c.Cookie("oauth_redirect"); cErr == nil && cookie != "" {
+			redirectTarget = cookie
+		}
+	}
+	c.SetCookie("oauth_redirect", "", -1, "/", "", false, true)
+
+	if redirectTarget != "" {
+		c.Redirect(http.StatusFound, redirectTarget)
 	} else {
 		response.SuccessWithMessage(c, "Login successful", gin.H{
 			"user":          user,
@@ -298,6 +318,7 @@ func (h *OAuthHandler) ManifestCallback(c *gin.Context) {
 		return
 	}
 
-	// 3. Redirect back to configuration page with success indicator
-	c.Redirect(http.StatusFound, "/config?success=github_setup")
+	// 3. Credentials are stored; immediately start the GitHub OAuth login flow so
+	// the user is authenticated right after registering the App (single click flow).
+	c.Redirect(http.StatusFound, "/api/v1/oauth/github/login?setup=1")
 }

@@ -24,6 +24,7 @@ type Repository struct {
 	MirrorReleases       bool       `gorm:"default:false" json:"mirror_releases"`
 	MirrorWiki           bool       `gorm:"default:false" json:"mirror_wiki"`
 	IsActive             bool       `gorm:"default:true" json:"is_active"`
+	Visibility           string     `gorm:"size:20" json:"visibility,omitempty"` // "public", "private", or "" if unknown
 	CloneIntervalMinutes int        `gorm:"default:60" json:"clone_interval_minutes"`
 	Description          *string    `gorm:"type:text" json:"description,omitempty"`
 	CreatedBy            *uuid.UUID `gorm:"type:uuid" json:"created_by,omitempty"`

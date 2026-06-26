@@ -249,12 +249,17 @@ if (oauthForm) {
         }
     };
 
-    // Handle URL parameters for success/error messages from automated setup redirection
+    // Load active settings on configuration page load
+    loadConfig();
+}
+
+// Handle URL parameters for success/error messages from automated setup redirection.
+// Runs on every page since the post-setup login flow now lands on the dashboard.
+(function handleSetupRedirectParams() {
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.has('success')) {
-        const successType = urlParams.get('success');
-        if (successType === 'github_setup') {
-            showToast('GitHub App registered and configured automatically!', 'success');
+        if (urlParams.get('success') === 'github_setup') {
+            showToast('GitHub App registered and login completed!', 'success');
         }
         window.history.replaceState({}, document.title, window.location.pathname);
     } else if (urlParams.has('error')) {
@@ -263,10 +268,7 @@ if (oauthForm) {
         showToast('Configuration failed: ' + errMsg, 'error');
         window.history.replaceState({}, document.title, window.location.pathname);
     }
-
-    // Load active settings on configuration page load
-    loadConfig();
-}
+})();
 
 // Add simple CSS for spinner animation
 const style = document.createElement('style');
