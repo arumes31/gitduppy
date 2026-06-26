@@ -207,11 +207,18 @@ if (oauthForm) {
         // Clean hostname (alphanumeric and hyphens only) and generate a random 5-character suffix for uniqueness
         const hostClean = window.location.hostname.replace(/[^a-zA-Z0-9-]/g, '-');
         const rand = Math.random().toString(36).substring(2, 7);
-        // Truncate host part to keep the final name strictly under GitHub's 34-character limit:
-        // "GitDuppy-" (9 chars) + "-" (1 char) + hostPart + "-" (1 char) + rand (5 chars) = 16 chars overhead
-        const maxHostLen = 34 - 16;
-        const hostPart = hostClean.substring(0, maxHostLen);
-        const name = "GitDuppy-" + hostPart + "-" + rand;
+        
+        let name;
+        const hostLower = hostClean.toLowerCase();
+        if (hostLower === 'localhost' || hostLower === '127-0-0-1' || hostLower === '::1' || !hostLower) {
+            name = "GitDuppy-" + rand;
+        } else {
+            // Truncate host part to keep the final name strictly under GitHub's 34-character limit:
+            // "GitDuppy-" (9 chars) + "-" (1 char) + hostPart + "-" (1 char) + rand (5 chars) = 16 chars overhead
+            const maxHostLen = 34 - 16;
+            const hostPart = hostClean.substring(0, maxHostLen);
+            name = "GitDuppy-" + hostPart + "-" + rand;
+        }
 
         const manifest = {
             name: name,
