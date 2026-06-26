@@ -71,6 +71,12 @@ body {
     color: var(--primary);
 }
 
+.logo-img {
+    width: 32px;
+    height: 32px;
+    object-fit: contain;
+}
+
 .logo-text {
     font-weight: 700;
     font-size: 1.25rem;
@@ -310,7 +316,8 @@ body {
     position: relative;
 }
 
-.input-icon-wrapper i {
+.input-icon-wrapper i,
+.input-icon-wrapper svg {
     position: absolute;
     left: 14px;
     top: 50%;
@@ -410,9 +417,11 @@ body {
     justify-content: center;
     margin-bottom: 16px;
 }
-.auth-logo i {
-    width: 48px;
-    height: 48px;
+.auth-logo i,
+.auth-logo svg,
+.auth-logo .logo-img {
+    width: 64px;
+    height: 64px;
 }
 
 .blob {
