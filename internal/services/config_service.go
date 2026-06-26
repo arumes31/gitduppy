@@ -42,6 +42,18 @@ func (s *ConfigService) GetConfig(ctx context.Context) *config.Config {
 	if clientSecret, err := s.GetSettingString(ctx, "oauth2_github_client_secret"); err == nil && clientSecret != "" {
 		cfg.OAuth.GitHub.ClientSecret = clientSecret
 	}
+	if clientID, err := s.GetSettingString(ctx, "oauth2_gitlab_client_id"); err == nil && clientID != "" {
+		cfg.OAuth.GitLab.ClientID = clientID
+	}
+	if clientSecret, err := s.GetSettingString(ctx, "oauth2_gitlab_client_secret"); err == nil && clientSecret != "" {
+		cfg.OAuth.GitLab.ClientSecret = clientSecret
+	}
+	if clientID, err := s.GetSettingString(ctx, "oauth2_google_client_id"); err == nil && clientID != "" {
+		cfg.OAuth.Google.ClientID = clientID
+	}
+	if clientSecret, err := s.GetSettingString(ctx, "oauth2_google_client_secret"); err == nil && clientSecret != "" {
+		cfg.OAuth.Google.ClientSecret = clientSecret
+	}
 
 	// Mask sensitive fields
 	if cfg.Database.Password != "" {
@@ -117,8 +129,7 @@ func (s *ConfigService) GetGoogleOAuth(ctx context.Context) config.OAuthProvider
 
 // UpdateConfig updates the configuration (requires restart).
 func (s *ConfigService) UpdateConfig(_ context.Context, _ *config.Config) error {
-	// This is a simplified implementation
-	return nil
+	return errors.New("configuration persistence is not implemented")
 }
 
 // SetSetting saves a setting to the database.
@@ -128,19 +139,24 @@ func (s *ConfigService) SetSetting(ctx context.Context, key, value, description 
 	}
 
 	storeValue := value
-	if encrypt && value != "" && s.encryptionService != nil {
+	isEncrypted := false
+	if encrypt && value != "" {
+		if s.encryptionService == nil {
+			return errors.New("encryption service is not configured but encryption is required")
+		}
 		encrypted, err := s.encryptionService.EncryptString(value)
 		if err != nil {
 			return err
 		}
 		storeValue = encrypted
+		isEncrypted = true
 	}
 
 	setting := models.SystemSetting{
 		ID:          uuid.New(),
 		Key:         key,
 		Value:       storeValue,
-		IsEncrypted: encrypt,
+		IsEncrypted: isEncrypted,
 		Description: description,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
@@ -157,7 +173,7 @@ func (s *ConfigService) SetSetting(ctx context.Context, key, value, description 
 
 	return s.db.WithContext(ctx).Model(&existing).Updates(map[string]interface{}{
 		"value":        storeValue,
-		"is_encrypted": encrypt,
+		"is_encrypted": isEncrypted,
 		"description":  description,
 		"updated_at":   time.Now(),
 	}).Error
@@ -184,4 +200,3 @@ func (s *ConfigService) GetSettingString(ctx context.Context, key string) (strin
 
 	return setting.Value, nil
 }
-

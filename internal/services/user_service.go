@@ -109,7 +109,11 @@ type CreateUserRequest struct {
 func (s *UserService) CreateUser(ctx context.Context, req *CreateUserRequest) (*models.User, error) {
 	// Check if username exists
 	var existing models.User
-	if err := s.db.WithContext(ctx).Where("username = ? OR email = ?", req.Username, req.Email).First(&existing).Error; err == nil {
+	if err := s.db.WithContext(ctx).Where("username = ? OR email = ?", req.Username, req.Email).First(&existing).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+	} else {
 		return nil, errors.New("username or email already exists")
 	}
 

@@ -7,20 +7,19 @@ import (
 )
 
 // WebHandler handles web UI requests.
-type WebHandler struct {
-}
+type WebHandler struct{}
 
 // NewWebHandler creates a new web handler.
 func NewWebHandler() *WebHandler {
 	return &WebHandler{}
 }
 
-// Index redirects to dashboard
+// Index redirects to dashboard.
 func (h *WebHandler) Index(c *gin.Context) {
 	c.Redirect(http.StatusFound, "/dashboard")
 }
 
-// Login renders the login page
+// Login renders the login page.
 func (h *WebHandler) Login(c *gin.Context) {
 	// If already logged in, redirect to dashboard
 	if _, exists := c.Get("user"); exists {
@@ -32,16 +31,20 @@ func (h *WebHandler) Login(c *gin.Context) {
 	})
 }
 
-// Dashboard renders the dashboard page
+// Dashboard renders the dashboard page.
 func (h *WebHandler) Dashboard(c *gin.Context) {
+	user, _ := c.Get("user")
 	c.HTML(http.StatusOK, "dashboard.html", gin.H{
 		"title": "Dashboard - GitDuppy",
+		"user":  user,
 	})
 }
 
-// Config renders the configuration page
+// Config renders the configuration page.
 func (h *WebHandler) Config(c *gin.Context) {
+	user, _ := c.Get("user")
 	c.HTML(http.StatusOK, "config.html", gin.H{
 		"title": "Settings - GitDuppy",
+		"user":  user,
 	})
 }

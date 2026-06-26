@@ -208,7 +208,7 @@ func (s *RepositoryService) UpdateRepository(ctx context.Context, id uuid.UUID, 
 	repo.UpdatedAt = time.Now()
 
 	// Use a transaction so Save and tag replacement are atomic.
-	err = s.db.Transaction(func(tx *gorm.DB) error {
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Save(repo).Error; err != nil {
 			return err
 		}

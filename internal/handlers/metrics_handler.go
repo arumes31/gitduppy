@@ -122,7 +122,7 @@ var (
 
 	RepositoriesTotal = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "gitduppy_repositories_total",
+			Name: "gitduppy_repositories",
 			Help: "Total number of repositories by status",
 		},
 		[]string{"status"},

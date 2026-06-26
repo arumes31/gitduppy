@@ -222,14 +222,14 @@ func (h *WebhookHandler) ReceiveWebhook(c *gin.Context) {
 	}
 
 	// Parse payload based on provider.
-	payload, parseErr := h.parseWebhookPayload(provider, body)
+	_, parseErr := h.parseWebhookPayload(provider, body)
 	if parseErr != nil {
 		response.BadRequest(c, "INVALID_PAYLOAD", "Failed to parse webhook payload: "+parseErr.Error())
 		return
 	}
 
 	// Trigger clone jobs for matching repositories.
-	if triggerErr := h.triggerCloneJobs(c, webhook, payload); triggerErr != nil {
+	if triggerErr := h.triggerCloneJobs(c, webhook, body); triggerErr != nil {
 		response.InternalError(c, "Failed to trigger clone jobs: "+triggerErr.Error())
 		return
 	}
@@ -280,7 +280,7 @@ func (h *WebhookHandler) matchesGitHubWebhook(wh *models.WebhookConfig, c *gin.C
 	if c.GetHeader("X-GitHub-Event") == "" {
 		return false
 	}
-	return matchWebhookByRepoURL(wh, body)
+	return h.matchWebhookByRepoURL(wh, body)
 }
 
 // matchesGitLabWebhook checks if the request matches a GitLab webhook.
@@ -288,23 +288,23 @@ func (h *WebhookHandler) matchesGitLabWebhook(wh *models.WebhookConfig, c *gin.C
 	if c.GetHeader("X-Gitlab-Event") == "" {
 		return false
 	}
-	return matchWebhookByRepoURL(wh, body)
+	return h.matchWebhookByRepoURL(wh, body)
 }
 
 // matchesBitbucketWebhook checks if the request matches a Bitbucket webhook.
 func (h *WebhookHandler) matchesBitbucketWebhook(wh *models.WebhookConfig, _ *gin.Context, body []byte) bool {
-	return matchWebhookByRepoURL(wh, body)
+	return h.matchWebhookByRepoURL(wh, body)
 }
 
 // matchesGenericWebhook checks if the request matches a generic webhook.
 func (h *WebhookHandler) matchesGenericWebhook(wh *models.WebhookConfig, _ *gin.Context, body []byte) bool {
-	return matchWebhookByRepoURL(wh, body)
+	return h.matchWebhookByRepoURL(wh, body)
 }
 
 // matchWebhookByRepoURL matches incoming webhook payload's repository URL
 // against the webhook config's RepositoryID or URLPattern.
 // If the config has neither, it is treated as a catch-all.
-func matchWebhookByRepoURL(wh *models.WebhookConfig, body []byte) bool {
+func (h *WebhookHandler) matchWebhookByRepoURL(wh *models.WebhookConfig, body []byte) bool {
 	// If webhook is scoped to a specific repository or URL pattern, validate
 	// against the payload's repository URL.
 	if wh.RepositoryID != nil || wh.URLPattern != "" {
@@ -312,13 +312,23 @@ func matchWebhookByRepoURL(wh *models.WebhookConfig, body []byte) bool {
 		if repoURL == "" {
 			return false
 		}
+
+		// If RepositoryID is set, ensure the payload's repoURL corresponds to that repository.
+		if wh.RepositoryID != nil {
+			var repo models.Repository
+			if err := h.webhookService.DB().First(&repo, wh.RepositoryID).Error; err != nil {
+				return false
+			}
+			if !containsFold(repoURL, repo.URL) && !containsFold(repo.URL, repoURL) {
+				return false
+			}
+		}
+
 		if wh.URLPattern != "" {
 			if !containsFold(repoURL, wh.URLPattern) {
 				return false
 			}
 		}
-		// If only RepositoryID is set, the URL check passes — the repo
-		// association is verified in triggerCloneJobs.
 	}
 	return true
 }
@@ -326,16 +336,67 @@ func matchWebhookByRepoURL(wh *models.WebhookConfig, body []byte) bool {
 // extractRepoURLFromPayload tries to pull the repository clone URL from a
 // provider webhook JSON payload.
 func extractRepoURLFromPayload(body []byte) string {
+	type Link struct {
+		Href string `json:"href"`
+	}
+	type BitbucketCloneLink struct {
+		Name string `json:"name"`
+		Href string `json:"href"`
+	}
 	var payload struct {
+		Project struct {
+			GitHTTPURL string `json:"git_http_url"`
+			GitSSHURL  string `json:"git_ssh_url"`
+			WebURL     string `json:"web_url"`
+			URL        string `json:"url"`
+		} `json:"project"`
 		Repository struct {
-			CloneURL string `json:"clone_url"`
-			HTMLURL  string `json:"html_url"`
-			URL      string `json:"url"`
+			CloneURL   string `json:"clone_url"`
+			HTMLURL    string `json:"html_url"`
+			URL        string `json:"url"`
+			CloneURLBB string `json:"cloneUrl"` // Bitbucket Server
+			Links      struct {
+				Clone []BitbucketCloneLink `json:"clone"`
+				HTML  Link                 `json:"html"`
+				Self  Link                 `json:"self"`
+			} `json:"links"`
 		} `json:"repository"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return ""
 	}
+
+	// 1. Try GitLab project fields
+	if payload.Project.GitHTTPURL != "" {
+		return payload.Project.GitHTTPURL
+	}
+	if payload.Project.GitSSHURL != "" {
+		return payload.Project.GitSSHURL
+	}
+	if payload.Project.WebURL != "" {
+		return payload.Project.WebURL
+	}
+	if payload.Project.URL != "" {
+		return payload.Project.URL
+	}
+
+	// 2. Try Bitbucket links metadata
+	for _, cloneLink := range payload.Repository.Links.Clone {
+		if cloneLink.Href != "" {
+			return cloneLink.Href
+		}
+	}
+	if payload.Repository.Links.HTML.Href != "" {
+		return payload.Repository.Links.HTML.Href
+	}
+	if payload.Repository.Links.Self.Href != "" {
+		return payload.Repository.Links.Self.Href
+	}
+	if payload.Repository.CloneURLBB != "" {
+		return payload.Repository.CloneURLBB
+	}
+
+	// 3. Fall back to standard repository fields
 	if payload.Repository.CloneURL != "" {
 		return payload.Repository.CloneURL
 	}
@@ -434,27 +495,26 @@ func (h *WebhookHandler) parseWebhookPayload(_ string, body []byte) (map[string]
 }
 
 // triggerCloneJobs triggers clone jobs for repositories matching the webhook.
-func (h *WebhookHandler) triggerCloneJobs(c *gin.Context, webhook *models.WebhookConfig, _ map[string]interface{}) error {
+func (h *WebhookHandler) triggerCloneJobs(c *gin.Context, webhook *models.WebhookConfig, body []byte) error {
+	repoURL := extractRepoURLFromPayload(body)
+	if repoURL == "" {
+		return fmt.Errorf("missing repository URL in payload")
+	}
+
 	// If webhook is associated with a specific repository
 	if webhook.RepositoryID != nil {
 		_, err := h.webhookService.CloneService().CreateCloneJob(c, *webhook.RepositoryID, "webhook")
 		return err
 	}
 
-	// If webhook has a URL pattern, find matching repositories
+	// If webhook has a URL pattern, find the specific matching repository
 	if webhook.URLPattern != "" {
-		// Find repositories matching the URL pattern
-		repos, err := h.webhookService.FindRepositoriesByURLPattern(c, webhook.URLPattern)
-		if err != nil {
-			return err
+		var repo models.Repository
+		if err := h.webhookService.DB().WithContext(c).Where("url = ?", repoURL).First(&repo).Error; err != nil {
+			return fmt.Errorf("repository not found for URL %s: %w", repoURL, err)
 		}
-		for _, repo := range repos {
-			_, err := h.webhookService.CloneService().CreateCloneJob(c, repo.ID, "webhook")
-			if err != nil {
-				// Log error but continue with other repositories
-				continue
-			}
-		}
+		_, err := h.webhookService.CloneService().CreateCloneJob(c, repo.ID, "webhook")
+		return err
 	}
 
 	return nil

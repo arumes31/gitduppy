@@ -63,15 +63,18 @@ func (h *AuthHandler) Login(c *gin.Context) {
 // Logout handles POST /api/v1/auth/logout.
 func (h *AuthHandler) Logout(c *gin.Context) {
 	sessionToken, err := c.Cookie("session")
+	var logoutErr error
 	if err == nil && sessionToken != "" {
-		if logoutErr := h.authService.Logout(c, sessionToken); logoutErr != nil {
-			response.InternalError(c, "Failed to invalidate session: "+logoutErr.Error())
-			return
-		}
+		logoutErr = h.authService.Logout(c, sessionToken)
 	}
 
-	// Clear cookie
+	// Always clear cookie
 	c.SetCookie("session", "", -1, "/", "", false, true)
+
+	if logoutErr != nil {
+		response.InternalError(c, "Failed to invalidate session: "+logoutErr.Error())
+		return
+	}
 
 	response.SuccessWithMessage(c, "Logout successful", nil)
 }

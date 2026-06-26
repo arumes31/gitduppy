@@ -442,7 +442,7 @@ body {
 /* Skeleton Loading */
 .skeleton-text {
     height: 20px;
-    background: linear-gradient(90px, rgba(255,255,255,0.05) 25%, rgba(255,255,255,0.1) 50%, rgba(255,255,255,0.05) 75%);
+    background: linear-gradient(90deg, rgba(255,255,255,0.05) 25%, rgba(255,255,255,0.1) 50%, rgba(255,255,255,0.05) 75%);
     background-size: 200% 100%;
     animation: skeleton-loading 1.5s infinite;
     border-radius: 4px;
@@ -485,4 +485,25 @@ body {
 @keyframes slideIn {
     from { transform: translateX(100%); opacity: 0; }
     to { transform: translateX(0); opacity: 1; }
+}
+
+/* Layout Grid Utilities */
+.dashboard-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 24px;
+    margin-top: 24px;
+}
+
+.col-span-2 {
+    grid-column: span 2;
+}
+
+@media (max-width: 1024px) {
+    .dashboard-grid {
+        grid-template-columns: 1fr;
+    }
+    .col-span-2 {
+        grid-column: span 1;
+    }
 }

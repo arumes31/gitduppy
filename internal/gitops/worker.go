@@ -303,22 +303,20 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 				repo.Description = &desc
 				w.db.Model(&repo).Update("description", desc)
 			}
-			
+
 			// Update tags
-			if len(topics) > 0 {
-				var tags []models.Tag
-				for _, topic := range topics {
-					var tag models.Tag
-					if err := w.db.Where("name = ?", topic).FirstOrCreate(&tag, models.Tag{
-						Name:  topic,
-						Color: "#000000", // Default color for auto-generated tags
-					}).Error; err == nil {
-						tags = append(tags, tag)
-					}
+			var tags []models.Tag
+			for _, topic := range topics {
+				var tag models.Tag
+				if err := w.db.Where("name = ?", topic).FirstOrCreate(&tag, models.Tag{
+					Name:  topic,
+					Color: "#000000", // Default color for auto-generated tags
+				}).Error; err == nil {
+					tags = append(tags, tag)
 				}
-				if len(tags) > 0 {
-					w.db.Model(&repo).Association("Tags").Replace(tags)
-				}
+			}
+			if err := w.db.Model(&repo).Association("Tags").Replace(tags); err != nil {
+				logger.Error("Failed to sync repository tags", zap.Error(err))
 			}
 		}
 	}

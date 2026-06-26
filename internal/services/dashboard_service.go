@@ -53,7 +53,11 @@ type StatusBreakdown struct {
 
 // GetStats returns dashboard statistics.
 func (s *DashboardService) GetStats(ctx context.Context) (*DashboardStats, error) {
-	stats := &DashboardStats{}
+	stats := &DashboardStats{
+		RecentActivity:            &RecentActivity{},
+		CloneJobStatusBreakdown:   &StatusBreakdown{},
+		RepositoryStatusBreakdown: &StatusBreakdown{},
+	}
 
 	db := s.db.WithContext(ctx)
 

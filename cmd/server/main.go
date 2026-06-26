@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"github.com/gitduppy/gitduppy/pkg/crypto"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 var (
@@ -69,10 +71,10 @@ func main() {
 	auditService := services.NewAuditService()
 	tagService := services.NewTagService()
 	dashboardService := services.NewDashboardService()
-	
+
 	configService := services.NewConfigService(cfg, database.GetDB(), encryptionService)
 	oauthService := services.NewOAuthService(configService)
-	
+
 	backupService := services.NewBackupService(cfg)
 	emailService := services.NewEmailService(cfg)
 	healthService := services.NewHealthService()
@@ -232,9 +234,13 @@ func createDefaultAdmin() error {
 	for _, tag := range defaultTags {
 		var existing models.Tag
 		if err := db.Where("name = ?", tag.Name).First(&existing).Error; err != nil {
-			tag.ID = uuid.New()
-			if err := db.Create(&tag).Error; err != nil {
-				log.Printf("Warning: failed to create default tag %s: %v", tag.Name, err)
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				tag.ID = uuid.New()
+				if err := db.Create(&tag).Error; err != nil {
+					return fmt.Errorf("failed to create default tag %s: %w", tag.Name, err)
+				}
+			} else {
+				return fmt.Errorf("failed to query default tag %s: %w", tag.Name, err)
 			}
 		}
 	}
@@ -285,11 +291,11 @@ func setupRouter(
 	if cfg.Monitoring.MetricsEnabled {
 		router.GET(cfg.Monitoring.MetricsPath, metricsHandler.GetMetrics)
 	}
-	
+
 	// Web UI Routes
 	router.GET("/login", webHandler.Login)
 	router.GET("/", webHandler.Index)
-	
+
 	webGroup := router.Group("/")
 	webGroup.Use(authMiddleware.WebMiddleware())
 	{

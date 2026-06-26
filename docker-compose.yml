@@ -46,6 +46,8 @@ services:
       - POSTGRES_USER=gitduppy
       - POSTGRES_PASSWORD=gitduppy
     volumes:
+      # UPGRADE/MIGRATION: If upgrading from the legacy `./data/postgres` bind mount,
+      # copy your data using: docker run --rm -v ./data/postgres:/from -v gitduppy_postgres_data:/to alpine sh -c "cp -a /from/. /to/"
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U gitduppy -d gitduppy"]
@@ -61,4 +63,7 @@ networks:
     driver: bridge
 
 volumes:
+  # Named volume for postgres database storage.
+  # To migrate existing data from the legacy `./data/postgres` bind mount:
+  # docker run --rm -v ./data/postgres:/from -v gitduppy_postgres_data:/to alpine sh -c "cp -a /from/. /to/"
   postgres_data:

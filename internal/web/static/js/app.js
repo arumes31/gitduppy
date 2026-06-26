@@ -4,12 +4,16 @@ function showToast(message, type = 'success') {
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
     
-    let icon = type === 'success' ? 'check-circle' : 'alert-circle';
+    let iconName = type === 'success' ? 'check-circle' : 'alert-circle';
     
-    toast.innerHTML = `
-        <i data-lucide="${icon}"></i>
-        <span>${message}</span>
-    `;
+    const icon = document.createElement('i');
+    icon.setAttribute('data-lucide', iconName);
+    
+    const span = document.createElement('span');
+    span.textContent = message;
+    
+    toast.appendChild(icon);
+    toast.appendChild(span);
     
     container.appendChild(toast);
     lucide.createIcons();

@@ -3,6 +3,7 @@ package gitops
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -42,25 +43,32 @@ func (f *GitHubMetadataFetcher) FetchMetadata(ctx context.Context, repoURL, stor
 		return fmt.Errorf("failed to create backup directory: %w", err)
 	}
 
+	var errs []error
 	if issues {
 		// When both issues and PRs are mirrored, filter out PRs from /issues
 		// (GitHub's /issues endpoint returns PRs too via the pull_request key).
 		filterPRs := prs
 		if err := f.fetchPaginatedJSON(ctx, owner, repoName, "issues?state=all&per_page=100", filepath.Join(backupDir, "issues.json"), token, filterPRs); err != nil {
 			f.logger.Error("Failed to fetch issues", zap.Error(err))
+			errs = append(errs, fmt.Errorf("failed to fetch issues: %w", err))
 		}
 	}
 	if prs {
 		if err := f.fetchPaginatedJSON(ctx, owner, repoName, "pulls?state=all&per_page=100", filepath.Join(backupDir, "pull_requests.json"), token, false); err != nil {
 			f.logger.Error("Failed to fetch pull requests", zap.Error(err))
+			errs = append(errs, fmt.Errorf("failed to fetch pull requests: %w", err))
 		}
 	}
 	if releases {
 		if err := f.fetchPaginatedJSON(ctx, owner, repoName, "releases?per_page=100", filepath.Join(backupDir, "releases.json"), token, false); err != nil {
 			f.logger.Error("Failed to fetch releases", zap.Error(err))
+			errs = append(errs, fmt.Errorf("failed to fetch releases: %w", err))
 		}
 	}
 
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
 	return nil
 }
 

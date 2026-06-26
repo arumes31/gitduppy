@@ -204,8 +204,13 @@ func (s *OAuthService) getGoogleEmail(ctx context.Context, token *oauth2.Token) 
 		return "", fmt.Errorf("failed to create oidc provider: %w", err)
 	}
 
+	rawIDToken, ok := token.Extra("id_token").(string)
+	if !ok || rawIDToken == "" {
+		return "", errors.New("no id_token found in oauth token response")
+	}
+
 	ggConfig := s.configService.GetGoogleOAuth(ctx)
-	idToken, err := provider.Verifier(&oidc.Config{ClientID: ggConfig.ClientID}).Verify(ctx, token.AccessToken)
+	idToken, err := provider.Verifier(&oidc.Config{ClientID: ggConfig.ClientID}).Verify(ctx, rawIDToken)
 	if err != nil {
 		return "", fmt.Errorf("failed to verify id token: %w", err)
 	}

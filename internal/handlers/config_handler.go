@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gitduppy/gitduppy/internal/config"
 	"github.com/gitduppy/gitduppy/internal/middleware"
 	"github.com/gitduppy/gitduppy/internal/services"
 	"github.com/gitduppy/gitduppy/pkg/response"
@@ -41,21 +42,24 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 		return
 	}
 
-	var newConfig map[string]interface{}
+	var newConfig config.Config
 	if err := c.ShouldBindJSON(&newConfig); err != nil {
 		response.BadRequest(c, "INVALID_REQUEST", err.Error())
 		return
 	}
 
-	// For now, we'll just return success since actual config updates require restart
-	// In a real implementation, you'd validate and apply the new config
+	if err := h.configService.UpdateConfig(c, &newConfig); err != nil {
+		response.InternalError(c, "Failed to update configuration: "+err.Error())
+		return
+	}
+
 	response.SuccessWithMessage(c, "Configuration updated successfully. Application restart required.", nil)
 }
 
 // UpdateOAuthSettingsRequest represents the payload to update OAuth settings.
 type UpdateOAuthSettingsRequest struct {
-	Provider     string `json:"provider" validate:"required,oneof=github gitlab google"`
-	ClientID     string `json:"client_id" validate:"required"`
+	Provider     string `json:"provider" binding:"required,oneof=github gitlab google"`
+	ClientID     string `json:"client_id" binding:"required"`
 	ClientSecret string `json:"client_secret"`
 }
 
@@ -76,15 +80,30 @@ func (h *ConfigHandler) UpdateOAuthSettings(c *gin.Context) {
 	idKey := "oauth2_" + req.Provider + "_client_id"
 	secretKey := "oauth2_" + req.Provider + "_client_secret"
 
+	// Fetch previous client_id for rollback/compensation
+	var prevClientID string
+	var hasPrevClient bool
+	if prevVal, getErr := h.configService.GetSettingString(c, idKey); getErr == nil {
+		prevClientID = prevVal
+		hasPrevClient = true
+	}
+
+	// Save client_id
 	if err := h.configService.SetSetting(c, idKey, req.ClientID, "OAuth Client ID for "+req.Provider, false); err != nil {
 		response.ErrorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to save client_id")
 		return
 	}
 
-	// Only update the secret if one was provided (don't overwrite with empty string unless intentional, 
+	// Only update the secret if one was provided (don't overwrite with empty string unless intentional,
 	// but here we just overwrite if provided. A robust implementation might handle partial updates).
 	if req.ClientSecret != "" {
 		if err := h.configService.SetSetting(c, secretKey, req.ClientSecret, "OAuth Client Secret for "+req.Provider, true); err != nil {
+			// Rollback/compensate client_id write
+			if hasPrevClient {
+				_ = h.configService.SetSetting(c, idKey, prevClientID, "OAuth Client ID for "+req.Provider, false)
+			} else {
+				_ = h.configService.SetSetting(c, idKey, "", "OAuth Client ID for "+req.Provider, false)
+			}
 			response.ErrorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to save client_secret")
 			return
 		}

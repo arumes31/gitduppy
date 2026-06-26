@@ -64,7 +64,11 @@ type CreateTagRequest struct {
 func (s *TagService) CreateTag(ctx context.Context, req *CreateTagRequest) (*models.Tag, error) {
 	// Check if tag name exists
 	var existing models.Tag
-	if err := s.db.WithContext(ctx).Where("name = ?", req.Name).First(&existing).Error; err == nil {
+	if err := s.db.WithContext(ctx).Where("name = ?", req.Name).First(&existing).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+	} else {
 		return nil, errors.New("tag name already exists")
 	}
 
@@ -98,7 +102,11 @@ func (s *TagService) UpdateTag(ctx context.Context, id uuid.UUID, req *UpdateTag
 	if req.Name != nil {
 		// Check if name is taken by another tag
 		var existing models.Tag
-		if err := s.db.Where("name = ? AND id != ?", *req.Name, id).First(&existing).Error; err == nil {
+		if err := s.db.WithContext(ctx).Where("name = ? AND id != ?", *req.Name, id).First(&existing).Error; err != nil {
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, err
+			}
+		} else {
 			return nil, errors.New("tag name already exists")
 		}
 		tag.Name = *req.Name

@@ -27,6 +27,7 @@ jobs:
 
       - name: Run golangci-lint
         run: |
+          set -o pipefail
           golangci-lint run --config .golangci.yml --timeout 5m --out-format line-number | tee lint-report.txt
 
       - name: Upload lint results

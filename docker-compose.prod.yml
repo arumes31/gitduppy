@@ -14,9 +14,9 @@ services:
       - GITMIRRORS_DATABASE_SSLMODE=disable
       - SERVER_PORT=8080
       - SERVER_HOST=0.0.0.0
-      - GITMIRRORS_SECURITY_MASTER_KEY=${ENCRYPTION_KEY:-your-32-byte-long-encryption-key}
-      - GITMIRRORS_SECURITY_SESSION_SECRET=${SESSION_SECRET:-your-32-byte-long-session-secret}
-      - GITMIRRORS_SECURITY_CSRF_KEY=${CSRF_KEY:-your-32-byte-long-csrf-secret-12}
+      - GITMIRRORS_SECURITY_MASTER_KEY=${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
+      - GITMIRRORS_SECURITY_SESSION_SECRET=${SESSION_SECRET:?SESSION_SECRET is required}
+      - GITMIRRORS_SECURITY_CSRF_KEY=${CSRF_KEY:?CSRF_KEY is required}
       - SMTP_HOST=${SMTP_HOST}
       - SMTP_PORT=${SMTP_PORT}
       - SMTP_USERNAME=${SMTP_USERNAME}
@@ -46,6 +46,8 @@ services:
       - POSTGRES_USER=gitduppy
       - POSTGRES_PASSWORD=gitduppy
     volumes:
+      # UPGRADE/MIGRATION: If upgrading from the legacy `./data/postgres` bind mount,
+      # copy your data using: docker run --rm -v ./data/postgres:/from -v gitduppy_postgres_data:/to alpine sh -c "cp -a /from/. /to/"
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U gitduppy -d gitduppy" ]
@@ -62,4 +64,7 @@ networks:
     driver: bridge
 
 volumes:
+  # Named volume for postgres database storage.
+  # To migrate existing data from the legacy `./data/postgres` bind mount:
+  # docker run --rm -v ./data/postgres:/from -v gitduppy_postgres_data:/to alpine sh -c "cp -a /from/. /to/"
   postgres_data:
