@@ -341,19 +341,25 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 			token = creds.Password
 		}
 
-		desc, topics, err := fetcher.FetchRepositoryInfo(w.ctx, repo.URL, token)
+		info, err := fetcher.FetchRepositoryInfo(w.ctx, repo.URL, token)
 		if err != nil {
 			logger.Warn("failed to fetch github repo info", zap.Error(err))
 		} else {
 			// Update description
-			if desc != "" {
-				repo.Description = &desc
-				w.db.Model(&repo).Update("description", desc)
+			if info.Description != "" {
+				repo.Description = &info.Description
+				w.db.Model(&repo).Update("description", info.Description)
+			}
+
+			// Update visibility (public/private)
+			if info.Visibility != "" {
+				repo.Visibility = info.Visibility
+				w.db.Model(&repo).Update("visibility", info.Visibility)
 			}
 
 			// Update tags
 			var tags []models.Tag
-			for _, topic := range topics {
+			for _, topic := range info.Topics {
 				var tag models.Tag
 				if err := w.db.Where("name = ?", topic).FirstOrCreate(&tag, models.Tag{
 					Name:  topic,
