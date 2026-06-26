@@ -203,14 +203,23 @@ if (oauthForm) {
 
     window.registerGitHubAppAutomatically = function() {
         const origin = window.location.origin;
+        
+        // Clean hostname (alphanumeric and hyphens only) and generate a random 5-character suffix for uniqueness
+        const hostClean = window.location.hostname.replace(/[^a-zA-Z0-9-]/g, '-');
+        const rand = Math.random().toString(36).substring(2, 7);
+        // Truncate host part to keep the final name strictly under GitHub's 34-character limit:
+        // "GitDuppy-" (9 chars) + "-" (1 char) + hostPart + "-" (1 char) + rand (5 chars) = 16 chars overhead
+        const maxHostLen = 34 - 16;
+        const hostPart = hostClean.substring(0, maxHostLen);
+        const name = "GitDuppy-" + hostPart + "-" + rand;
+
         const manifest = {
-            name: "GitDuppy (" + window.location.hostname + ")",
+            name: name,
             url: origin,
             redirect_url: origin + "/api/v1/oauth/github/manifest-callback",
             callback_urls: [
                 origin + "/api/v1/oauth/github/callback"
             ],
-            request_oauth_on_install: true,
             setup_url: origin + "/config",
             public: false,
             default_permissions: {
