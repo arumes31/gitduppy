@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html/template"
 	"log"
 	"net/http"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/render"
 	"github.com/gitduppy/gitduppy/internal/config"
 	"github.com/gitduppy/gitduppy/internal/database"
 	"github.com/gitduppy/gitduppy/internal/gitops"
@@ -120,6 +122,7 @@ func main() {
 	gitHealthHandler := handlers.NewGitHealthHandler(healthService)
 	metricsHandler := handlers.NewMetricsHandler()
 	webHandler := handlers.NewWebHandler()
+	browseHandler := handlers.NewBrowseHandler(repoService)
 
 	// Initialize middleware
 	authMiddleware := middleware.NewAuthMiddleware()
@@ -154,6 +157,7 @@ func main() {
 		gitHealthHandler,
 		metricsHandler,
 		webHandler,
+		browseHandler,
 	)
 
 	// Create HTTP server
@@ -271,6 +275,7 @@ func setupRouter(
 	gitHealthHandler *handlers.GitHealthHandler,
 	metricsHandler *handlers.MetricsHandler,
 	webHandler *handlers.WebHandler,
+	browseHandler *handlers.BrowseHandler,
 ) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
@@ -278,7 +283,7 @@ func setupRouter(
 	// Static file serving and HTML Templates
 	router.Static("/static", "./static")
 	router.Static("/assets", "./internal/web/static")
-	router.LoadHTMLGlob("internal/web/templates/*")
+	router.HTMLRender = loadTemplates()
 
 	// Middleware - add panic recovery
 	router.Use(gin.Recovery())
@@ -301,6 +306,9 @@ func setupRouter(
 	{
 		webGroup.GET("/dashboard", webHandler.Dashboard)
 		webGroup.GET("/config", webHandler.Config)
+		webGroup.GET("/repos", webHandler.RepoList)
+		webGroup.GET("/repos/:id", webHandler.RepoDetail)
+		webGroup.GET("/repos/:id/commit/:sha", webHandler.RepoCommit)
 	}
 
 	// Health check endpoints (no auth required)
@@ -312,6 +320,17 @@ func setupRouter(
 	// API v1 group
 	v1 := router.Group("/api/v1")
 	{
+		// Browse routes (authenticated)
+		browseGroup := v1.Group("/repos")
+		browseGroup.Use(authMiddleware.Middleware())
+		{
+			browseGroup.GET("/:id/refs", browseHandler.GetRefs)
+			browseGroup.GET("/:id/tree", browseHandler.GetTree)
+			browseGroup.GET("/:id/blob", browseHandler.GetBlob)
+			browseGroup.GET("/:id/commits", browseHandler.GetCommits)
+			browseGroup.GET("/:id/commit/:sha", browseHandler.GetCommit)
+			browseGroup.GET("/:id/download", browseHandler.DownloadRepo)
+		}
 		// Auth routes
 		auth := v1.Group("/auth")
 		{
@@ -351,9 +370,14 @@ func setupRouter(
 		{
 			repos.GET("", repoHandler.ListRepositories)
 			repos.POST("", repoHandler.CreateRepository)
+			repos.GET("/paperbin", repoHandler.GetPaperbin)
 			repos.GET("/:id", repoHandler.GetRepository)
 			repos.PUT("/:id", repoHandler.UpdateRepository)
 			repos.DELETE("/:id", repoHandler.DeleteRepository)
+			repos.POST("/:id/restore", repoHandler.RestoreRepository)
+			repos.DELETE("/:id/force", repoHandler.PermanentDeleteRepository)
+			repos.POST("/:id/paperbin/branches/:branchId/restore", repoHandler.RestoreBranch)
+			repos.DELETE("/:id/paperbin/branches/:branchId", repoHandler.PermanentDeleteBranch)
 			repos.PATCH("/:id/status", repoHandler.SetRepositoryStatus)
 			repos.POST("/:id/clone", repoHandler.TriggerClone)
 			repos.GET("/:id/logs", repoHandler.GetRepositoryLogs)
@@ -446,4 +470,26 @@ func setupRouter(
 	}
 
 	return router
+}
+
+// CustomHTMLRenderer is a custom HTML renderer for Gin that prevents template block collisions.
+type CustomHTMLRenderer map[string]*template.Template
+
+func (r CustomHTMLRenderer) Instance(name string, data interface{}) render.Render {
+	return render.HTML{
+		Template: r[name],
+		Name:     name,
+		Data:     data,
+	}
+}
+
+func loadTemplates() CustomHTMLRenderer {
+	r := make(CustomHTMLRenderer)
+	r["login.html"] = template.Must(template.ParseFiles("internal/web/templates/base.html", "internal/web/templates/login.html"))
+	r["dashboard.html"] = template.Must(template.ParseFiles("internal/web/templates/base.html", "internal/web/templates/dashboard.html"))
+	r["config.html"] = template.Must(template.ParseFiles("internal/web/templates/base.html", "internal/web/templates/config.html"))
+	r["repos.html"] = template.Must(template.ParseFiles("internal/web/templates/base.html", "internal/web/templates/repos.html"))
+	r["repo_detail.html"] = template.Must(template.ParseFiles("internal/web/templates/base.html", "internal/web/templates/repo_detail.html"))
+	r["repo_commit.html"] = template.Must(template.ParseFiles("internal/web/templates/base.html", "internal/web/templates/repo_commit.html"))
+	return r
 }

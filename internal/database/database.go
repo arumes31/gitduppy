@@ -52,6 +52,7 @@ func AutoMigrate() error {
 	err := DB.AutoMigrate(
 		&models.User{},
 		&models.Repository{},
+		&models.DeletedBranch{},
 		&models.CloneJob{},
 		&models.CloneLog{},
 		&models.APIKey{},

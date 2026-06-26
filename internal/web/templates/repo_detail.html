@@ -1,0 +1,98 @@
+{{template "base" .}}
+
+{{define "content"}}
+<div id="repo-browser" data-repo-id="{{.repoID}}">
+
+    <!-- Repo header bar -->
+    <div class="repo-header">
+        <div class="repo-title-row">
+            <a href="/repos" class="breadcrumb-back"><i data-lucide="arrow-left"></i></a>
+            <h1 class="page-title repo-name" id="repo-name-title">Loading...</h1>
+            <span class="repo-status-badge" id="repo-status-badge"></span>
+        </div>
+        <p class="text-muted" id="repo-description"></p>
+
+        <div class="repo-controls">
+            <!-- Branch switcher -->
+            <div class="branch-switcher" id="branch-switcher">
+                <button class="btn btn-secondary branch-btn" id="branch-btn" onclick="toggleBranchMenu()">
+                    <i data-lucide="git-branch"></i>
+                    <span id="current-branch-label">main</span>
+                    <i data-lucide="chevron-down"></i>
+                </button>
+                <div class="branch-dropdown" id="branch-dropdown" style="display:none">
+                    <div class="branch-search-wrap">
+                        <input type="text" id="branch-filter" placeholder="Find a branch or tag..." oninput="filterRefs(this.value)">
+                    </div>
+                    <div id="branch-list"></div>
+                </div>
+            </div>
+
+            <button class="btn btn-secondary" id="download-zip-btn" onclick="downloadRepoZip()">
+                <i data-lucide="download"></i>
+                <span>Download ZIP</span>
+            </button>
+
+            <!-- Breadcrumb path -->
+            <nav class="file-breadcrumb" id="file-breadcrumb">
+                <span class="bc-item bc-root" onclick="navigateTo('')"><i data-lucide="home"></i></span>
+            </nav>
+        </div>
+    </div>
+
+    <!-- Latest commit bar -->
+    <div class="latest-commit-bar glass-panel" id="latest-commit-bar" style="display:none">
+        <div class="commit-info">
+            <i data-lucide="git-commit"></i>
+            <span class="commit-msg" id="lc-message"></span>
+        </div>
+        <div class="commit-meta-right">
+            <span class="text-muted" id="lc-author"></span>
+            <span class="commit-sha" id="lc-sha" onclick="openCommit()"></span>
+            <span class="text-muted" id="lc-date"></span>
+        </div>
+    </div>
+
+    <!-- File tree -->
+    <div class="browser-layout">
+        <div class="file-tree-panel glass-panel" id="file-tree-panel">
+            <div id="file-tree-loading" class="tree-loading">
+                <i data-lucide="loader" class="spin"></i> Loading...
+            </div>
+            <table class="file-table" id="file-table" style="display:none">
+                <tbody id="file-table-body"></tbody>
+            </table>
+        </div>
+
+        <!-- File content viewer -->
+        <div class="file-content-panel glass-panel" id="file-content-panel" style="display:none">
+            <div class="file-content-header">
+                <span class="file-content-name" id="fc-name"></span>
+                <span class="file-content-size text-muted" id="fc-size"></span>
+                <button class="btn btn-ghost btn-icon" id="fc-close" onclick="closeFilePanel()" title="Close">
+                    <i data-lucide="x"></i>
+                </button>
+            </div>
+            <div class="file-content-body">
+                <pre id="fc-content"><code id="fc-code"></code></pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- Commits tab -->
+    <div class="commits-panel glass-panel mt-6" id="commits-panel" style="display:none">
+        <div class="card-header border-bottom">
+            <h3 class="card-title"><i data-lucide="git-commit"></i> Commit History</h3>
+            <button class="btn btn-ghost btn-icon" onclick="toggleCommitsPanel()" id="commits-toggle-btn"><i data-lucide="chevron-up"></i></button>
+        </div>
+        <div id="commits-list"></div>
+    </div>
+
+    <div class="mt-4 flex gap-3">
+        <button class="btn btn-secondary" onclick="toggleCommitsPanel()">
+            <i data-lucide="git-commit"></i> View Commit History
+        </button>
+    </div>
+
+</div>
+{{end}}

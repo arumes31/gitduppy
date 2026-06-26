@@ -3,6 +3,9 @@ package services
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/gitduppy/gitduppy/internal/database"
@@ -285,15 +288,93 @@ func (s *RepositoryService) applyUpdateFields(repo *models.Repository, req *Upda
 	return nil
 }
 
-// DeleteRepository deletes a repository.
+// DeleteRepository soft-deletes a repository and moves its folder to the paperbin.
 func (s *RepositoryService) DeleteRepository(_ context.Context, id uuid.UUID) error {
-	result := s.db.Delete(&models.Repository{}, id)
+	var repo models.Repository
+	if err := s.db.First(&repo, id).Error; err != nil {
+		return err
+	}
+
+	// Move local folder to paperbin
+	paperbinPath := filepath.Join(filepath.Dir(repo.StoragePath), "paperbin", repo.ID.String())
+	if _, err := os.Stat(repo.StoragePath); err == nil {
+		if err := os.MkdirAll(filepath.Dir(paperbinPath), 0750); err != nil {
+			return fmt.Errorf("failed to create paperbin parent directory: %w", err)
+		}
+		// In case a paperbin folder already exists, remove it first
+		_ = os.RemoveAll(paperbinPath)
+		if err := os.Rename(repo.StoragePath, paperbinPath); err != nil {
+			return fmt.Errorf("failed to move repository to paperbin: %w", err)
+		}
+	}
+
+	// Perform soft delete
+	result := s.db.Delete(&repo)
 	if result.Error != nil {
+		// If DB delete fails, try to move folder back
+		_ = os.Rename(paperbinPath, repo.StoragePath)
 		return result.Error
 	}
-	if result.RowsAffected == 0 {
-		return errors.New("repository not found")
+	return nil
+}
+
+// RestoreRepository restores a soft-deleted repository.
+func (s *RepositoryService) RestoreRepository(_ context.Context, id uuid.UUID) error {
+	var repo models.Repository
+	if err := s.db.Unscoped().Where("id = ? AND deleted_at IS NOT NULL", id).First(&repo).Error; err != nil {
+		return err
 	}
+
+	// Move local folder back from paperbin
+	paperbinPath := filepath.Join(filepath.Dir(repo.StoragePath), "paperbin", repo.ID.String())
+	if _, err := os.Stat(paperbinPath); err == nil {
+		if err := os.MkdirAll(filepath.Dir(repo.StoragePath), 0750); err != nil {
+			return fmt.Errorf("failed to create repository parent directory: %w", err)
+		}
+		// In case a destination folder already exists, remove it
+		_ = os.RemoveAll(repo.StoragePath)
+		if err := os.Rename(paperbinPath, repo.StoragePath); err != nil {
+			return fmt.Errorf("failed to restore repository from paperbin: %w", err)
+		}
+	}
+
+	// Restore DB record
+	if err := s.db.Unscoped().Model(&repo).Update("deleted_at", nil).Error; err != nil {
+		// If DB update fails, try to move folder back to paperbin
+		_ = os.Rename(repo.StoragePath, paperbinPath)
+		return err
+	}
+	return nil
+}
+
+// PermanentDeleteRepository permanently deletes a repository and its files.
+func (s *RepositoryService) PermanentDeleteRepository(_ context.Context, id uuid.UUID) error {
+	var repo models.Repository
+	if err := s.db.Unscoped().First(&repo, id).Error; err != nil {
+		return err
+	}
+
+	// Delete related DeletedBranches
+	if err := s.db.Where("repository_id = ?", id).Delete(&models.DeletedBranch{}).Error; err != nil {
+		return err
+	}
+
+	// Delete related CloneJobs and logs
+	if err := s.db.Where("repository_id = ?", id).Delete(&models.CloneJob{}).Error; err != nil {
+		return err
+	}
+
+	// Perform hard delete in DB
+	if err := s.db.Unscoped().Delete(&repo).Error; err != nil {
+		return err
+	}
+
+	// Delete paperbin folder on disk
+	paperbinPath := filepath.Join(filepath.Dir(repo.StoragePath), "paperbin", repo.ID.String())
+	_ = os.RemoveAll(paperbinPath)
+	// Also delete normal storage path in case it wasn't moved
+	_ = os.RemoveAll(repo.StoragePath)
+
 	return nil
 }
 

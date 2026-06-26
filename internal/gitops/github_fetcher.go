@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -123,6 +124,13 @@ func (f *GitHubMetadataFetcher) fetchPaginatedJSON(ctx context.Context, owner, r
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/%s", owner, repoName, endpoint)
 
 	for apiURL != "" {
+		// Add a micro-sleep to avoid hitting secondary rate limits (abuse detection)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 		if err != nil {
 			return err
@@ -138,9 +146,60 @@ func (f *GitHubMetadataFetcher) fetchPaginatedJSON(ctx context.Context, owner, r
 			return err
 		}
 
+		// Handle Rate Limiting (403 Forbidden or 429 Too Many Requests)
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+			resetHeader := resp.Header.Get("X-RateLimit-Reset")
+			remainingHeader := resp.Header.Get("X-RateLimit-Remaining")
+
+			if resetHeader != "" && remainingHeader == "0" {
+				if resetUnix, parseErr := strconv.ParseInt(resetHeader, 10, 64); parseErr == nil {
+					resetTime := time.Unix(resetUnix, 0)
+					sleepDuration := time.Until(resetTime) + 2*time.Second
+					if sleepDuration > 0 && sleepDuration < 5*time.Minute {
+						f.logger.Warn("GitHub rate limit exceeded. Backing off and sleeping...", 
+							zap.Duration("duration", sleepDuration), 
+							zap.Time("reset_time", resetTime))
+						resp.Body.Close()
+						
+						select {
+						case <-ctx.Done():
+							return ctx.Err()
+						case <-time.After(sleepDuration):
+							continue // Retry the same request
+						}
+					} else {
+						resp.Body.Close()
+						return fmt.Errorf("GitHub rate limit exceeded. Reset at %s, aborting fetch", resetTime)
+					}
+				}
+			}
+		}
+
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
 			return fmt.Errorf("GitHub API returned status: %d", resp.StatusCode)
+		}
+
+		// Check for proactive rate limit sleep if remaining is extremely low
+		remainingHeader := resp.Header.Get("X-RateLimit-Remaining")
+		if remainingHeader == "1" || remainingHeader == "2" {
+			resetHeader := resp.Header.Get("X-RateLimit-Reset")
+			if resetHeader != "" {
+				if resetUnix, parseErr := strconv.ParseInt(resetHeader, 10, 64); parseErr == nil {
+					resetTime := time.Unix(resetUnix, 0)
+					sleepDuration := time.Until(resetTime) + 2*time.Second
+					if sleepDuration > 0 && sleepDuration < 5*time.Minute {
+						f.logger.Info("GitHub rate limit near depletion. Proactively sleeping until reset...", 
+							zap.Duration("duration", sleepDuration))
+						select {
+						case <-ctx.Done():
+							resp.Body.Close()
+							return ctx.Err()
+						case <-time.After(sleepDuration):
+						}
+					}
+				}
+			}
 		}
 
 		body, err := io.ReadAll(resp.Body)

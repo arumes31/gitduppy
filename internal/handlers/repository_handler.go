@@ -4,7 +4,10 @@ import (
 	"log"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gitduppy/gitduppy/internal/database"
+	"github.com/gitduppy/gitduppy/internal/gitops"
 	"github.com/gitduppy/gitduppy/internal/middleware"
+	"github.com/gitduppy/gitduppy/internal/models"
 	"github.com/gitduppy/gitduppy/internal/services"
 	"github.com/gitduppy/gitduppy/pkg/crypto"
 	"github.com/gitduppy/gitduppy/pkg/response"
@@ -295,4 +298,197 @@ func (h *RepositoryHandler) GetRepositoryLogs(c *gin.Context) {
 	}
 
 	response.Success(c, logs)
+}
+
+// GetPaperbin handles GET /api/v1/repositories/paperbin.
+func (h *RepositoryHandler) GetPaperbin(c *gin.Context) {
+	db := database.GetDB()
+
+	// 1. Fetch soft-deleted repositories
+	var repos []models.Repository
+	if err := db.Unscoped().Where("deleted_at IS NOT NULL").Find(&repos).Error; err != nil {
+		response.InternalError(c, "Failed to fetch deleted repositories: "+err.Error())
+		return
+	}
+
+	// 2. Fetch deleted branches
+	var branches []models.DeletedBranch
+	if err := db.Unscoped().Preload("Repository").Find(&branches).Error; err != nil {
+		response.InternalError(c, "Failed to fetch deleted branches: "+err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{
+		"repositories": repos,
+		"branches":     branches,
+	})
+}
+
+// RestoreRepository handles POST /api/v1/repositories/:id/restore.
+func (h *RepositoryHandler) RestoreRepository(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+		return
+	}
+
+	if err := h.repoService.RestoreRepository(c, id); err != nil {
+		response.BadRequest(c, "RESTORE_ERROR", err.Error())
+		return
+	}
+
+	// Fetch restored repo to log and return
+	repo, _ := h.repoService.GetRepositoryByID(c, id)
+
+	user, _ := middleware.GetCurrentUser(c)
+	if user != nil && repo != nil {
+		if err := h.auditService.Log(c, &user.ID, &repo.ID, "repository.restore", gin.H{"name": repo.Name}, c.ClientIP(), c.Request.UserAgent()); err != nil {
+			log.Printf("WARNING: audit log failed for repository.restore repo=%s: %v", repo.ID, err)
+		}
+	}
+
+	response.SuccessWithMessage(c, "Repository restored successfully", repo)
+}
+
+// PermanentDeleteRepository handles DELETE /api/v1/repositories/:id/force.
+func (h *RepositoryHandler) PermanentDeleteRepository(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+		return
+	}
+
+	db := database.GetDB()
+	var repo models.Repository
+	if err := db.Unscoped().First(&repo, id).Error; err != nil {
+		response.NotFound(c, "Repository not found")
+		return
+	}
+
+	if err := h.repoService.PermanentDeleteRepository(c, id); err != nil {
+		response.BadRequest(c, "DELETE_ERROR", err.Error())
+		return
+	}
+
+	user, _ := middleware.GetCurrentUser(c)
+	if user != nil {
+		if err := h.auditService.Log(c, &user.ID, nil, "repository.permanent_delete", gin.H{"id": id, "name": repo.Name}, c.ClientIP(), c.Request.UserAgent()); err != nil {
+			log.Printf("WARNING: audit log failed for repository.permanent_delete: %v", err)
+		}
+	}
+
+	response.SuccessWithMessage(c, "Repository permanently deleted", nil)
+}
+
+// RestoreBranch handles POST /api/v1/repositories/:id/paperbin/branches/:branchId/restore.
+func (h *RepositoryHandler) RestoreBranch(c *gin.Context) {
+	repoID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+		return
+	}
+
+	branchID, err := uuid.Parse(c.Param("branchId"))
+	if err != nil {
+		response.BadRequest(c, "INVALID_ID", "Invalid branch ID format")
+		return
+	}
+
+	db := database.GetDB()
+	
+	var delBranch models.DeletedBranch
+	if err := db.First(&delBranch, branchID).Error; err != nil {
+		response.NotFound(c, "Deleted branch record not found")
+		return
+	}
+
+	if delBranch.RepositoryID != repoID {
+		response.BadRequest(c, "MISMATCH", "Branch does not belong to this repository")
+		return
+	}
+
+	repo, err := h.repoService.GetRepositoryByID(c, repoID)
+	if err != nil {
+		response.NotFound(c, "Active repository not found")
+		return
+	}
+
+	paperbinRef := "refs/paperbin/heads/" + delBranch.BranchName
+	
+	// Recreate branch
+	_, gitErr := gitops.RunGitCommand(c, repo.StoragePath, "branch", delBranch.BranchName, delBranch.CommitSHA)
+	if gitErr != nil {
+		_, gitErr = gitops.RunGitCommand(c, repo.StoragePath, "branch", "-f", delBranch.BranchName, delBranch.CommitSHA)
+	}
+
+	if gitErr != nil {
+		response.InternalError(c, "Failed to recreate git branch: "+gitErr.Error())
+		return
+	}
+
+	// Delete the paperbin ref
+	_, _ = gitops.RunGitCommand(c, repo.StoragePath, "update-ref", "-d", paperbinRef)
+
+	// Delete DeletedBranch record
+	if err := db.Delete(&delBranch).Error; err != nil {
+		response.InternalError(c, "Failed to delete paperbin DB record: "+err.Error())
+		return
+	}
+
+	user, _ := middleware.GetCurrentUser(c)
+	if user != nil {
+		if err := h.auditService.Log(c, &user.ID, &repo.ID, "branch.restore", gin.H{"branch": delBranch.BranchName}, c.ClientIP(), c.Request.UserAgent()); err != nil {
+			log.Printf("WARNING: audit log failed for branch.restore: %v", err)
+		}
+	}
+
+	response.SuccessWithMessage(c, "Branch restored successfully", nil)
+}
+
+// PermanentDeleteBranch handles DELETE /api/v1/repositories/:id/paperbin/branches/:branchId.
+func (h *RepositoryHandler) PermanentDeleteBranch(c *gin.Context) {
+	repoID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+		return
+	}
+
+	branchID, err := uuid.Parse(c.Param("branchId"))
+	if err != nil {
+		response.BadRequest(c, "INVALID_ID", "Invalid branch ID format")
+		return
+	}
+
+	db := database.GetDB()
+
+	var delBranch models.DeletedBranch
+	if err := db.First(&delBranch, branchID).Error; err != nil {
+		response.NotFound(c, "Deleted branch record not found")
+		return
+	}
+
+	if delBranch.RepositoryID != repoID {
+		response.BadRequest(c, "MISMATCH", "Branch does not belong to this repository")
+		return
+	}
+
+	repo, err := h.repoService.GetRepositoryByID(c, repoID)
+	if err == nil {
+		paperbinRef := "refs/paperbin/heads/" + delBranch.BranchName
+		_, _ = gitops.RunGitCommand(c, repo.StoragePath, "update-ref", "-d", paperbinRef)
+	}
+
+	if err := db.Delete(&delBranch).Error; err != nil {
+		response.InternalError(c, "Failed to delete paperbin DB record: "+err.Error())
+		return
+	}
+
+	user, _ := middleware.GetCurrentUser(c)
+	if user != nil {
+		if err := h.auditService.Log(c, &user.ID, &repoID, "branch.permanent_delete", gin.H{"branch": delBranch.BranchName}, c.ClientIP(), c.Request.UserAgent()); err != nil {
+			log.Printf("WARNING: audit log failed for branch.permanent_delete: %v", err)
+		}
+	}
+
+	response.SuccessWithMessage(c, "Pruned branch deleted permanently from paperbin", nil)
 }

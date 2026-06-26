@@ -193,7 +193,54 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 
 	if isUpdate {
 		logger.Info("performing fetch", zap.String("repo", repo.Name))
+
+		// Query references before fetch
+		refsBefore, _ := w.gitOps.GetReferences(w.ctx, repoPath)
+
 		err = w.gitOps.FetchRepository(w.ctx, cloneOpts)
+
+		// If fetch succeeded, check for pruned branches
+		if err == nil {
+			refsAfter, _ := w.gitOps.GetReferences(w.ctx, repoPath)
+
+			// Find missing references that were branches
+			for refName, sha := range refsBefore {
+				isBranch := strings.HasPrefix(refName, "refs/heads/") || strings.HasPrefix(refName, "refs/remotes/origin/")
+				if isBranch {
+					if _, exists := refsAfter[refName]; !exists {
+						// Extract branch name
+						branchName := strings.TrimPrefix(refName, "refs/heads/")
+						branchName = strings.TrimPrefix(branchName, "refs/remotes/origin/")
+
+						// Skip standard HEAD tracking reference
+						if branchName == "HEAD" || strings.HasSuffix(branchName, "/HEAD") {
+							continue
+						}
+
+						logger.Info("pruned branch detected (deleted online)", zap.String("branch", branchName), zap.String("sha", sha))
+
+						// 1. Create a paperbin ref in the local repo to keep the commit alive
+						paperbinRef := "refs/paperbin/heads/" + branchName
+						_, updateErr := RunGitCommand(w.ctx, repoPath, "update-ref", paperbinRef, sha)
+						if updateErr != nil {
+							logger.Error("failed to create paperbin ref", zap.String("ref", paperbinRef), zap.Error(updateErr))
+						}
+
+						// 2. Save in database under DeletedBranch
+						deletedBranch := &models.DeletedBranch{
+							ID:           uuid.New(),
+							RepositoryID: repo.ID,
+							BranchName:   branchName,
+							CommitSHA:    sha,
+							DeletedAt:    time.Now(),
+						}
+						if dbErr := w.db.Create(deletedBranch).Error; dbErr != nil {
+							logger.Error("failed to save deleted branch in DB", zap.Error(dbErr))
+						}
+					}
+				}
+			}
+		}
 	} else {
 		logger.Info("performing clone", zap.String("repo", repo.Name))
 		err = w.gitOps.CloneRepository(w.ctx, cloneOpts)

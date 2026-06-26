@@ -7,24 +7,30 @@
     <title>{{.title}}</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/assets/css/main.css">
+    <link rel="stylesheet" href="/assets/css/highlight.min.css">
     <script src="/assets/js/lucide.min.js"></script>
+    <script src="/assets/js/highlight.min.js"></script>
 </head>
 <body>
     <div class="app-layout">
         {{if .user}}
         <aside class="sidebar glass-panel">
             <div class="sidebar-header">
-                <div class="logo-container">
+                <div class="logo-container sidebar-logo">
                     <img src="/static/images/logo.png" alt="GitDuppy Logo" class="logo-img">
                     <span class="logo-text">GitDuppy</span>
                 </div>
             </div>
             <nav class="sidebar-nav">
-                <a href="/dashboard" class="nav-item active">
+                <a href="/dashboard" class="nav-item {{if eq .title "Dashboard - GitDuppy"}}active{{end}}">
                     <i data-lucide="layout-dashboard"></i>
                     <span>Dashboard</span>
                 </a>
-                <a href="/config" class="nav-item">
+                <a href="/repos" class="nav-item {{if eq .title "Repositories - GitDuppy"}}active{{end}}">
+                    <i data-lucide="git-fork"></i>
+                    <span>Repositories</span>
+                </a>
+                <a href="/config" class="nav-item {{if eq .title "Settings - GitDuppy"}}active{{end}}">
                     <i data-lucide="settings"></i>
                     <span>Settings</span>
                 </a>

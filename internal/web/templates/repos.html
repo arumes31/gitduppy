@@ -1,0 +1,63 @@
+{{template "base" .}}
+
+{{define "content"}}
+<div class="page-header">
+    <div>
+        <h1 class="page-title" id="repos-page-title">Repositories</h1>
+        <p class="text-muted" id="repos-page-desc">All mirrored git repositories.</p>
+    </div>
+    <div class="header-actions">
+        <div class="search-box" id="repo-search-wrap">
+            <i data-lucide="search"></i>
+            <input type="text" id="repo-search" placeholder="Search repositories..." class="form-control" oninput="filterRepos(this.value)">
+        </div>
+        <button class="btn btn-secondary" id="paperbin-toggle-btn" onclick="togglePaperbinView()">
+            <i data-lucide="trash-2"></i>
+            <span id="paperbin-btn-text">Paperbin</span>
+        </button>
+    </div>
+</div>
+
+<div id="repos-container">
+    <div class="repos-grid" id="repos-grid">
+        <!-- loaded by JS -->
+        <div class="repo-skeleton glass-panel"></div>
+        <div class="repo-skeleton glass-panel"></div>
+        <div class="repo-skeleton glass-panel"></div>
+    </div>
+    <p id="repos-empty" class="text-muted text-center mt-6" style="display:none">No repositories found.</p>
+</div>
+
+<div id="paperbin-container" style="display:none">
+    <div class="paperbin-section">
+        <h3 class="card-title mb-4">Deleted Repositories</h3>
+        <div class="repos-grid" id="deleted-repos-grid">
+            <!-- loaded by JS -->
+        </div>
+        <p id="deleted-repos-empty" class="text-muted mt-2" style="display:none">No deleted repositories in paperbin.</p>
+    </div>
+    
+    <div class="paperbin-section mt-8">
+        <h3 class="card-title mb-4">Pruned Branches (Deleted Online)</h3>
+        <div class="glass-panel p-0">
+            <div class="table-responsive">
+                <table class="table" id="deleted-branches-table">
+                    <thead>
+                        <tr>
+                            <th>Branch Name</th>
+                            <th>Original Repository</th>
+                            <th>Last Commit SHA</th>
+                            <th>Pruned Date</th>
+                            <th class="text-right" style="text-align: right; padding-right: 24px;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="deleted-branches-body">
+                        <!-- loaded by JS -->
+                    </tbody>
+                </table>
+            </div>
+            <p id="deleted-branches-empty" class="text-muted text-center py-6" style="display:none">No pruned branches in paperbin.</p>
+        </div>
+    </div>
+</div>
+{{end}}

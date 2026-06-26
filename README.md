@@ -14,7 +14,8 @@ A modern, secure Git repository mirroring and management platform designed for e
 ## Features
 
 - Automated Git repository mirroring with configurable schedules
-- **NEW**: Full GitHub Metadata Mirroring (Issues, PRs, Releases, and Wikis)
+- Full GitHub Metadata Mirroring (Issues, PRs, Releases, and Wikis)
+- GitHub-like web repository browser — browse files, commits, diffs in-browser
 - Role-based access control (RBAC) with fine-grained permissions
 - Comprehensive audit logging for all operations
 - Webhook notifications for repository events
@@ -37,24 +38,60 @@ cd gitduppy
 cp config.example.yaml config.yaml
 
 # Start the services
-docker-compose up -d
+docker compose up -d --build
 
-# Access the dashboard at http://localhost:8080
+# Access the dashboard at http://localhost:7659/login (or http://localhost:8080 inside the container)
 ```
+
+### Default Login Credentials
+
+On the first run, GitDuppy automatically seeds a default administrator account. You can log in with:
+- **Email**: `admin@gitmirrors.local`
+- **Password**: `admin123`
+
+> [!IMPORTANT]
+> You must change this default password immediately upon your first successful login for security compliance.
+
+---
 
 ## Configuration
 
-GitDuppy can be configured via environment variables or a YAML configuration file. The most important configuration options are:
+GitDuppy can be configured via a YAML configuration file (`config.yaml`) or by environment variables. 
 
-### Environment Variables
-- `GITDUPPY_PORT`: Port to run the server on (default: 8080)
-- `DATABASE_URL`: Database connection string (required)
-- `ENCRYPTION_KEY`: 32-byte encryption key for sensitive data (required)
-- `JWT_SECRET`: Secret for JWT token generation (required)
-- `ADMIN_EMAIL`: Initial admin user email (required on first run)
+All environment variables are prefixed with `GITMIRRORS_` and map to the YAML structure using underscores instead of dots (e.g., `security.master_key` maps to `GITMIRRORS_SECURITY_MASTER_KEY`).
+
+### Core Authentication & Security Configurations
+
+To secure your installation, you must generate three 32-byte keys for credential encryption, session signing, and CSRF protection:
+
+1. **Master Key** (`GITMIRRORS_SECURITY_MASTER_KEY` / `security.master_key`): A 32-byte hex-encoded AES key used to encrypt repository credentials in the database.
+2. **Session Secret** (`GITMIRRORS_SECURITY_SESSION_SECRET` / `security.session_secret`): A 32-byte hex-encoded secret used to sign session cookies.
+3. **CSRF Key** (`GITMIRRORS_SECURITY_CSRF_KEY` / `security.csrf_key`): A 32-byte hex-encoded key used for CSRF token generation.
+
+#### Generating Keys
+You can generate secure 32-byte hex keys using the following commands:
+- **Bash**: `openssl rand -hex 32`
+- **PowerShell**: `[Convert]::ToHexString((1..32 | % { Get-Random -Min 0 -Max 256 } -as [byte[]]))`
+
+### OAuth2 Configurations
+
+GitDuppy supports GitHub, GitLab, and Google OAuth2 for user authentication. These can be configured in your `config.yaml` or via env variables:
+
+- **GitHub OAuth**:
+  - `GITMIRRORS_OAUTH_GITHUB_CLIENT_ID` / `oauth.github.client_id`
+  - `GITMIRRORS_OAUTH_GITHUB_CLIENT_SECRET` / `oauth.github.client_secret`
+  - `GITMIRRORS_OAUTH_GITHUB_REDIRECT_URL` (e.g., `http://localhost:7659/api/v1/auth/oauth/github/callback`)
+- **GitLab OAuth**:
+  - `GITMIRRORS_OAUTH_GITLAB_CLIENT_ID` / `oauth.gitlab.client_id`
+  - `GITMIRRORS_OAUTH_GITLAB_CLIENT_SECRET` / `oauth.gitlab.client_secret`
+  - `GITMIRRORS_OAUTH_GITLAB_REDIRECT_URL`
+- **Google OAuth**:
+  - `GITMIRRORS_OAUTH_GOOGLE_CLIENT_ID` / `oauth.google.client_id`
+  - `GITMIRRORS_OAUTH_GOOGLE_CLIENT_SECRET` / `oauth.google.client_secret`
+  - `GITMIRRORS_OAUTH_GOOGLE_REDIRECT_URL`
 
 ### Configuration File
-Reference the provided `config.example.yaml` file for complete configuration options. Create a `config.yaml` file in the root directory or specify its path with `CONFIG_FILE` environment variable.
+Reference the provided `config.example.yaml` file for complete configuration options. Create a `config.yaml` file in the root directory or specify its path with the `CONFIG_FILE` environment variable.
 
 ## Usage
 
@@ -81,6 +118,20 @@ The Caddy configuration is located at [deployments/caddy/Caddyfile](deployments/
 ## Security
 
 For comprehensive security guidelines, see [docs/security.md](docs/security.md).
+
+## Web UI
+
+GitDuppy includes a full web interface accessible at `http://localhost:7659` after login.
+
+| Page | URL | Description |
+|------|-----|-------------|
+| Dashboard | `/dashboard` | Overview of all repositories and recent activity |
+| Repository List | `/repos` | Searchable card-grid of all mirrored repositories |
+| Repository Browser | `/repos/:id` | Browse files and folders with branch/tag switcher |
+| File Viewer | `/repos/:id` (click file) | View file content with syntax highlighting |
+| Commit History | `/repos/:id` → View Commit History | Paginated list of commits |
+| Commit Detail | `/repos/:id/commit/:sha` | Single commit with full line-by-line diff |
+| Settings | `/config` | Application configuration |
 
 ## Contributing
 

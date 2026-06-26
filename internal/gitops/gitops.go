@@ -103,6 +103,7 @@ func (g *GitOperations) FetchRepository(ctx context.Context, opts *CloneOptions)
 	// Build fetch options
 	fetchOpts := &git.FetchOptions{
 		Progress: opts.Progress,
+		Prune:    true,
 	}
 
 	auth, err := g.buildAuth(opts)
@@ -367,4 +368,29 @@ func RunGitCommand(ctx context.Context, dir string, args ...string) (string, err
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	return string(output), err
+}
+
+// GetReferences returns all references in the repository at the given path.
+func (g *GitOperations) GetReferences(ctx context.Context, path string) (map[string]string, error) {
+	output, err := RunGitCommand(ctx, path, "show-ref")
+	if err != nil {
+		// If there are no references yet, show-ref returns exit status 1
+		return nil, nil
+	}
+
+	refs := make(map[string]string)
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, " ", 2)
+		if len(parts) == 2 {
+			sha := parts[0]
+			refName := parts[1]
+			refs[refName] = sha
+		}
+	}
+	return refs, nil
 }

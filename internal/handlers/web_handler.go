@@ -48,3 +48,33 @@ func (h *WebHandler) Config(c *gin.Context) {
 		"user":  user,
 	})
 }
+
+// RepoList renders the repository list page.
+func (h *WebHandler) RepoList(c *gin.Context) {
+	user, _ := c.Get("user")
+	c.HTML(http.StatusOK, "repos.html", gin.H{
+		"title": "Repositories - GitDuppy",
+		"user":  user,
+	})
+}
+
+// RepoDetail renders the repository browser page.
+func (h *WebHandler) RepoDetail(c *gin.Context) {
+	user, _ := c.Get("user")
+	c.HTML(http.StatusOK, "repo_detail.html", gin.H{
+		"title":  "Browse Repository - GitDuppy",
+		"user":   user,
+		"repoID": c.Param("id"),
+	})
+}
+
+// RepoCommit renders a single commit detail page.
+func (h *WebHandler) RepoCommit(c *gin.Context) {
+	user, _ := c.Get("user")
+	c.HTML(http.StatusOK, "repo_commit.html", gin.H{
+		"title":  "Commit - GitDuppy",
+		"user":   user,
+		"repoID": c.Param("id"),
+		"sha":    c.Param("sha"),
+	})
+}
