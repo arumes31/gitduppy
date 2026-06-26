@@ -10,8 +10,11 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o bin/gitduppy ./cm
 
 FROM alpine:latest
 RUN apk --no-cache add ca-certificates
-WORKDIR /root/
+WORKDIR /app
 COPY --from=builder /app/bin/gitduppy .
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup \
+    && chown -R appuser:appgroup /app
+USER appuser
 
 EXPOSE 8080
 CMD ["./gitduppy"]

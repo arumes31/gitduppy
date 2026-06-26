@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -201,7 +202,8 @@ func (s *WebhookService) SendEvent(_ context.Context, eventType string, payload 
 func (s *WebhookService) deliverWebhook(webhook models.WebhookConfig, eventType string, payload map[string]interface{}) {
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
-		// Log error if payload cannot be marshaled.
+		// Record marshal failure in delivery history so it is visible.
+		s.recordDelivery(webhook.ID, eventType, fmt.Sprintf("{\"marshal_error\": %q}", err.Error()), 0, "payload marshal failed: "+err.Error(), false, 1)
 		return
 	}
 

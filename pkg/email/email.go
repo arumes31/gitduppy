@@ -24,13 +24,13 @@ func NewService(cfg *config.EmailConfig) *Service {
 
 // IsEnabled returns true if email is enabled in config.
 func (s *Service) IsEnabled() bool {
-	return s.config.Enabled
+	return s.config != nil && s.config.Enabled
 }
 
 // SendEmail sends an email.
 func (s *Service) SendEmail(to []string, subject, body string) error {
-	if !s.config.Enabled {
-		return nil // Silently skip if email is disabled.
+	if s.config == nil || !s.config.Enabled {
+		return nil // Silently skip if email is disabled or not configured.
 	}
 
 	auth := smtp.PlainAuth("", s.config.SMTPUser, s.config.SMTPPassword, s.config.SMTPHost)

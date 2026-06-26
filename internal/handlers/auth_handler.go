@@ -64,7 +64,10 @@ func (h *AuthHandler) Login(c *gin.Context) {
 func (h *AuthHandler) Logout(c *gin.Context) {
 	sessionToken, err := c.Cookie("session")
 	if err == nil && sessionToken != "" {
-		_ = h.authService.Logout(c, sessionToken)
+		if logoutErr := h.authService.Logout(c, sessionToken); logoutErr != nil {
+			response.InternalError(c, "Failed to invalidate session: "+logoutErr.Error())
+			return
+		}
 	}
 
 	// Clear cookie

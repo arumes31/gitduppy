@@ -3,7 +3,7 @@
 <p align="center"><img src="static/images/logo.png" width="300" alt="GitDuppy Logo"></p>
 
 [![Go Version](https://img.shields.io/badge/go-1.26.4-blue)](https://go.dev)
-[![CI/CD](https://github.com/gitduppy/gitduppy/actions/workflows/ci.yml/badge.svg)](https://github.com/gitduppy/gitduppy/actions)
+[![CI/CD](https://github.com/gitduppy/gitduppy/actions/workflows/build.yml/badge.svg)](https://github.com/gitduppy/gitduppy/actions)
 [![Code Quality](https://img.shields.io/badge/golangci--lint-passing-brightgreen)](https://golangci-lint.run/)
 [![Security Scans](https://img.shields.io/badge/gosec-passing-brightgreen)](https://github.com/securego/gosec)
 [![Secret Scanning](https://img.shields.io/badge/gitleaks-passing-brightgreen)](https://gitleaks.io/)
@@ -61,7 +61,7 @@ Reference the provided `config.example.yaml` file for complete configuration opt
 Build and run the server binary:
 
 ```bash
-go build -o gitduppy cmd/server/main.go
+go build -o gitduppy ./cmd/server
 ./gitduppy
 ```
 

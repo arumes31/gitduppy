@@ -44,7 +44,11 @@ type CreateAPIKeyResponse struct {
 }
 
 // CreateAPIKey creates a new API key.
-func (s *APIKeyService) CreateAPIKey(_ context.Context, userID uuid.UUID, req *CreateAPIKeyRequest) (*CreateAPIKeyResponse, error) {
+func (s *APIKeyService) CreateAPIKey(ctx context.Context, userID uuid.UUID, req *CreateAPIKeyRequest) (*CreateAPIKeyResponse, error) {
+	if req.ExpiresInDays < 0 {
+		return nil, errors.New("expires_in_days must not be negative")
+	}
+
 	// Generate random key
 	keyBytes := make([]byte, 32)
 	if _, err := rand.Read(keyBytes); err != nil {
@@ -74,7 +78,7 @@ func (s *APIKeyService) CreateAPIKey(_ context.Context, userID uuid.UUID, req *C
 		CreatedAt: time.Now(),
 	}
 
-	if err := s.db.Create(apiKey).Error; err != nil {
+	if err := s.db.WithContext(ctx).Create(apiKey).Error; err != nil {
 		return nil, err
 	}
 
@@ -89,16 +93,16 @@ func (s *APIKeyService) CreateAPIKey(_ context.Context, userID uuid.UUID, req *C
 }
 
 // ListAPIKeys returns all API keys for a user.
-func (s *APIKeyService) ListAPIKeys(_ context.Context, userID uuid.UUID) ([]models.APIKey, error) {
+func (s *APIKeyService) ListAPIKeys(ctx context.Context, userID uuid.UUID) ([]models.APIKey, error) {
 	var keys []models.APIKey
-	err := s.db.Where("user_id = ?", userID).Order("created_at DESC").Find(&keys).Error
+	err := s.db.WithContext(ctx).Where("user_id = ?", userID).Order("created_at DESC").Find(&keys).Error
 	return keys, err
 }
 
 // GetAPIKeyByID retrieves an API key by ID.
-func (s *APIKeyService) GetAPIKeyByID(_ context.Context, id uuid.UUID) (*models.APIKey, error) {
+func (s *APIKeyService) GetAPIKeyByID(ctx context.Context, id uuid.UUID) (*models.APIKey, error) {
 	var key models.APIKey
-	if err := s.db.First(&key, id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&key, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errors.New("API key not found")
 		}
@@ -108,8 +112,8 @@ func (s *APIKeyService) GetAPIKeyByID(_ context.Context, id uuid.UUID) (*models.
 }
 
 // RevokeAPIKey revokes an API key.
-func (s *APIKeyService) RevokeAPIKey(_ context.Context, id uuid.UUID) error {
-	result := s.db.Model(&models.APIKey{}).Where("id = ?", id).Update("is_active", false)
+func (s *APIKeyService) RevokeAPIKey(ctx context.Context, id uuid.UUID) error {
+	result := s.db.WithContext(ctx).Model(&models.APIKey{}).Where("id = ?", id).Update("is_active", false)
 	if result.Error != nil {
 		return result.Error
 	}
@@ -154,8 +158,8 @@ func (s *APIKeyService) ValidateAPIKey(key string) (*models.User, error) {
 }
 
 // DeleteAPIKey permanently deletes an API key.
-func (s *APIKeyService) DeleteAPIKey(_ context.Context, id uuid.UUID) error {
-	result := s.db.Delete(&models.APIKey{}, id)
+func (s *APIKeyService) DeleteAPIKey(ctx context.Context, id uuid.UUID) error {
+	result := s.db.WithContext(ctx).Delete(&models.APIKey{}, id)
 	if result.Error != nil {
 		return result.Error
 	}

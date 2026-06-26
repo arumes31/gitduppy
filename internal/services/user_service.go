@@ -36,7 +36,7 @@ type UserFilter struct {
 }
 
 // ListUsers returns a paginated list of users.
-func (s *UserService) ListUsers(_ context.Context, filter *UserFilter) ([]models.User, int64, error) {
+func (s *UserService) ListUsers(ctx context.Context, filter *UserFilter) ([]models.User, int64, error) {
 	if filter == nil {
 		filter = &UserFilter{Page: 1, PerPage: 20}
 	}
@@ -47,7 +47,7 @@ func (s *UserService) ListUsers(_ context.Context, filter *UserFilter) ([]models
 		filter.PerPage = 20
 	}
 
-	query := s.db.Model(&models.User{})
+	query := s.db.WithContext(ctx).Model(&models.User{})
 
 	// Apply filters
 	if filter.Role != nil && *filter.Role != "" {
@@ -74,9 +74,9 @@ func (s *UserService) ListUsers(_ context.Context, filter *UserFilter) ([]models
 }
 
 // GetUserByID retrieves a user by ID.
-func (s *UserService) GetUserByID(_ context.Context, id uuid.UUID) (*models.User, error) {
+func (s *UserService) GetUserByID(ctx context.Context, id uuid.UUID) (*models.User, error) {
 	var user models.User
-	if err := s.db.First(&user, id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&user, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errors.New("user not found")
 		}
@@ -86,9 +86,9 @@ func (s *UserService) GetUserByID(_ context.Context, id uuid.UUID) (*models.User
 }
 
 // GetUserByUsername retrieves a user by username.
-func (s *UserService) GetUserByUsername(_ context.Context, username string) (*models.User, error) {
+func (s *UserService) GetUserByUsername(ctx context.Context, username string) (*models.User, error) {
 	var user models.User
-	if err := s.db.Where("username = ?", username).First(&user).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("username = ?", username).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errors.New("user not found")
 		}
@@ -106,10 +106,10 @@ type CreateUserRequest struct {
 }
 
 // CreateUser creates a new user.
-func (s *UserService) CreateUser(_ context.Context, req *CreateUserRequest) (*models.User, error) {
+func (s *UserService) CreateUser(ctx context.Context, req *CreateUserRequest) (*models.User, error) {
 	// Check if username exists
 	var existing models.User
-	if err := s.db.Where("username = ? OR email = ?", req.Username, req.Email).First(&existing).Error; err == nil {
+	if err := s.db.WithContext(ctx).Where("username = ? OR email = ?", req.Username, req.Email).First(&existing).Error; err == nil {
 		return nil, errors.New("username or email already exists")
 	}
 
@@ -128,7 +128,7 @@ func (s *UserService) CreateUser(_ context.Context, req *CreateUserRequest) (*mo
 		IsActive:     true,
 	}
 
-	if err := s.db.Create(user).Error; err != nil {
+	if err := s.db.WithContext(ctx).Create(user).Error; err != nil {
 		return nil, err
 	}
 
@@ -183,8 +183,8 @@ func (s *UserService) UpdateUser(ctx context.Context, id uuid.UUID, req *UpdateU
 }
 
 // DeleteUser deletes a user.
-func (s *UserService) DeleteUser(_ context.Context, id uuid.UUID) error {
-	result := s.db.Delete(&models.User{}, id)
+func (s *UserService) DeleteUser(ctx context.Context, id uuid.UUID) error {
+	result := s.db.WithContext(ctx).Delete(&models.User{}, id)
 	if result.Error != nil {
 		return result.Error
 	}
@@ -195,6 +195,6 @@ func (s *UserService) DeleteUser(_ context.Context, id uuid.UUID) error {
 }
 
 // SetUserStatus enables or disables a user.
-func (s *UserService) SetUserStatus(_ context.Context, id uuid.UUID, isActive bool) error {
-	return s.db.Model(&models.User{}).Where("id = ?", id).Update("is_active", isActive).Error
+func (s *UserService) SetUserStatus(ctx context.Context, id uuid.UUID, isActive bool) error {
+	return s.db.WithContext(ctx).Model(&models.User{}).Where("id = ?", id).Update("is_active", isActive).Error
 }

@@ -10,6 +10,7 @@ import (
 	"hash"
 	"io"
 	"log"
+	"net/http"
 	"sort"
 
 	"github.com/gin-gonic/gin"
@@ -194,6 +195,10 @@ func (h *WebhookHandler) TestWebhook(c *gin.Context) {
 
 // ReceiveWebhook handles POST /api/v1/webhooks/receive.
 func (h *WebhookHandler) ReceiveWebhook(c *gin.Context) {
+	// Limit body to 1MB to prevent unbounded memory use.
+	const maxBodySize = 1 << 20 // 1 MB
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBodySize)
+
 	// Read raw body for signature verification.
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -271,37 +276,105 @@ func (h *WebhookHandler) matchProvider(c *gin.Context, provider string, body []b
 }
 
 // matchesGitHubWebhook checks if the request matches a GitHub webhook.
-func (h *WebhookHandler) matchesGitHubWebhook(_ *models.WebhookConfig, c *gin.Context, _ []byte) bool {
-	// TODO: Implement proper matching logic based on payload and webhook configuration
+func (h *WebhookHandler) matchesGitHubWebhook(wh *models.WebhookConfig, c *gin.Context, body []byte) bool {
 	if c.GetHeader("X-GitHub-Event") == "" {
 		return false
 	}
-	// For GitHub, we can match by repository URL in the payload.
-	// This is a simplified implementation - in practice, you'd parse the payload
-	// and match against webhook.RepositoryID or webhook.URLPattern.
-	return true // Assume match if provider matches.
+	return matchWebhookByRepoURL(wh, body)
 }
 
 // matchesGitLabWebhook checks if the request matches a GitLab webhook.
-func (h *WebhookHandler) matchesGitLabWebhook(_ *models.WebhookConfig, c *gin.Context, _ []byte) bool {
-	// TODO: Implement proper matching logic based on payload and webhook configuration
+func (h *WebhookHandler) matchesGitLabWebhook(wh *models.WebhookConfig, c *gin.Context, body []byte) bool {
 	if c.GetHeader("X-Gitlab-Event") == "" {
 		return false
+	}
+	return matchWebhookByRepoURL(wh, body)
+}
+
+// matchesBitbucketWebhook checks if the request matches a Bitbucket webhook.
+func (h *WebhookHandler) matchesBitbucketWebhook(wh *models.WebhookConfig, _ *gin.Context, body []byte) bool {
+	return matchWebhookByRepoURL(wh, body)
+}
+
+// matchesGenericWebhook checks if the request matches a generic webhook.
+func (h *WebhookHandler) matchesGenericWebhook(wh *models.WebhookConfig, _ *gin.Context, body []byte) bool {
+	return matchWebhookByRepoURL(wh, body)
+}
+
+// matchWebhookByRepoURL matches incoming webhook payload's repository URL
+// against the webhook config's RepositoryID or URLPattern.
+// If the config has neither, it is treated as a catch-all.
+func matchWebhookByRepoURL(wh *models.WebhookConfig, body []byte) bool {
+	// If webhook is scoped to a specific repository or URL pattern, validate
+	// against the payload's repository URL.
+	if wh.RepositoryID != nil || wh.URLPattern != "" {
+		repoURL := extractRepoURLFromPayload(body)
+		if repoURL == "" {
+			return false
+		}
+		if wh.URLPattern != "" {
+			if !containsFold(repoURL, wh.URLPattern) {
+				return false
+			}
+		}
+		// If only RepositoryID is set, the URL check passes — the repo
+		// association is verified in triggerCloneJobs.
 	}
 	return true
 }
 
-// matchesBitbucketWebhook checks if the request matches a Bitbucket webhook.
-func (h *WebhookHandler) matchesBitbucketWebhook(_ *models.WebhookConfig, _ *gin.Context, _ []byte) bool {
-	// TODO: Implement proper matching logic based on payload and webhook configuration
-	return true
+// extractRepoURLFromPayload tries to pull the repository clone URL from a
+// provider webhook JSON payload.
+func extractRepoURLFromPayload(body []byte) string {
+	var payload struct {
+		Repository struct {
+			CloneURL string `json:"clone_url"`
+			HTMLURL  string `json:"html_url"`
+			URL      string `json:"url"`
+		} `json:"repository"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	if payload.Repository.CloneURL != "" {
+		return payload.Repository.CloneURL
+	}
+	if payload.Repository.HTMLURL != "" {
+		return payload.Repository.HTMLURL
+	}
+	return payload.Repository.URL
 }
 
-// matchesGenericWebhook checks if the request matches a generic webhook.
-func (h *WebhookHandler) matchesGenericWebhook(_ *models.WebhookConfig, _ *gin.Context, _ []byte) bool {
-	// TODO: Implement proper matching logic based on payload and webhook configuration
-	// Custom matching logic based on webhook configuration.
-	// This could include URL patterns, custom headers, etc.
+// containsFold is a case-insensitive strings.Contains.
+func containsFold(s, substr string) bool {
+	if len(substr) == 0 {
+		return true
+	}
+	return containsFoldSimple(s, substr)
+}
+
+func containsFoldSimple(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if equalFold(s[i:i+len(substr)], substr) {
+			return true
+		}
+	}
+	return false
+}
+
+func equalFold(a, b string) bool {
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if ca >= 'A' && ca <= 'Z' {
+			ca += 'a' - 'A'
+		}
+		if cb >= 'A' && cb <= 'Z' {
+			cb += 'a' - 'A'
+		}
+		if ca != cb {
+			return false
+		}
+	}
 	return true
 }
 

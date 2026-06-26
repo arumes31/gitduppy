@@ -32,20 +32,26 @@ func (s *HealthService) CheckGitServerHealth(ctx context.Context, url string) (*
 		Timeout: 10 * time.Second,
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
+	req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+
+	var resp *http.Response
+	var doErr error
+
+	if reqErr == nil {
+		resp, doErr = client.Do(req)
 	}
 
-	resp, err := client.Do(req)
 	endTime := time.Now()
 
 	var status string
 	var errorMessage string
 
-	if err != nil {
+	if reqErr != nil {
 		status = "failed"
-		errorMessage = err.Error()
+		errorMessage = reqErr.Error()
+	} else if doErr != nil {
+		status = "failed"
+		errorMessage = doErr.Error()
 	} else {
 		defer resp.Body.Close()
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {

@@ -52,21 +52,23 @@ type StatusBreakdown struct {
 }
 
 // GetStats returns dashboard statistics.
-func (s *DashboardService) GetStats(_ context.Context) (*DashboardStats, error) {
+func (s *DashboardService) GetStats(ctx context.Context) (*DashboardStats, error) {
 	stats := &DashboardStats{}
 
+	db := s.db.WithContext(ctx)
+
 	// Repository counts
-	s.db.Model(&models.Repository{}).Where("is_active = ?", true).Count(&stats.TotalRepositories)
-	s.db.Model(&models.Repository{}).Where("is_active = ? AND status = 'success'", true).Count(&stats.ActiveRepositories)
-	s.db.Model(&models.Repository{}).Where("is_active = ? AND status = 'failed'", true).Count(&stats.FailedRepositories)
+	db.Model(&models.Repository{}).Where("is_active = ?", true).Count(&stats.TotalRepositories)
+	db.Model(&models.Repository{}).Where("is_active = ? AND status = 'success'", true).Count(&stats.ActiveRepositories)
+	db.Model(&models.Repository{}).Where("is_active = ? AND status = 'failed'", true).Count(&stats.FailedRepositories)
 
 	// Clone job counts
-	s.db.Model(&models.CloneJob{}).Count(&stats.TotalCloneJobs)
+	db.Model(&models.CloneJob{}).Count(&stats.TotalCloneJobs)
 
 	// Success rate calculation
 	var totalSuccess, totalCompleted int64
-	s.db.Model(&models.CloneJob{}).Where("status = 'success'").Count(&totalSuccess)
-	s.db.Model(&models.CloneJob{}).Where("status IN ?", []string{"success", "failed"}).Count(&totalCompleted)
+	db.Model(&models.CloneJob{}).Where("status = 'success'").Count(&totalSuccess)
+	db.Model(&models.CloneJob{}).Where("status IN ?", []string{"success", "failed"}).Count(&totalCompleted)
 	if totalCompleted > 0 {
 		stats.SuccessRate = float64(totalSuccess) / float64(totalCompleted) * 100
 	}
@@ -76,7 +78,7 @@ func (s *DashboardService) GetStats(_ context.Context) (*DashboardStats, error) 
 		AvgDuration float64
 	}
 	var durationResult DurationResult
-	s.db.Model(&models.CloneJob{}).
+	db.Model(&models.CloneJob{}).
 		Select("EXTRACT(EPOCH FROM (completed_at - started_at)) as avg_duration").
 		Where("status = 'success' AND started_at IS NOT NULL AND completed_at IS NOT NULL").
 		Scan(&durationResult)
@@ -87,28 +89,28 @@ func (s *DashboardService) GetStats(_ context.Context) (*DashboardStats, error) 
 	last24h := now.Add(-24 * time.Hour)
 	last7d := now.Add(-7 * 24 * time.Hour)
 
-	s.db.Model(&models.CloneJob{}).Where("created_at >= ?", last24h).Count(&stats.RecentActivity.ClonesLast24h)
-	s.db.Model(&models.CloneJob{}).Where("status = 'failed' AND completed_at >= ?", last24h).Count(&stats.RecentActivity.FailuresLast24h)
-	s.db.Model(&models.Repository{}).Where("created_at >= ?", last7d).Count(&stats.RecentActivity.NewReposLast7d)
+	db.Model(&models.CloneJob{}).Where("created_at >= ?", last24h).Count(&stats.RecentActivity.ClonesLast24h)
+	db.Model(&models.CloneJob{}).Where("status = 'failed' AND completed_at >= ?", last24h).Count(&stats.RecentActivity.FailuresLast24h)
+	db.Model(&models.Repository{}).Where("created_at >= ?", last7d).Count(&stats.RecentActivity.NewReposLast7d)
 
 	// Clone job status breakdown
-	s.db.Model(&models.CloneJob{}).Where("status = 'pending'").Count(&stats.CloneJobStatusBreakdown.Pending)
-	s.db.Model(&models.CloneJob{}).Where("status = 'running'").Count(&stats.CloneJobStatusBreakdown.Running)
-	s.db.Model(&models.CloneJob{}).Where("status = 'success'").Count(&stats.CloneJobStatusBreakdown.Success)
-	s.db.Model(&models.CloneJob{}).Where("status = 'failed'").Count(&stats.CloneJobStatusBreakdown.Failed)
-	s.db.Model(&models.CloneJob{}).Where("status = 'cancelled'").Count(&stats.CloneJobStatusBreakdown.Cancelled)
+	db.Model(&models.CloneJob{}).Where("status = 'pending'").Count(&stats.CloneJobStatusBreakdown.Pending)
+	db.Model(&models.CloneJob{}).Where("status = 'running'").Count(&stats.CloneJobStatusBreakdown.Running)
+	db.Model(&models.CloneJob{}).Where("status = 'success'").Count(&stats.CloneJobStatusBreakdown.Success)
+	db.Model(&models.CloneJob{}).Where("status = 'failed'").Count(&stats.CloneJobStatusBreakdown.Failed)
+	db.Model(&models.CloneJob{}).Where("status = 'cancelled'").Count(&stats.CloneJobStatusBreakdown.Cancelled)
 
 	// Repository status breakdown
-	s.db.Model(&models.Repository{}).Where("status = 'pending'").Count(&stats.RepositoryStatusBreakdown.Pending)
-	s.db.Model(&models.Repository{}).Where("status = 'cloning'").Count(&stats.RepositoryStatusBreakdown.Running)
-	s.db.Model(&models.Repository{}).Where("status = 'success'").Count(&stats.RepositoryStatusBreakdown.Success)
-	s.db.Model(&models.Repository{}).Where("status = 'failed'").Count(&stats.RepositoryStatusBreakdown.Failed)
+	db.Model(&models.Repository{}).Where("status = 'pending'").Count(&stats.RepositoryStatusBreakdown.Pending)
+	db.Model(&models.Repository{}).Where("status = 'cloning'").Count(&stats.RepositoryStatusBreakdown.Running)
+	db.Model(&models.Repository{}).Where("status = 'success'").Count(&stats.RepositoryStatusBreakdown.Success)
+	db.Model(&models.Repository{}).Where("status = 'failed'").Count(&stats.RepositoryStatusBreakdown.Failed)
 
 	return stats, nil
 }
 
 // GetChartData returns data for dashboard charts.
-func (s *DashboardService) GetChartData(_ context.Context, days int) ([]ChartDay, error) {
+func (s *DashboardService) GetChartData(ctx context.Context, days int) ([]ChartDay, error) {
 	if days <= 0 {
 		days = 30
 	}
@@ -124,7 +126,7 @@ func (s *DashboardService) GetChartData(_ context.Context, days int) ([]ChartDay
 	}
 	var stats []DayStats
 
-	err := s.db.Model(&models.CloneJob{}).
+	err := s.db.WithContext(ctx).Model(&models.CloneJob{}).
 		Select("DATE(created_at) as day, COUNT(*) as total, COUNT(*) FILTER (WHERE status = 'success') as success, COUNT(*) FILTER (WHERE status = 'failed') as failed").
 		Where("created_at >= ?", startDate).
 		Group("DATE(created_at)").
@@ -156,13 +158,13 @@ type ChartDay struct {
 }
 
 // GetTopRepositories returns the most active repositories.
-func (s *DashboardService) GetTopRepositories(_ context.Context, limit int) ([]models.Repository, error) {
+func (s *DashboardService) GetTopRepositories(ctx context.Context, limit int) ([]models.Repository, error) {
 	if limit <= 0 {
 		limit = 10
 	}
 
 	var repos []models.Repository
-	err := s.db.
+	err := s.db.WithContext(ctx).
 		Select("repositories.*, COUNT(clone_jobs.id) as clone_count").
 		Joins("LEFT JOIN clone_jobs ON clone_jobs.repository_id = repositories.id").
 		Group("repositories.id").

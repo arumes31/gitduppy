@@ -24,16 +24,16 @@ func NewTagService() *TagService {
 }
 
 // ListTags returns all tags.
-func (s *TagService) ListTags(_ context.Context) ([]models.Tag, error) {
+func (s *TagService) ListTags(ctx context.Context) ([]models.Tag, error) {
 	var tags []models.Tag
-	err := s.db.Order("name ASC").Find(&tags).Error
+	err := s.db.WithContext(ctx).Order("name ASC").Find(&tags).Error
 	return tags, err
 }
 
 // GetTagByID retrieves a tag by ID.
-func (s *TagService) GetTagByID(_ context.Context, id uuid.UUID) (*models.Tag, error) {
+func (s *TagService) GetTagByID(ctx context.Context, id uuid.UUID) (*models.Tag, error) {
 	var tag models.Tag
-	if err := s.db.First(&tag, id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&tag, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errors.New("tag not found")
 		}
@@ -43,9 +43,9 @@ func (s *TagService) GetTagByID(_ context.Context, id uuid.UUID) (*models.Tag, e
 }
 
 // GetTagByName retrieves a tag by name.
-func (s *TagService) GetTagByName(_ context.Context, name string) (*models.Tag, error) {
+func (s *TagService) GetTagByName(ctx context.Context, name string) (*models.Tag, error) {
 	var tag models.Tag
-	if err := s.db.Where("name = ?", name).First(&tag).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("name = ?", name).First(&tag).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errors.New("tag not found")
 		}
@@ -61,10 +61,10 @@ type CreateTagRequest struct {
 }
 
 // CreateTag creates a new tag.
-func (s *TagService) CreateTag(_ context.Context, req *CreateTagRequest) (*models.Tag, error) {
+func (s *TagService) CreateTag(ctx context.Context, req *CreateTagRequest) (*models.Tag, error) {
 	// Check if tag name exists
 	var existing models.Tag
-	if err := s.db.Where("name = ?", req.Name).First(&existing).Error; err == nil {
+	if err := s.db.WithContext(ctx).Where("name = ?", req.Name).First(&existing).Error; err == nil {
 		return nil, errors.New("tag name already exists")
 	}
 
@@ -75,7 +75,7 @@ func (s *TagService) CreateTag(_ context.Context, req *CreateTagRequest) (*model
 		CreatedAt: time.Now(),
 	}
 
-	if err := s.db.Create(tag).Error; err != nil {
+	if err := s.db.WithContext(ctx).Create(tag).Error; err != nil {
 		return nil, err
 	}
 
@@ -115,8 +115,8 @@ func (s *TagService) UpdateTag(ctx context.Context, id uuid.UUID, req *UpdateTag
 }
 
 // DeleteTag deletes a tag.
-func (s *TagService) DeleteTag(_ context.Context, id uuid.UUID) error {
-	result := s.db.Delete(&models.Tag{}, id)
+func (s *TagService) DeleteTag(ctx context.Context, id uuid.UUID) error {
+	result := s.db.WithContext(ctx).Delete(&models.Tag{}, id)
 	if result.Error != nil {
 		return result.Error
 	}
@@ -127,10 +127,10 @@ func (s *TagService) DeleteTag(_ context.Context, id uuid.UUID) error {
 }
 
 // AddTagToRepository adds a tag to a repository.
-func (s *TagService) AddTagToRepository(_ context.Context, repoID, tagID uuid.UUID) error {
+func (s *TagService) AddTagToRepository(ctx context.Context, repoID, tagID uuid.UUID) error {
 	// Check if association already exists
 	var existing models.RepositoryTag
-	if err := s.db.Where("repository_id = ? AND tag_id = ?", repoID, tagID).First(&existing).Error; err == nil {
+	if err := s.db.WithContext(ctx).Where("repository_id = ? AND tag_id = ?", repoID, tagID).First(&existing).Error; err == nil {
 		return errors.New("tag already assigned to repository")
 	}
 
@@ -141,12 +141,12 @@ func (s *TagService) AddTagToRepository(_ context.Context, repoID, tagID uuid.UU
 		CreatedAt:    time.Now(),
 	}
 
-	return s.db.Create(repoTag).Error
+	return s.db.WithContext(ctx).Create(repoTag).Error
 }
 
 // RemoveTagFromRepository removes a tag from a repository.
-func (s *TagService) RemoveTagFromRepository(_ context.Context, repoID, tagID uuid.UUID) error {
-	result := s.db.Where("repository_id = ? AND tag_id = ?", repoID, tagID).Delete(&models.RepositoryTag{})
+func (s *TagService) RemoveTagFromRepository(ctx context.Context, repoID, tagID uuid.UUID) error {
+	result := s.db.WithContext(ctx).Where("repository_id = ? AND tag_id = ?", repoID, tagID).Delete(&models.RepositoryTag{})
 	if result.Error != nil {
 		return result.Error
 	}
@@ -157,9 +157,9 @@ func (s *TagService) RemoveTagFromRepository(_ context.Context, repoID, tagID uu
 }
 
 // GetRepositoryTags retrieves all tags for a repository.
-func (s *TagService) GetRepositoryTags(_ context.Context, repoID uuid.UUID) ([]models.Tag, error) {
+func (s *TagService) GetRepositoryTags(ctx context.Context, repoID uuid.UUID) ([]models.Tag, error) {
 	var tags []models.Tag
-	err := s.db.Model(&models.Tag{}).
+	err := s.db.WithContext(ctx).Model(&models.Tag{}).
 		Joins("JOIN repository_tags ON repository_tags.tag_id = tags.id").
 		Where("repository_tags.repository_id = ?", repoID).
 		Find(&tags).Error
@@ -167,24 +167,26 @@ func (s *TagService) GetRepositoryTags(_ context.Context, repoID uuid.UUID) ([]m
 }
 
 // SetRepositoryTags replaces all tags on a repository.
-func (s *TagService) SetRepositoryTags(_ context.Context, repoID uuid.UUID, tagIDs []uuid.UUID) error {
-	// Delete existing associations
-	if err := s.db.Where("repository_id = ?", repoID).Delete(&models.RepositoryTag{}).Error; err != nil {
-		return err
-	}
-
-	// Add new associations
-	for _, tagID := range tagIDs {
-		repoTag := &models.RepositoryTag{
-			ID:           uuid.New(),
-			RepositoryID: repoID,
-			TagID:        tagID,
-			CreatedAt:    time.Now(),
-		}
-		if err := s.db.Create(repoTag).Error; err != nil {
+func (s *TagService) SetRepositoryTags(ctx context.Context, repoID uuid.UUID, tagIDs []uuid.UUID) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Delete existing associations
+		if err := tx.Where("repository_id = ?", repoID).Delete(&models.RepositoryTag{}).Error; err != nil {
 			return err
 		}
-	}
 
-	return nil
+		// Add new associations
+		for _, tagID := range tagIDs {
+			repoTag := &models.RepositoryTag{
+				ID:           uuid.New(),
+				RepositoryID: repoID,
+				TagID:        tagID,
+				CreatedAt:    time.Now(),
+			}
+			if err := tx.Create(repoTag).Error; err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
 }

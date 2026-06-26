@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"log"
+
 	"github.com/gin-gonic/gin"
 	"github.com/gitduppy/gitduppy/internal/middleware"
 	"github.com/gitduppy/gitduppy/internal/services"
@@ -123,6 +125,10 @@ func (h *RepositoryHandler) CreateRepository(c *gin.Context) {
 		StoragePath          string                     `json:"storage_path" validate:"required"`
 		IsBare               bool                       `json:"is_bare"`
 		LFSEnabled           bool                       `json:"lfs_enabled"`
+		MirrorIssues         bool                       `json:"mirror_issues"`
+		MirrorPullRequests   bool                       `json:"mirror_pull_requests"`
+		MirrorReleases       bool                       `json:"mirror_releases"`
+		MirrorWiki           bool                       `json:"mirror_wiki"`
 		CloneIntervalMinutes int                        `json:"clone_interval_minutes" validate:"min=5"`
 		Description          *string                    `json:"description,omitempty"`
 		TagIDs               []uuid.UUID                `json:"tag_ids,omitempty"`
@@ -152,6 +158,10 @@ func (h *RepositoryHandler) CreateRepository(c *gin.Context) {
 		StoragePath:          req.StoragePath,
 		IsBare:               req.IsBare,
 		LFSEnabled:           req.LFSEnabled,
+		MirrorIssues:         req.MirrorIssues,
+		MirrorPullRequests:   req.MirrorPullRequests,
+		MirrorReleases:       req.MirrorReleases,
+		MirrorWiki:           req.MirrorWiki,
 		CloneIntervalMinutes: req.CloneIntervalMinutes,
 		Description:          req.Description,
 		TagIDs:               req.TagIDs,
@@ -162,7 +172,9 @@ func (h *RepositoryHandler) CreateRepository(c *gin.Context) {
 	}
 
 	// Log the action.
-	_ = h.auditService.Log(c, &user.ID, &repo.ID, "repository.create", gin.H{"name": repo.Name}, c.ClientIP(), c.Request.UserAgent())
+	if err := h.auditService.Log(c, &user.ID, &repo.ID, "repository.create", gin.H{"name": repo.Name}, c.ClientIP(), c.Request.UserAgent()); err != nil {
+		log.Printf("WARNING: audit log failed for repository.create repo=%s: %v", repo.ID, err)
+	}
 
 	response.Created(c, repo)
 }
@@ -189,7 +201,9 @@ func (h *RepositoryHandler) UpdateRepository(c *gin.Context) {
 
 	user, _ := middleware.GetCurrentUser(c)
 	if user != nil {
-		_ = h.auditService.Log(c, &user.ID, &repo.ID, "repository.update", gin.H{"name": repo.Name}, c.ClientIP(), c.Request.UserAgent())
+		if err := h.auditService.Log(c, &user.ID, &repo.ID, "repository.update", gin.H{"name": repo.Name}, c.ClientIP(), c.Request.UserAgent()); err != nil {
+			log.Printf("WARNING: audit log failed for repository.update repo=%s: %v", repo.ID, err)
+		}
 	}
 
 	response.Success(c, repo)
@@ -212,7 +226,9 @@ func (h *RepositoryHandler) DeleteRepository(c *gin.Context) {
 
 	user, _ := middleware.GetCurrentUser(c)
 	if user != nil && repo != nil {
-		_ = h.auditService.Log(c, &user.ID, &repo.ID, "repository.delete", gin.H{"name": repo.Name}, c.ClientIP(), c.Request.UserAgent())
+		if err := h.auditService.Log(c, &user.ID, &repo.ID, "repository.delete", gin.H{"name": repo.Name}, c.ClientIP(), c.Request.UserAgent()); err != nil {
+			log.Printf("WARNING: audit log failed for repository.delete repo=%s: %v", repo.ID, err)
+		}
 	}
 
 	response.SuccessWithMessage(c, "Repository deleted successfully", nil)

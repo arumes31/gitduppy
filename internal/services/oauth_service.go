@@ -179,9 +179,17 @@ func (s *OAuthService) getGitLabEmail(ctx context.Context, httpClient *http.Clie
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("gitlab API returned status: %d", resp.StatusCode)
+	}
+
 	var user GitLabUser
 	if decodeErr := json.NewDecoder(resp.Body).Decode(&user); decodeErr != nil {
 		return "", fmt.Errorf("failed to decode gitlab user: %w", decodeErr)
+	}
+
+	if user.Email == "" {
+		return "", errors.New("no email found in gitlab response")
 	}
 
 	return user.Email, nil

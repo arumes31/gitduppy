@@ -114,6 +114,10 @@ type CreateRepositoryRequest struct {
 	StoragePath          string                     `json:"storage_path" validate:"required"`
 	IsBare               bool                       `json:"is_bare"`
 	LFSEnabled           bool                       `json:"lfs_enabled"`
+	MirrorIssues         bool                       `json:"mirror_issues"`
+	MirrorPullRequests   bool                       `json:"mirror_pull_requests"`
+	MirrorReleases       bool                       `json:"mirror_releases"`
+	MirrorWiki           bool                       `json:"mirror_wiki"`
 	CloneIntervalMinutes int                        `json:"clone_interval_minutes" validate:"min=5"`
 	Description          *string                    `json:"description,omitempty"`
 	TagIDs               []uuid.UUID                `json:"tag_ids,omitempty"`
@@ -142,6 +146,10 @@ func (s *RepositoryService) CreateRepository(_ context.Context, req *CreateRepos
 		Status:               "pending",
 		IsBare:               req.IsBare,
 		LFSEnabled:           req.LFSEnabled,
+		MirrorIssues:         req.MirrorIssues,
+		MirrorPullRequests:   req.MirrorPullRequests,
+		MirrorReleases:       req.MirrorReleases,
+		MirrorWiki:           req.MirrorWiki,
 		IsActive:             true,
 		CloneIntervalMinutes: req.CloneIntervalMinutes,
 		Description:          req.Description,
@@ -176,6 +184,10 @@ type UpdateRepositoryRequest struct {
 	StoragePath          *string                    `json:"storage_path,omitempty"`
 	IsBare               *bool                      `json:"is_bare,omitempty"`
 	LFSEnabled           *bool                      `json:"lfs_enabled,omitempty"`
+	MirrorIssues         *bool                      `json:"mirror_issues,omitempty"`
+	MirrorPullRequests   *bool                      `json:"mirror_pull_requests,omitempty"`
+	MirrorReleases       *bool                      `json:"mirror_releases,omitempty"`
+	MirrorWiki           *bool                      `json:"mirror_wiki,omitempty"`
 	IsActive             *bool                      `json:"is_active,omitempty"`
 	CloneIntervalMinutes *int                       `json:"clone_interval_minutes,omitempty"`
 	Description          *string                    `json:"description,omitempty"`
@@ -194,19 +206,27 @@ func (s *RepositoryService) UpdateRepository(ctx context.Context, id uuid.UUID, 
 	}
 
 	repo.UpdatedAt = time.Now()
-	if err := s.db.Save(repo).Error; err != nil {
-		return nil, err
-	}
 
-	// Update tags if provided
-	if req.TagIDs != nil {
-		var tags []models.Tag
-		if err := s.db.Where("id IN ?", req.TagIDs).Find(&tags).Error; err != nil {
-			return nil, err
+	// Use a transaction so Save and tag replacement are atomic.
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(repo).Error; err != nil {
+			return err
 		}
-		if err := s.db.Model(repo).Association("Tags").Replace(tags); err != nil {
-			return nil, err
+
+		// Update tags if provided
+		if req.TagIDs != nil {
+			var tags []models.Tag
+			if err := tx.Where("id IN ?", req.TagIDs).Find(&tags).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(repo).Association("Tags").Replace(tags); err != nil {
+				return err
+			}
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	return repo, nil
@@ -250,6 +270,18 @@ func (s *RepositoryService) applyUpdateFields(repo *models.Repository, req *Upda
 	if req.Description != nil {
 		repo.Description = req.Description
 	}
+	if req.MirrorIssues != nil {
+		repo.MirrorIssues = *req.MirrorIssues
+	}
+	if req.MirrorPullRequests != nil {
+		repo.MirrorPullRequests = *req.MirrorPullRequests
+	}
+	if req.MirrorReleases != nil {
+		repo.MirrorReleases = *req.MirrorReleases
+	}
+	if req.MirrorWiki != nil {
+		repo.MirrorWiki = *req.MirrorWiki
+	}
 	return nil
 }
 
@@ -267,7 +299,14 @@ func (s *RepositoryService) DeleteRepository(_ context.Context, id uuid.UUID) er
 
 // SetRepositoryStatus enables or disables a repository.
 func (s *RepositoryService) SetRepositoryStatus(_ context.Context, id uuid.UUID, isActive bool) error {
-	return s.db.Model(&models.Repository{}).Where("id = ?", id).Update("is_active", isActive).Error
+	result := s.db.Model(&models.Repository{}).Where("id = ?", id).Update("is_active", isActive)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errors.New("repository not found")
+	}
+	return nil
 }
 
 // GetDecryptedCredentials returns the decrypted credentials for a repository.

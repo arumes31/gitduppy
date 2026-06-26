@@ -148,6 +148,7 @@ func (s *BackupService) DatabaseBackup(_ context.Context) (string, error) {
 	}
 	if err := file.Close(); err != nil {
 		s.logger.Error("failed to close backup file", zap.String("path", backupPath), zap.Error(err))
+		return "", fmt.Errorf("failed to close backup file: %w", err)
 	}
 
 	return backupPath, nil
