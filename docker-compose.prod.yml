@@ -3,6 +3,8 @@ version: '3.8'
 services:
   gitduppy:
     build: .
+    ports:
+      - "7659:8080"
     environment:
       - DATABASE_URL=postgres://gitduppy:gitduppy@postgres:5432/gitduppy?sslmode=disable
       - SERVER_PORT=8080
@@ -12,10 +14,6 @@ services:
       - SMTP_PORT=${SMTP_PORT}
       - SMTP_USERNAME=${SMTP_USERNAME}
       - SMTP_PASSWORD=${SMTP_PASSWORD}
-      - OAUTH2_GITHUB_CLIENT_ID=${OAUTH2_GITHUB_CLIENT_ID}
-      - OAUTH2_GITHUB_CLIENT_SECRET=${OAUTH2_GITHUB_CLIENT_SECRET}
-      - OAUTH2_GOOGLE_CLIENT_ID=${OAUTH2_GOOGLE_CLIENT_ID}
-      - OAUTH2_GOOGLE_CLIENT_SECRET=${OAUTH2_GOOGLE_CLIENT_SECRET}
     volumes:
       - ./data/gitduppy/repos:/app/repos
       - ./data/gitduppy/keys:/app/keys
@@ -23,8 +21,6 @@ services:
       - ./config.yaml:/app/config.yaml:ro
     depends_on:
       postgres:
-        condition: service_healthy
-      caddy:
         condition: service_healthy
     healthcheck:
       test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health" ]
@@ -53,29 +49,6 @@ services:
     networks:
       - gitduppy-network
 
-  caddy:
-    image: caddy:2-alpine
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./data/caddy:/data
-      - ./deployments/caddy/Caddyfile:/etc/caddy/Caddyfile
-      - ./data/gitduppy/repos:/srv/repos:ro
-    environment:
-      - DOMAIN=${DOMAIN:-yourdomain.com}
-      - EMAIL=${EMAIL:-admin@yourdomain.com}
-    depends_on:
-      gitduppy:
-        condition: service_healthy
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:2019/health" ]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-    restart: unless-stopped
-    networks:
-      - gitduppy-network
 
 networks:
   gitduppy-network:

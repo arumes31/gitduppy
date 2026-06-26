@@ -2,28 +2,46 @@ package services
 
 import (
 	"context"
+	"errors"
+	"time"
 
 	"github.com/gitduppy/gitduppy/internal/config"
+	"github.com/gitduppy/gitduppy/internal/models"
+	"github.com/gitduppy/gitduppy/pkg/crypto"
+	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 const mask = "***"
 
 // ConfigService handles configuration management.
 type ConfigService struct {
-	config *config.Config
+	config            *config.Config
+	db                *gorm.DB
+	encryptionService *crypto.EncryptionService
 }
 
 // NewConfigService creates a new config service.
-func NewConfigService(cfg *config.Config) *ConfigService {
+func NewConfigService(cfg *config.Config, db *gorm.DB, encryptionService *crypto.EncryptionService) *ConfigService {
 	return &ConfigService{
-		config: cfg,
+		config:            cfg,
+		db:                db,
+		encryptionService: encryptionService,
 	}
 }
 
 // GetConfig returns the current configuration (with sensitive fields masked).
-func (s *ConfigService) GetConfig(_ context.Context) *config.Config {
+func (s *ConfigService) GetConfig(ctx context.Context) *config.Config {
 	// Create a copy to avoid modifying original
 	cfg := *s.config
+
+	// Retrieve dynamic OAuth settings if present in the database.
+	if clientID, err := s.GetSettingString(ctx, "oauth2_github_client_id"); err == nil && clientID != "" {
+		cfg.OAuth.GitHub.ClientID = clientID
+	}
+	if clientSecret, err := s.GetSettingString(ctx, "oauth2_github_client_secret"); err == nil && clientSecret != "" {
+		cfg.OAuth.GitHub.ClientSecret = clientSecret
+	}
 
 	// Mask sensitive fields
 	if cfg.Database.Password != "" {
@@ -58,10 +76,112 @@ func (s *ConfigService) GetConfig(_ context.Context) *config.Config {
 	return &cfg
 }
 
+// GetGitHubOAuth retrieves the active GitHub OAuth configuration.
+func (s *ConfigService) GetGitHubOAuth(ctx context.Context) config.OAuthProviderConfig {
+	cfg := s.config.OAuth.GitHub
+
+	// Fallback to database values if available
+	if clientID, err := s.GetSettingString(ctx, "oauth2_github_client_id"); err == nil && clientID != "" {
+		cfg.ClientID = clientID
+	}
+	if clientSecret, err := s.GetSettingString(ctx, "oauth2_github_client_secret"); err == nil && clientSecret != "" {
+		cfg.ClientSecret = clientSecret
+	}
+
+	return cfg
+}
+
+// GetGitLabOAuth retrieves the active GitLab OAuth configuration.
+func (s *ConfigService) GetGitLabOAuth(ctx context.Context) config.OAuthProviderConfig {
+	cfg := s.config.OAuth.GitLab
+	if clientID, err := s.GetSettingString(ctx, "oauth2_gitlab_client_id"); err == nil && clientID != "" {
+		cfg.ClientID = clientID
+	}
+	if clientSecret, err := s.GetSettingString(ctx, "oauth2_gitlab_client_secret"); err == nil && clientSecret != "" {
+		cfg.ClientSecret = clientSecret
+	}
+	return cfg
+}
+
+// GetGoogleOAuth retrieves the active Google OAuth configuration.
+func (s *ConfigService) GetGoogleOAuth(ctx context.Context) config.OAuthProviderConfig {
+	cfg := s.config.OAuth.Google
+	if clientID, err := s.GetSettingString(ctx, "oauth2_google_client_id"); err == nil && clientID != "" {
+		cfg.ClientID = clientID
+	}
+	if clientSecret, err := s.GetSettingString(ctx, "oauth2_google_client_secret"); err == nil && clientSecret != "" {
+		cfg.ClientSecret = clientSecret
+	}
+	return cfg
+}
+
 // UpdateConfig updates the configuration (requires restart).
 func (s *ConfigService) UpdateConfig(_ context.Context, _ *config.Config) error {
 	// This is a simplified implementation
-	// In practice, you'd need to validate the new config,
-	// save it to a file, and signal the main process to restart
 	return nil
 }
+
+// SetSetting saves a setting to the database.
+func (s *ConfigService) SetSetting(ctx context.Context, key, value, description string, encrypt bool) error {
+	if s.db == nil {
+		return errors.New("database not configured")
+	}
+
+	storeValue := value
+	if encrypt && value != "" && s.encryptionService != nil {
+		encrypted, err := s.encryptionService.EncryptString(value)
+		if err != nil {
+			return err
+		}
+		storeValue = encrypted
+	}
+
+	setting := models.SystemSetting{
+		ID:          uuid.New(),
+		Key:         key,
+		Value:       storeValue,
+		IsEncrypted: encrypt,
+		Description: description,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	// Use FirstOrCreate logic or Update
+	var existing models.SystemSetting
+	if err := s.db.WithContext(ctx).Where("key = ?", key).First(&existing).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return s.db.WithContext(ctx).Create(&setting).Error
+		}
+		return err
+	}
+
+	return s.db.WithContext(ctx).Model(&existing).Updates(map[string]interface{}{
+		"value":        storeValue,
+		"is_encrypted": encrypt,
+		"description":  description,
+		"updated_at":   time.Now(),
+	}).Error
+}
+
+// GetSettingString retrieves a setting from the database as a string.
+func (s *ConfigService) GetSettingString(ctx context.Context, key string) (string, error) {
+	if s.db == nil {
+		return "", errors.New("database not configured")
+	}
+
+	var setting models.SystemSetting
+	if err := s.db.WithContext(ctx).Where("key = ?", key).First(&setting).Error; err != nil {
+		return "", err
+	}
+
+	if setting.IsEncrypted && setting.Value != "" && s.encryptionService != nil {
+		decrypted, err := s.encryptionService.DecryptString(setting.Value)
+		if err != nil {
+			return "", err
+		}
+		return decrypted, nil
+	}
+
+	return setting.Value, nil
+}
+

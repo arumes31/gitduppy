@@ -13,7 +13,6 @@ import (
 	"golang.org/x/oauth2/gitlab"
 	"golang.org/x/oauth2/google"
 
-	"github.com/gitduppy/gitduppy/internal/config"
 	"github.com/gitduppy/gitduppy/internal/database"
 	"github.com/gitduppy/gitduppy/internal/models"
 	"github.com/google/uuid"
@@ -22,15 +21,15 @@ import (
 
 // OAuthService handles OAuth2/OIDC authentication.
 type OAuthService struct {
-	db     *gorm.DB
-	config *config.Config
+	db            *gorm.DB
+	configService *ConfigService
 }
 
 // NewOAuthService creates a new OAuth service.
-func NewOAuthService(cfg *config.Config) *OAuthService {
+func NewOAuthService(configService *ConfigService) *OAuthService {
 	return &OAuthService{
-		db:     database.GetDB(),
-		config: cfg,
+		db:            database.GetDB(),
+		configService: configService,
 	}
 }
 
@@ -44,39 +43,42 @@ const (
 )
 
 // GetOAuthConfig returns the OAuth2 config for a provider.
-func (s *OAuthService) GetOAuthConfig(provider OAuthProvider) (*oauth2.Config, error) {
+func (s *OAuthService) GetOAuthConfig(ctx context.Context, provider OAuthProvider) (*oauth2.Config, error) {
 	switch provider {
 	case GitHubProvider:
-		if s.config.OAuth.GitHub.ClientID == "" || s.config.OAuth.GitHub.ClientSecret == "" {
+		ghConfig := s.configService.GetGitHubOAuth(ctx)
+		if ghConfig.ClientID == "" || ghConfig.ClientSecret == "" {
 			return nil, errors.New("github oauth not configured")
 		}
 		return &oauth2.Config{
-			ClientID:     s.config.OAuth.GitHub.ClientID,
-			ClientSecret: s.config.OAuth.GitHub.ClientSecret,
-			RedirectURL:  s.config.OAuth.GitHub.RedirectURL,
-			Scopes:       s.config.OAuth.GitHub.Scopes,
+			ClientID:     ghConfig.ClientID,
+			ClientSecret: ghConfig.ClientSecret,
+			RedirectURL:  ghConfig.RedirectURL,
+			Scopes:       ghConfig.Scopes,
 			Endpoint:     github.Endpoint,
 		}, nil
 	case GitLabProvider:
-		if s.config.OAuth.GitLab.ClientID == "" || s.config.OAuth.GitLab.ClientSecret == "" {
+		glConfig := s.configService.GetGitLabOAuth(ctx)
+		if glConfig.ClientID == "" || glConfig.ClientSecret == "" {
 			return nil, errors.New("gitlab oauth not configured")
 		}
 		return &oauth2.Config{
-			ClientID:     s.config.OAuth.GitLab.ClientID,
-			ClientSecret: s.config.OAuth.GitLab.ClientSecret,
-			RedirectURL:  s.config.OAuth.GitLab.RedirectURL,
-			Scopes:       s.config.OAuth.GitLab.Scopes,
+			ClientID:     glConfig.ClientID,
+			ClientSecret: glConfig.ClientSecret,
+			RedirectURL:  glConfig.RedirectURL,
+			Scopes:       glConfig.Scopes,
 			Endpoint:     gitlab.Endpoint,
 		}, nil
 	case GoogleProvider:
-		if s.config.OAuth.Google.ClientID == "" || s.config.OAuth.Google.ClientSecret == "" {
+		ggConfig := s.configService.GetGoogleOAuth(ctx)
+		if ggConfig.ClientID == "" || ggConfig.ClientSecret == "" {
 			return nil, errors.New("google oauth not configured")
 		}
 		return &oauth2.Config{
-			ClientID:     s.config.OAuth.Google.ClientID,
-			ClientSecret: s.config.OAuth.Google.ClientSecret,
-			RedirectURL:  s.config.OAuth.Google.RedirectURL,
-			Scopes:       s.config.OAuth.Google.Scopes,
+			ClientID:     ggConfig.ClientID,
+			ClientSecret: ggConfig.ClientSecret,
+			RedirectURL:  ggConfig.RedirectURL,
+			Scopes:       ggConfig.Scopes,
 			Endpoint:     google.Endpoint,
 		}, nil
 	default:
@@ -202,7 +204,8 @@ func (s *OAuthService) getGoogleEmail(ctx context.Context, token *oauth2.Token) 
 		return "", fmt.Errorf("failed to create oidc provider: %w", err)
 	}
 
-	idToken, err := provider.Verifier(&oidc.Config{ClientID: s.config.OAuth.Google.ClientID}).Verify(ctx, token.AccessToken)
+	ggConfig := s.configService.GetGoogleOAuth(ctx)
+	idToken, err := provider.Verifier(&oidc.Config{ClientID: ggConfig.ClientID}).Verify(ctx, token.AccessToken)
 	if err != nil {
 		return "", fmt.Errorf("failed to verify id token: %w", err)
 	}

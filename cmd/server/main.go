@@ -69,11 +69,13 @@ func main() {
 	auditService := services.NewAuditService()
 	tagService := services.NewTagService()
 	dashboardService := services.NewDashboardService()
-	oauthService := services.NewOAuthService(cfg)
+	
+	configService := services.NewConfigService(cfg, database.GetDB(), encryptionService)
+	oauthService := services.NewOAuthService(configService)
+	
 	backupService := services.NewBackupService(cfg)
 	emailService := services.NewEmailService(cfg)
 	healthService := services.NewHealthService()
-	configService := services.NewConfigService(cfg)
 
 	// Initialize git operations
 	gitOps := gitops.NewGitOperations(cfg.Storage.BasePath)
@@ -410,6 +412,7 @@ func setupRouter(
 		{
 			configRoutes.GET("", configHandler.GetConfig)
 			configRoutes.PUT("", middleware.RequireAdmin(), configHandler.UpdateConfig)
+			configRoutes.PUT("/oauth", middleware.RequireAdmin(), configHandler.UpdateOAuthSettings)
 		}
 
 		// Incoming webhook receiver (no auth required, uses HMAC signature)

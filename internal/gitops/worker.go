@@ -284,6 +284,45 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 		}
 	}
 
+	// Fetch description and tags for GitHub repositories
+	if strings.Contains(repo.URL, "github.com") {
+		fetcher := NewGitHubMetadataFetcher()
+		token := ""
+		if creds != nil && creds.Token != "" {
+			token = creds.Token
+		} else if creds != nil && creds.Password != "" && repo.AuthType == "basic" {
+			token = creds.Password
+		}
+
+		desc, topics, err := fetcher.FetchRepositoryInfo(w.ctx, repo.URL, token)
+		if err != nil {
+			logger.Warn("failed to fetch github repo info", zap.Error(err))
+		} else {
+			// Update description
+			if desc != "" {
+				repo.Description = &desc
+				w.db.Model(&repo).Update("description", desc)
+			}
+			
+			// Update tags
+			if len(topics) > 0 {
+				var tags []models.Tag
+				for _, topic := range topics {
+					var tag models.Tag
+					if err := w.db.Where("name = ?", topic).FirstOrCreate(&tag, models.Tag{
+						Name:  topic,
+						Color: "#000000", // Default color for auto-generated tags
+					}).Error; err == nil {
+						tags = append(tags, tag)
+					}
+				}
+				if len(tags) > 0 {
+					w.db.Model(&repo).Association("Tags").Replace(tags)
+				}
+			}
+		}
+	}
+
 	// Update repository
 	w.db.Model(&repo).Updates(map[string]interface{}{
 		"last_clone_at":     time.Now(),

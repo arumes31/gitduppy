@@ -64,6 +64,47 @@ func (f *GitHubMetadataFetcher) FetchMetadata(ctx context.Context, repoURL, stor
 	return nil
 }
 
+// FetchRepositoryInfo fetches the description and topics for a GitHub repository.
+func (f *GitHubMetadataFetcher) FetchRepositoryInfo(ctx context.Context, repoURL, token string) (string, []string, error) {
+	owner, repoName, err := f.parseGitHubURL(repoURL)
+	if err != nil {
+		return "", nil, fmt.Errorf("not a github url")
+	}
+
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repoName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return "", nil, err
+	}
+
+	// We need the mercy-preview header to get topics, though it's standard in v3 now.
+	req.Header.Set("Accept", "application/vnd.github.mercy-preview+json")
+	if token != "" {
+		req.Header.Set("Authorization", "token "+token)
+	}
+
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", nil, fmt.Errorf("GitHub API returned status: %d", resp.StatusCode)
+	}
+
+	var data struct {
+		Description string   `json:"description"`
+		Topics      []string `json:"topics"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return "", nil, fmt.Errorf("failed to decode repo info: %w", err)
+	}
+
+	return data.Description, data.Topics, nil
+}
+
 // fetchPaginatedJSON fetches all pages from a GitHub API list endpoint and
 // writes the combined results to filePath as a JSON array.
 // If filterPRs is true, items with a "pull_request" key are excluded (used to

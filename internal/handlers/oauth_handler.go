@@ -34,7 +34,7 @@ func (h *OAuthHandler) LoginWithProvider(c *gin.Context) {
 	provider := c.Param("provider")
 	oauthProvider := services.OAuthProvider(provider)
 
-	oauthConfig, err := h.oauthService.GetOAuthConfig(oauthProvider)
+	oauthConfig, err := h.oauthService.GetOAuthConfig(c, oauthProvider)
 	if err != nil {
 		response.BadRequest(c, "OAUTH_NOT_CONFIGURED", err.Error())
 		return
@@ -68,7 +68,7 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 	}
 
 	// Get OAuth config
-	oauthConfig, err := h.oauthService.GetOAuthConfig(oauthProvider)
+	oauthConfig, err := h.oauthService.GetOAuthConfig(c, oauthProvider)
 	if err != nil {
 		response.BadRequest(c, "OAUTH_NOT_CONFIGURED", err.Error())
 		return
@@ -147,7 +147,7 @@ func (h *OAuthHandler) LinkAccount(c *gin.Context) {
 	provider := c.Param("provider")
 	oauthProvider := services.OAuthProvider(provider)
 
-	oauthConfig, err := h.oauthService.GetOAuthConfig(oauthProvider)
+	oauthConfig, err := h.oauthService.GetOAuthConfig(c, oauthProvider)
 	if err != nil {
 		response.BadRequest(c, "OAUTH_NOT_CONFIGURED", err.Error())
 		return
@@ -186,7 +186,7 @@ func (h *OAuthHandler) LinkCallback(c *gin.Context) {
 		return
 	}
 
-	oauthConfig, err := h.oauthService.GetOAuthConfig(oauthProvider)
+	oauthConfig, err := h.oauthService.GetOAuthConfig(c, oauthProvider)
 	if err != nil {
 		response.BadRequest(c, "OAUTH_NOT_CONFIGURED", err.Error())
 		return

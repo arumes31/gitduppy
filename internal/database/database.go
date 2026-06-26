@@ -62,6 +62,7 @@ func AutoMigrate() error {
 		&models.RepositoryTag{},
 		&models.Session{},
 		&models.HealthCheck{},
+		&models.SystemSetting{},
 	)
 	if err != nil {
 		return fmt.Errorf("migration failed: %w", err)
