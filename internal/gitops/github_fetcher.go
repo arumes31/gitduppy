@@ -73,17 +73,24 @@ func (f *GitHubMetadataFetcher) FetchMetadata(ctx context.Context, repoURL, stor
 	return nil
 }
 
-// FetchRepositoryInfo fetches the description and topics for a GitHub repository.
-func (f *GitHubMetadataFetcher) FetchRepositoryInfo(ctx context.Context, repoURL, token string) (string, []string, error) {
+// RepositoryInfo holds the GitHub metadata fetched for a repository.
+type RepositoryInfo struct {
+	Description string
+	Topics      []string
+	Visibility  string // "public" or "private"
+}
+
+// FetchRepositoryInfo fetches the description, topics and visibility for a GitHub repository.
+func (f *GitHubMetadataFetcher) FetchRepositoryInfo(ctx context.Context, repoURL, token string) (*RepositoryInfo, error) {
 	owner, repoName, err := f.parseGitHubURL(repoURL)
 	if err != nil {
-		return "", nil, fmt.Errorf("not a github url")
+		return nil, fmt.Errorf("not a github url")
 	}
 
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repoName)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 
 	// We need the mercy-preview header to get topics, though it's standard in v3 now.
@@ -94,24 +101,45 @@ func (f *GitHubMetadataFetcher) FetchRepositoryInfo(ctx context.Context, repoURL
 
 	resp, err := f.client.Do(req)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", nil, fmt.Errorf("GitHub API returned status: %d", resp.StatusCode)
+		return nil, fmt.Errorf("GitHub API returned status: %d", resp.StatusCode)
 	}
 
 	var data struct {
 		Description string   `json:"description"`
 		Topics      []string `json:"topics"`
+		Private     bool     `json:"private"`
+		Visibility  string   `json:"visibility"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return "", nil, fmt.Errorf("failed to decode repo info: %w", err)
+		return nil, fmt.Errorf("failed to decode repo info: %w", err)
 	}
 
-	return data.Description, data.Topics, nil
+	// Normalize visibility. GitHub returns a "visibility" string ("public"/"private"/"internal")
+	// and a boolean "private"; fall back to the boolean when the string is empty.
+	visibility := data.Visibility
+	switch visibility {
+	case "":
+		if data.Private {
+			visibility = "private"
+		} else {
+			visibility = "public"
+		}
+	case "internal":
+		// Treat enterprise "internal" repos as private for display purposes.
+		visibility = "private"
+	}
+
+	return &RepositoryInfo{
+		Description: data.Description,
+		Topics:      data.Topics,
+		Visibility:  visibility,
+	}, nil
 }
 
 // fetchPaginatedJSON fetches all pages from a GitHub API list endpoint and
