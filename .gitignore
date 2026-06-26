@@ -1,0 +1,63 @@
+# Binaries and executables
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+*.prof
+
+# Dependency directories
+# vendor/
+
+# Go workspace files
+go.work
+go.work.sum
+.go-work/
+
+# IDEs and editors
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*~
+
+# Operating System Files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+
+# Local configuration and environment files
+.env
+.env.local
+.env.*.local
+config.yaml
+config.yml
+config/config.yaml
+config/config.yml
+!config.example.yaml
+!.env.example
+
+# Log files
+*.log
+
+# Temporary/Cache/Data directories
+tmp/
+temp/
+storage/
+backups/
+ssh/
+data/
+
+# Typo/error files
+$null
