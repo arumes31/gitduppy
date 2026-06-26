@@ -12,6 +12,8 @@ FROM alpine:latest
 RUN apk --no-cache add ca-certificates
 WORKDIR /app
 COPY --from=builder /app/bin/gitduppy .
+COPY --from=builder /app/internal/web ./internal/web
+COPY --from=builder /app/static ./static
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup \
     && chown -R appuser:appgroup /app
 USER appuser

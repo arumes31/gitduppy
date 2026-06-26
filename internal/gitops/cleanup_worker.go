@@ -116,7 +116,7 @@ func (w *CleanupWorker) performCleanup() {
 	}
 
 	// Clean up expired sessions
-	sessionResult := w.db.Where("expires_at < ?", time.Now()).Delete(&models.Session{})
+	sessionResult := w.db.Where("expiry < ?", time.Now()).Delete(&models.Session{})
 	if sessionResult.Error != nil {
 		w.logger.Error("failed to cleanup sessions", zap.Error(sessionResult.Error))
 	} else {

@@ -72,6 +72,27 @@ func (m *AuthMiddleware) Middleware() gin.HandlerFunc {
 	}
 }
 
+// WebMiddleware returns the authentication middleware function for web UI that redirects to login instead of returning JSON.
+func (m *AuthMiddleware) WebMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Try session authentication (from cookie)
+		sessionCookie, err := c.Cookie("session")
+		if err == nil && sessionCookie != "" {
+			user, err := m.validateSession(sessionCookie)
+			if err == nil {
+				c.Set("user", user)
+				c.Set("auth_type", "session")
+				c.Next()
+				return
+			}
+		}
+
+		// No valid authentication found, redirect to login
+		c.Redirect(http.StatusFound, "/login")
+		c.Abort()
+	}
+}
+
 // isExcluded checks if a path should be excluded from authentication.
 func (m *AuthMiddleware) isExcluded(path string) bool {
 	for _, excluded := range m.excludePaths {

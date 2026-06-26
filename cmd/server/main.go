@@ -117,6 +117,7 @@ func main() {
 	configHandler := handlers.NewConfigHandler(configService)
 	gitHealthHandler := handlers.NewGitHealthHandler(healthService)
 	metricsHandler := handlers.NewMetricsHandler()
+	webHandler := handlers.NewWebHandler()
 
 	// Initialize middleware
 	authMiddleware := middleware.NewAuthMiddleware()
@@ -150,6 +151,7 @@ func main() {
 		configHandler,
 		gitHealthHandler,
 		metricsHandler,
+		webHandler,
 	)
 
 	// Create HTTP server
@@ -228,8 +230,12 @@ func createDefaultAdmin() error {
 		{Name: "archived", Color: "#6b7280"},
 	}
 	for _, tag := range defaultTags {
-		if err := db.FirstOrCreate(&tag, models.Tag{Name: tag.Name}).Error; err != nil {
-			log.Printf("Warning: failed to create default tag %s: %v", tag.Name, err)
+		var existing models.Tag
+		if err := db.Where("name = ?", tag.Name).First(&existing).Error; err != nil {
+			tag.ID = uuid.New()
+			if err := db.Create(&tag).Error; err != nil {
+				log.Printf("Warning: failed to create default tag %s: %v", tag.Name, err)
+			}
 		}
 	}
 	log.Println("Default tags created")
@@ -258,12 +264,15 @@ func setupRouter(
 	configHandler *handlers.ConfigHandler,
 	gitHealthHandler *handlers.GitHealthHandler,
 	metricsHandler *handlers.MetricsHandler,
+	webHandler *handlers.WebHandler,
 ) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 
-	// Static file serving for logo and favicon
+	// Static file serving and HTML Templates
 	router.Static("/static", "./static")
+	router.Static("/assets", "./internal/web/static")
+	router.LoadHTMLGlob("internal/web/templates/*")
 
 	// Middleware - add panic recovery
 	router.Use(gin.Recovery())
@@ -275,6 +284,17 @@ func setupRouter(
 	// Prometheus metrics endpoint (no auth required)
 	if cfg.Monitoring.MetricsEnabled {
 		router.GET(cfg.Monitoring.MetricsPath, metricsHandler.GetMetrics)
+	}
+	
+	// Web UI Routes
+	router.GET("/login", webHandler.Login)
+	router.GET("/", webHandler.Index)
+	
+	webGroup := router.Group("/")
+	webGroup.Use(authMiddleware.WebMiddleware())
+	{
+		webGroup.GET("/dashboard", webHandler.Dashboard)
+		webGroup.GET("/config", webHandler.Config)
 	}
 
 	// Health check endpoints (no auth required)

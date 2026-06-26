@@ -1,0 +1,55 @@
+{{template "base" .}}
+
+{{define "content"}}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Configuration</h1>
+        <p class="text-muted">Manage system settings and integrations.</p>
+    </div>
+</div>
+
+<div class="config-container">
+    <!-- Navigation Tabs (Simplified as side menu in modern UI) -->
+    
+    <div class="card glass-panel mb-6">
+        <div class="card-header border-bottom">
+            <div class="flex items-center gap-3">
+                <i data-lucide="github" class="icon-lg"></i>
+                <div>
+                    <h3 class="card-title">GitHub Integration</h3>
+                    <p class="text-sm text-muted">Configure GitHub OAuth for metadata mirroring</p>
+                </div>
+            </div>
+        </div>
+        <div class="card-body">
+            <form id="oauth-form" class="settings-form">
+                <div class="form-group">
+                    <label for="provider">Provider</label>
+                    <select id="provider" name="provider" class="form-control" disabled>
+                        <option value="github" selected>GitHub</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label for="client_id">OAuth Client ID</label>
+                    <input type="text" id="client_id" name="client_id" class="form-control" placeholder="Iv1.xxxxxxxxxxxx" required>
+                    <p class="help-text">The Client ID from your GitHub OAuth App settings.</p>
+                </div>
+                
+                <div class="form-group">
+                    <label for="client_secret">OAuth Client Secret</label>
+                    <input type="password" id="client_secret" name="client_secret" class="form-control" placeholder="••••••••••••••••••••••••••••••••••••••••">
+                    <p class="help-text">Leave blank to keep existing secret unchanged.</p>
+                </div>
+                
+                <div class="form-actions mt-6">
+                    <button type="submit" class="btn btn-primary btn-glow">
+                        <i data-lucide="save"></i>
+                        <span>Save Configuration</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{{end}}

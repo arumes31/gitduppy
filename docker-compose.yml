@@ -6,10 +6,17 @@ services:
     ports:
       - "7659:8080"
     environment:
-      - DATABASE_URL=postgres://gitduppy:gitduppy@postgres:5432/gitduppy?sslmode=disable
+      - GITMIRRORS_DATABASE_HOST=postgres
+      - GITMIRRORS_DATABASE_PORT=5432
+      - GITMIRRORS_DATABASE_NAME=gitduppy
+      - GITMIRRORS_DATABASE_USER=gitduppy
+      - GITMIRRORS_DATABASE_PASSWORD=gitduppy
+      - GITMIRRORS_DATABASE_SSLMODE=disable
       - SERVER_PORT=8080
       - SERVER_HOST=0.0.0.0
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-your-encryption-key-here}
+      - GITMIRRORS_SECURITY_MASTER_KEY=${ENCRYPTION_KEY:-your-32-byte-long-encryption-key}
+      - GITMIRRORS_SECURITY_SESSION_SECRET=${SESSION_SECRET:-your-32-byte-long-session-secret}
+      - GITMIRRORS_SECURITY_CSRF_KEY=${CSRF_KEY:-your-32-byte-long-csrf-secret-12}
       - SMTP_HOST=${SMTP_HOST:-smtp.example.com}
       - SMTP_PORT=${SMTP_PORT:-587}
       - SMTP_USERNAME=${SMTP_USERNAME:-user@example.com}
@@ -23,7 +30,7 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/api/v1/health"]
       interval: 30s
       timeout: 3s
       retries: 3
@@ -39,12 +46,12 @@ services:
       - POSTGRES_USER=gitduppy
       - POSTGRES_PASSWORD=gitduppy
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U gitduppy -d gitduppy"]
       interval: 10s
-      timeout: 5s
-      retries: 5
+      timeout: 10s
+      retries: 30
     restart: unless-stopped
     networks:
       - gitduppy-network
@@ -52,3 +59,6 @@ services:
 networks:
   gitduppy-network:
     driver: bridge
+
+volumes:
+  postgres_data:
