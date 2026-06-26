@@ -420,8 +420,8 @@ body {
 .auth-logo i,
 .auth-logo svg,
 .auth-logo .logo-img {
-    width: 64px;
-    height: 64px;
+    width: 96px;
+    height: 96px;
 }
 
 .blob {
