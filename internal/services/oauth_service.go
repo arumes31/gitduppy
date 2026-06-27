@@ -307,13 +307,13 @@ func (s *OAuthService) SaveGitHubCredentials(ctx context.Context, clientID, clie
 	idKey := "oauth2_github_client_id"
 	secretKey := "oauth2_github_client_secret"
 
-	if err := s.configService.SetSetting(ctx, idKey, clientID, "OAuth Client ID for github", false); err != nil {
-		return err
+	// Persist the client ID and secret together so a failure on either write
+	// cannot leave the credential pair half-updated.
+	writes := []SettingWrite{
+		{Key: idKey, Value: clientID, Description: "OAuth Client ID for github", Encrypt: false},
 	}
 	if clientSecret != "" {
-		if err := s.configService.SetSetting(ctx, secretKey, clientSecret, "OAuth Client Secret for github", true); err != nil {
-			return err
-		}
+		writes = append(writes, SettingWrite{Key: secretKey, Value: clientSecret, Description: "OAuth Client Secret for github", Encrypt: true})
 	}
-	return nil
+	return s.configService.SetSettings(ctx, writes...)
 }

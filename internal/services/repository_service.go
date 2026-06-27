@@ -326,18 +326,18 @@ func (s *RepositoryService) DeleteRepository(_ context.Context, id uuid.UUID) er
 	// Compress local folder and move to paperbin
 	paperbinPath := filepath.Join(filepath.Dir(repo.StoragePath), "paperbin", repo.ID.String())
 	tarGzPath := paperbinPath + ".tar.gz"
-	
+
 	if _, err := os.Stat(repo.StoragePath); err == nil {
 		if err := os.MkdirAll(filepath.Dir(paperbinPath), 0750); err != nil {
 			return fmt.Errorf("failed to create paperbin parent directory: %w", err)
 		}
 		// In case a paperbin archive already exists, remove it first
 		_ = os.Remove(tarGzPath)
-		
+
 		if err := tarGzCompress(repo.StoragePath, tarGzPath); err != nil {
 			return fmt.Errorf("failed to compress repository to paperbin: %w", err)
 		}
-		
+
 		// Remove original folder after successful compression
 		_ = os.RemoveAll(repo.StoragePath)
 	}
@@ -372,11 +372,11 @@ func (s *RepositoryService) RestoreRepository(_ context.Context, id uuid.UUID) e
 		}
 		// In case a destination folder already exists, remove it
 		_ = os.RemoveAll(repo.StoragePath)
-		
+
 		if err := tarGzDecompress(tarGzPath, repo.StoragePath); err != nil {
 			return fmt.Errorf("failed to restore repository from paperbin archive: %w", err)
 		}
-		
+
 		// Delete compressed file
 		_ = os.Remove(tarGzPath)
 	} else if _, err := os.Stat(paperbinPath); err == nil {
@@ -465,20 +465,26 @@ func tarGzCompress(srcDir, destFile string) error {
 	if err != nil {
 		return err
 	}
-	defer d.Close()
 
 	gw := gzip.NewWriter(d)
-	defer gw.Close()
-
 	tw := tar.NewWriter(gw)
-	defer tw.Close()
 
-	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+	walkErr := filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
-		header, err := tar.FileInfoHeader(info, info.Name())
+		// Preserve symlinks as links rather than dereferencing/copying their
+		// target contents.
+		linkTarget := ""
+		if info.Mode()&os.ModeSymlink != 0 {
+			linkTarget, err = os.Readlink(path)
+			if err != nil {
+				return err
+			}
+		}
+
+		header, err := tar.FileInfoHeader(info, linkTarget)
 		if err != nil {
 			return err
 		}
@@ -493,7 +499,9 @@ func tarGzCompress(srcDir, destFile string) error {
 			return err
 		}
 
-		if info.Mode().IsDir() {
+		// Only regular files have their bytes copied; directories and symlinks
+		// are fully described by the header alone.
+		if !info.Mode().IsRegular() {
 			return nil
 		}
 
@@ -506,6 +514,25 @@ func tarGzCompress(srcDir, destFile string) error {
 		_, err = io.Copy(tw, file)
 		return err
 	})
+
+	// Close writers explicitly in order and propagate any close error so a
+	// failed flush is not reported as success.
+	if walkErr != nil {
+		_ = tw.Close()
+		_ = gw.Close()
+		_ = d.Close()
+		return walkErr
+	}
+	if err := tw.Close(); err != nil {
+		_ = gw.Close()
+		_ = d.Close()
+		return err
+	}
+	if err := gw.Close(); err != nil {
+		_ = d.Close()
+		return err
+	}
+	return d.Close()
 }
 
 // tarGzDecompress extracts a .tar.gz file into a destination directory.
@@ -534,6 +561,14 @@ func tarGzDecompress(srcFile, destDir string) error {
 		}
 
 		target := filepath.Join(destDir, header.Name)
+
+		// Guard against path traversal: ensure the resolved target stays within
+		// destDir (rejects entries containing "../" or absolute paths).
+		cleanDest := filepath.Clean(destDir)
+		if target != cleanDest && !strings.HasPrefix(target, cleanDest+string(os.PathSeparator)) {
+			return fmt.Errorf("invalid path in archive (path traversal): %s", header.Name)
+		}
+
 		switch header.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, 0755); err != nil {

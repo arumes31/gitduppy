@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"html/template"
@@ -201,6 +203,15 @@ func main() {
 	log.Println("Server exited properly")
 }
 
+// generateBootstrapPassword returns a cryptographically random URL-safe password.
+func generateBootstrapPassword(nBytes int) (string, error) {
+	b := make([]byte, nBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
 // createDefaultAdmin creates a default admin user if no users exist
 func createDefaultAdmin() error {
 	db := database.GetDB()
@@ -212,7 +223,21 @@ func createDefaultAdmin() error {
 		log.Println("Users already exist, skipping default admin creation")
 		return nil
 	}
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
+	// Determine the initial admin password. Prefer an operator-supplied secret;
+	// otherwise generate a strong random one and print it once. This avoids
+	// baking a universal default password into every deployment.
+	bootstrapPassword := os.Getenv("GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD")
+	generated := false
+	if bootstrapPassword == "" {
+		pw, genErr := generateBootstrapPassword(24)
+		if genErr != nil {
+			return fmt.Errorf("failed to generate bootstrap admin password: %w", genErr)
+		}
+		bootstrapPassword = pw
+		generated = true
+	}
+
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(bootstrapPassword), bcrypt.DefaultCost)
 	if err != nil {
 		return fmt.Errorf("failed to hash password: %w", err)
 	}
@@ -228,7 +253,11 @@ func createDefaultAdmin() error {
 	if err := db.Create(admin).Error; err != nil {
 		return fmt.Errorf("failed to create admin user: %w", err)
 	}
-	log.Println("Default admin user created (username: admin, password: admin123 - change on first login)")
+	if generated {
+		log.Printf("=== INITIAL ADMIN CREATED (username: admin) — one-time generated password: %s — change it immediately after first login ===", bootstrapPassword)
+	} else {
+		log.Println("Default admin user created (username: admin) from GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD - change on first login")
+	}
 	defaultTags := []models.Tag{
 		{Name: "production", Color: "#ef4444"},
 		{Name: "staging", Color: "#f59e0b"},
@@ -503,5 +532,6 @@ func loadTemplates() CustomHTMLRenderer {
 	r["repos.html"] = template.Must(template.ParseFiles("internal/web/templates/base.html", "internal/web/templates/repos.html"))
 	r["repo_detail.html"] = template.Must(template.ParseFiles("internal/web/templates/base.html", "internal/web/templates/repo_detail.html"))
 	r["repo_commit.html"] = template.Must(template.ParseFiles("internal/web/templates/base.html", "internal/web/templates/repo_commit.html"))
+	r["search.html"] = template.Must(template.ParseFiles("internal/web/templates/base.html", "internal/web/templates/search.html"))
 	return r
 }

@@ -147,17 +147,18 @@ if (document.getElementById('stats-container')) {
             }
 
             container.innerHTML = jobs.map(job => {
-                const repoName = job.repository ? job.repository.name : 'Unknown';
-                const status = job.status;
-                const duration = job.duration_ms ? (job.duration_ms / 1000).toFixed(1) + 's' : '0s';
-                
+                const repoName = escHtml(job.repository ? job.repository.name : 'Unknown');
+                const rawStatus = job.status || '';
+                const status = escHtml(rawStatus);
+                const duration = escHtml(job.duration_ms ? (job.duration_ms / 1000).toFixed(1) + 's' : '0s');
+
                 // Construct progress width (Gantt duration bar)
-                const startTime = job.started_at ? new Date(job.started_at).toLocaleTimeString() : 'Pending';
-                const completedTime = job.completed_at ? new Date(job.completed_at).toLocaleTimeString() : '';
-                
+                const startTime = escHtml(job.started_at ? new Date(job.started_at).toLocaleTimeString() : 'Pending');
+                const completedTime = escHtml(job.completed_at ? new Date(job.completed_at).toLocaleTimeString() : '');
+
                 // Color mapping
-                const barClass = status === 'success' ? 'success' : (status === 'failed' ? 'failed' : 'running');
-                const widthPercent = job.status === 'running' ? '100%' : (job.duration_ms ? Math.min(100, Math.max(10, (job.duration_ms / 1000) * 2)) + '%' : '10%');
+                const barClass = rawStatus === 'success' ? 'success' : (rawStatus === 'failed' ? 'failed' : 'running');
+                const widthPercent = rawStatus === 'running' ? '100%' : (job.duration_ms ? Math.min(100, Math.max(10, (job.duration_ms / 1000) * 2)) + '%' : '10%');
 
                 return `
                 <div class="timeline-row" style="margin-bottom: 12px;">
@@ -445,18 +446,18 @@ if (reposGrid) {
             const status = repo.last_clone_status || repo.status || 'pending';
             const statusLabel = status === 'success' ? 'synced' : status;
             const lastSync = repo.last_clone_at ? timeAgo(new Date(repo.last_clone_at)) : 'Never';
-            const desc = repo.description || '<span class="text-muted">No description</span>';
+            const desc = repo.description ? escHtml(repo.description) : '<span class="text-muted">No description</span>';
             return `
-            <div class="repo-card glass-panel" onclick="window.location.href='/repos/${repo.id}'">
+            <div class="repo-card glass-panel" onclick="window.location.href='/repos/${encodeURIComponent(repo.id)}'">
                 <div class="repo-card-header">
                     <div class="repo-card-name">
                         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/></svg>
-                        ${repo.name}
+                        ${escHtml(repo.name)}
                     </div>
                     <div style="display:flex; align-items:center; gap:6px;">
                         ${visibilityBadge(repo.visibility)}
                         <span class="status-badge ${statusLabel}">${statusLabel}</span>
-                        <button class="btn btn-secondary btn-sm sync-card-btn" onclick="event.stopPropagation(); triggerSyncNow('${repo.id}', this)" title="Sync Now" style="padding:4px 8px; border-radius:4px; height:24px; display:inline-flex; align-items:center; justify-content:center;">
+                        <button class="btn btn-secondary btn-sm sync-card-btn" onclick="event.stopPropagation(); triggerSyncNow(${jsArg(repo.id)}, this)" title="Sync Now" style="padding:4px 8px; border-radius:4px; height:24px; display:inline-flex; align-items:center; justify-content:center;">
                             <i data-lucide="refresh-cw" style="width:12px; height:12px;"></i>
                         </button>
                     </div>
@@ -465,7 +466,7 @@ if (reposGrid) {
                 <div class="repo-card-footer">
                     <span title="Branch">
                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
-                        ${repo.branch}
+                        ${escHtml(repo.branch)}
                     </span>
                     <span title="Last synced">
                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
@@ -543,13 +544,13 @@ if (reposGrid) {
                 deletedReposEmpty.style.display = 'none';
                 deletedReposGrid.innerHTML = repos.map(repo => {
                     const deletedDate = repo.deleted_at ? new Date(repo.deleted_at).toLocaleDateString() : 'Unknown';
-                    const desc = repo.description || '<span class="text-muted">No description</span>';
+                    const desc = repo.description ? escHtml(repo.description) : '<span class="text-muted">No description</span>';
                     return `
                     <div class="repo-card glass-panel paperbin-card" style="cursor: default;">
                         <div class="repo-card-header">
                             <div class="repo-card-name">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/></svg>
-                                ${repo.name}
+                                ${escHtml(repo.name)}
                             </div>
                             <span class="status-badge error">deleted</span>
                         </div>
@@ -560,11 +561,11 @@ if (reposGrid) {
                                 Deleted: ${deletedDate}
                             </span>
                             <div class="card-actions" style="display:flex; gap:8px;">
-                                <button class="btn btn-secondary btn-sm" onclick="restoreRepo('${repo.id}')">
+                                <button class="btn btn-secondary btn-sm" onclick="restoreRepo(${jsArg(repo.id)})">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
                                     <span>Restore</span>
                                 </button>
-                                <button class="btn btn-danger btn-sm" onclick="deleteRepoPermanent('${repo.id}', '${repo.name}')">
+                                <button class="btn btn-danger btn-sm" onclick="deleteRepoPermanent(${jsArg(repo.id)}, ${jsArg(repo.name)})">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
                                     <span>Purge</span>
                                 </button>
@@ -585,14 +586,14 @@ if (reposGrid) {
                 deletedBranchesTable.style.display = 'table';
                 deletedBranchesBody.innerHTML = branches.map(br => {
                     const prunedDate = br.deleted_at ? new Date(br.deleted_at).toLocaleDateString() + ' ' + new Date(br.deleted_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Unknown';
-                    const parentName = br.repository ? br.repository.name : 'Unknown Repository';
-                    const shortSHA = br.commit_sha ? br.commit_sha.substring(0, 7) : 'Unknown';
+                    const parentName = escHtml(br.repository ? br.repository.name : 'Unknown Repository');
+                    const shortSHA = escHtml(br.commit_sha ? br.commit_sha.substring(0, 7) : 'Unknown');
                     return `
                     <tr>
                         <td style="font-weight:600; color:var(--primary); padding-left: 24px;">
                             <div style="display:flex; align-items:center; gap:8px;">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
-                                ${br.branch_name}
+                                ${escHtml(br.branch_name)}
                             </div>
                         </td>
                         <td>${parentName}</td>
@@ -600,11 +601,11 @@ if (reposGrid) {
                         <td>${prunedDate}</td>
                         <td class="text-right" style="text-align: right; padding-right: 24px;">
                             <div style="display:inline-flex; gap:8px;">
-                                <button class="btn btn-secondary btn-sm" onclick="restoreBranch('${br.repository_id}', '${br.id}', '${br.branch_name}')">
+                                <button class="btn btn-secondary btn-sm" onclick="restoreBranch(${jsArg(br.repository_id)}, ${jsArg(br.id)}, ${jsArg(br.branch_name)})">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
                                     <span>Restore</span>
                                 </button>
-                                <button class="btn btn-danger btn-sm" onclick="deleteBranchPermanent('${br.repository_id}', '${br.id}', '${br.branch_name}')">
+                                <button class="btn btn-danger btn-sm" onclick="deleteBranchPermanent(${jsArg(br.repository_id)}, ${jsArg(br.id)}, ${jsArg(br.branch_name)})">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
                                     <span>Purge</span>
                                 </button>
@@ -854,17 +855,17 @@ if (repoBrowser) {
         if (branches.length) {
             html += '<div class="branch-type-label">Branches</div>';
             html += branches.map(b => `
-                <div class="branch-item ${b.name === currentRef ? 'active' : ''}" onclick="switchRef('${b.name}')">
+                <div class="branch-item ${b.name === currentRef ? 'active' : ''}" onclick="switchRef(${jsArg(b.name)})">
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
-                    ${b.name}
+                    ${escHtml(b.name)}
                 </div>`).join('');
         }
         if (tags.length) {
             html += '<div class="branch-type-label">Tags</div>';
             html += tags.map(t => `
-                <div class="branch-item ${t.name === currentRef ? 'active' : ''}" onclick="switchRef('${t.name}')">
+                <div class="branch-item ${t.name === currentRef ? 'active' : ''}" onclick="switchRef(${jsArg(t.name)})">
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2z"/><path d="M7 7h.01"/></svg>
-                    ${t.name}
+                    ${escHtml(t.name)}
                 </div>`).join('');
         }
         container.innerHTML = html || '<div class="branch-type-label">No refs found</div>';
@@ -948,7 +949,7 @@ if (repoBrowser) {
         let rows = '';
         if (basePath) {
             const parent = basePath.includes('/') ? basePath.substring(0, basePath.lastIndexOf('/')) : '';
-            rows += `<tr onclick="navigateTo('${parent}')" style="cursor:pointer">
+            rows += `<tr onclick="navigateTo(${jsArg(parent)})" style="cursor:pointer">
                 <td class="file-icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg></td>
                 <td class="file-name-cell"><span class="file-name-link">..</span></td>
                 <td class="file-commit-msg"></td>
@@ -962,13 +963,13 @@ if (repoBrowser) {
                 ? `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:#e3b341"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>`
                 : `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><polyline points="14 2 14 8 20 8"/></svg>`;
             const click = isDir
-                ? `navigateTo('${e.path}')`
-                : `loadFile('${e.path}', '${e.name}')`;
+                ? `navigateTo(${jsArg(e.path)})`
+                : `loadFile(${jsArg(e.path)}, ${jsArg(e.name)})`;
             const date = e.last_date ? timeAgo(new Date(e.last_date)) : '';
             return `<tr onclick="${click}" style="cursor:pointer">
                 <td class="file-icon">${icon}</td>
-                <td class="file-name-cell"><span class="file-name-link">${e.name}</span></td>
-                <td class="file-commit-msg">${e.last_message || ''}</td>
+                <td class="file-name-cell"><span class="file-name-link">${escHtml(e.name)}</span></td>
+                <td class="file-commit-msg">${escHtml(e.last_message || '')}</td>
                 <td class="file-date">${date}</td>
             </tr>`;
         }).join('');
@@ -998,9 +999,9 @@ if (repoBrowser) {
                 const acc = accumulated;
                 html += `<span class="bc-sep">/</span>`;
                 if (i === parts.length - 1) {
-                    html += `<span class="bc-item" style="cursor:default;color:var(--text-main)">${part}</span>`;
+                    html += `<span class="bc-item" style="cursor:default;color:var(--text-main)">${escHtml(part)}</span>`;
                 } else {
-                    html += `<span class="bc-item" onclick="navigateTo('${acc}')">${part}</span>`;
+                    html += `<span class="bc-item" onclick="navigateTo(${jsArg(acc)})">${escHtml(part)}</span>`;
                 }
             });
         }
@@ -1222,6 +1223,12 @@ function visibilityBadge(visibility) {
 
 function escHtml(str) {
     if (!str) return '';
-    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// jsArg produces an HTML-attribute-safe, JS-safe quoted literal for use as an
+// inline event-handler argument (e.g. onclick="fn(${jsArg(value)})").
+function jsArg(val) {
+    return escHtml(JSON.stringify(val == null ? '' : String(val)));
 }
 

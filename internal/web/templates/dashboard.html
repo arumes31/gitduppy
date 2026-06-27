@@ -9,9 +9,9 @@
     <div class="header-actions">
         <div class="maintenance-toggle glass-panel" title="Pause all scheduled mirroring">
             <i data-lucide="wrench"></i>
-            <span class="maintenance-label">Maintenance Mode</span>
+            <span class="maintenance-label" id="maintenance-label">Maintenance Mode</span>
             <label class="switch">
-                <input type="checkbox" id="maintenance-switch" onchange="toggleMaintenanceMode(this.checked)">
+                <input type="checkbox" id="maintenance-switch" aria-labelledby="maintenance-label" onchange="toggleMaintenanceMode(this.checked)">
                 <span class="slider"></span>
             </label>
         </div>
@@ -23,7 +23,7 @@
 </div>
 
 <!-- Quota exceeded warning banner -->
-<div id="quota-warning-banner" class="quota-banner" style="display:none; margin-bottom: 24px;">
+<div id="quota-warning-banner" class="quota-banner" role="alert" aria-live="assertive" style="display:none; margin-bottom: 24px;">
     <i data-lucide="alert-triangle"></i>
     <span><strong>Paperbin Quota Warning:</strong> Your total soft-deleted storage usage has exceeded the configured limit! Please purge some repositories to free up space.</span>
 </div>

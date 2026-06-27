@@ -266,11 +266,15 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 
 						logger.Info("pruned branch detected (deleted online)", zap.String("branch", branchName), zap.String("sha", sha))
 
-						// 1. Create a paperbin ref in the local repo to keep the commit alive
+						// 1. Create a paperbin ref in the local repo to keep the commit alive.
 						paperbinRef := "refs/paperbin/heads/" + branchName
 						_, updateErr := RunGitCommand(w.ctx, repoPath, "update-ref", paperbinRef, sha)
 						if updateErr != nil {
-							logger.Error("failed to create paperbin ref", zap.String("ref", paperbinRef), zap.Error(updateErr))
+							// Without the paperbin ref the commit is not protected, so the
+							// branch would not actually be restorable. Skip creating the
+							// DeletedBranch record in that case.
+							logger.Error("failed to create paperbin ref, skipping paperbin record", zap.String("ref", paperbinRef), zap.Error(updateErr))
+							continue
 						}
 
 						// 2. Save in database under DeletedBranch
@@ -404,18 +408,31 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 				w.db.Model(&repo).Update("visibility", info.Visibility)
 			}
 
-			// Update tags
-			var tags []models.Tag
+			// Merge GitHub topics into the existing tag set instead of
+			// replacing it, so manually-assigned tags (e.g. via TagIDs) are
+			// preserved across syncs.
+			tagSet := make(map[uuid.UUID]models.Tag)
+			var currentTags []models.Tag
+			if err := w.db.Model(&repo).Association("Tags").Find(&currentTags); err != nil {
+				logger.Error("Failed to load existing repository tags", zap.Error(err))
+			}
+			for _, t := range currentTags {
+				tagSet[t.ID] = t
+			}
 			for _, topic := range info.Topics {
 				var tag models.Tag
 				if err := w.db.Where("name = ?", topic).FirstOrCreate(&tag, models.Tag{
 					Name:  topic,
 					Color: "#000000", // Default color for auto-generated tags
 				}).Error; err == nil {
-					tags = append(tags, tag)
+					tagSet[tag.ID] = tag
 				}
 			}
-			if err := w.db.Model(&repo).Association("Tags").Replace(tags); err != nil {
+			merged := make([]models.Tag, 0, len(tagSet))
+			for _, t := range tagSet {
+				merged = append(merged, t)
+			}
+			if err := w.db.Model(&repo).Association("Tags").Replace(merged); err != nil {
 				logger.Error("Failed to sync repository tags", zap.Error(err))
 			}
 		}

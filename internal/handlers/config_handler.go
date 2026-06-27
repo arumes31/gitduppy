@@ -2,9 +2,10 @@ package handlers
 
 import (
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gitduppy/gitduppy/internal/config"
 	"github.com/gitduppy/gitduppy/internal/middleware"
 	"github.com/gitduppy/gitduppy/internal/services"
 	"github.com/gitduppy/gitduppy/pkg/response"
@@ -42,18 +43,10 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 		return
 	}
 
-	var newConfig config.Config
-	if err := c.ShouldBindJSON(&newConfig); err != nil {
-		response.BadRequest(c, "INVALID_REQUEST", err.Error())
-		return
-	}
-
-	if err := h.configService.UpdateConfig(c, &newConfig); err != nil {
-		response.InternalError(c, "Failed to update configuration: "+err.Error())
-		return
-	}
-
-	response.SuccessWithMessage(c, "Configuration updated successfully. Application restart required.", nil)
+	// Persisting the full application configuration is not implemented. Return a
+	// deliberate 501 so the admin UI does not present a save flow that can never
+	// succeed (and so clients can distinguish this from a transient 500).
+	response.ErrorResponse(c, http.StatusNotImplemented, "NOT_IMPLEMENTED", "Configuration persistence is not implemented")
 }
 
 // UpdateOAuthSettingsRequest represents the payload to update OAuth settings.
@@ -178,6 +171,13 @@ func (h *ConfigHandler) UpdateQuota(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "INVALID_REQUEST", err.Error())
+		return
+	}
+
+	// Validate that quota_gb is a positive number before persisting it.
+	quotaVal, parseErr := strconv.ParseFloat(strings.TrimSpace(req.QuotaGB), 64)
+	if parseErr != nil || quotaVal <= 0 {
+		response.BadRequest(c, "INVALID_QUOTA", "quota_gb must be a positive number")
 		return
 	}
 

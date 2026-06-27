@@ -374,8 +374,15 @@ func RunGitCommand(ctx context.Context, dir string, args ...string) (string, err
 func (g *GitOperations) GetReferences(ctx context.Context, path string) (map[string]string, error) {
 	output, err := RunGitCommand(ctx, path, "show-ref")
 	if err != nil {
-		// If there are no references yet, show-ref returns exit status 1
-		return nil, nil
+		// An empty repository (no refs yet) makes show-ref exit with status 1
+		// and no output. That case is benign; any other failure (e.g. invalid
+		// repo, git error) must be surfaced so deleted-branch detection does
+		// not silently treat a real error as "no branches".
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 && strings.TrimSpace(output) == "" {
+			return map[string]string{}, nil
+		}
+		return nil, fmt.Errorf("failed to list references: %w (output: %s)", err, strings.TrimSpace(output))
 	}
 
 	refs := make(map[string]string)

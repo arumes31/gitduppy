@@ -71,6 +71,14 @@ func (h *DashboardHandler) GetRecentJobs(c *gin.Context) {
 // GetTimeline handles GET /api/v1/dashboard/timeline.
 func (h *DashboardHandler) GetTimeline(c *gin.Context) {
 	limit := validator.ParseInt(c.Query("limit"), 50)
+	// Clamp to a safe range so a request cannot trigger an oversized or
+	// negative fetch.
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 200 {
+		limit = 200
+	}
 	timeline, err := h.dashboardService.GetTimelineData(c, limit)
 	if err != nil {
 		response.InternalError(c, err.Error())
@@ -86,10 +94,10 @@ func (h *DashboardHandler) GetPaperbinQuota(c *gin.Context) {
 		response.InternalError(c, err.Error())
 		return
 	}
-	
+
 	quotaBytes := quotaGB * 1024 * 1024 * 1024
 	exceeded := sizeBytes > quotaBytes
-	
+
 	response.Success(c, gin.H{
 		"size_bytes":  sizeBytes,
 		"quota_gb":    quotaGB,

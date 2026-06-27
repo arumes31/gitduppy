@@ -62,29 +62,34 @@ async function performGlobalSearch(event) {
         }
 
         countTitle.textContent = `${data.data.length} match${data.data.length > 1 ? 'es' : ''} found`;
-        container.style.display = 'block';
+        // Use flex so the .search-results column layout (gap, direction) applies.
+        container.style.display = 'flex';
+
+        // HTML-escape helper for untrusted result fields.
+        const esc = (s) => String(s == null ? '' : s)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
 
         list.innerHTML = data.data.map(item => {
-            // Escape HTML helper
-            const safeContent = item.content
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/"/g, "&quot;")
-                .replace(/'/g, "&#039;");
+            const safeContent = esc(item.content);
+            const safeQuery = esc(query);
 
-            // Highlight matches
-            const highlighted = safeContent.replaceAll(query, `<span class="search-highlight">${query}</span>`);
+            // Highlight matches. Both the content and the query are already
+            // HTML-escaped, so the highlight wrapper is the only markup injected.
+            const highlighted = safeContent.replaceAll(safeQuery, `<span class="search-highlight">${safeQuery}</span>`);
 
             return `
             <div class="search-result-item glass-panel">
                 <div class="search-result-header">
                     <div>
-                        <span style="font-weight:600; color:var(--text-main);">${item.repo_name}</span>
+                        <span style="font-weight:600; color:var(--text-main);">${esc(item.repo_name)}</span>
                         <span style="color:var(--text-muted); margin:0 6px;">/</span>
-                        <a href="/repos/${item.repo_id}" style="color:var(--primary); text-decoration:none; font-weight:500;">${item.file}</a>
+                        <a href="/repos/${encodeURIComponent(item.repo_id)}" style="color:var(--primary); text-decoration:none; font-weight:500;">${esc(item.file)}</a>
                     </div>
-                    <span class="text-muted">Line ${item.line_number}</span>
+                    <span class="text-muted">Line ${esc(item.line_number)}</span>
                 </div>
                 <div class="search-result-code">
                     <code>${highlighted}</code>

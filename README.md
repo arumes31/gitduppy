@@ -43,14 +43,25 @@ docker compose up -d --build
 # Access the dashboard at http://localhost:7659/login (or http://localhost:8080 inside the container)
 ```
 
-### Default Login Credentials
+### First-Run Administrator Account
 
-On the first run, GitDuppy automatically seeds a default administrator account. You can log in with:
+On the first run (when no users exist yet), GitDuppy seeds a single administrator account:
+- **Username**: `admin`
 - **Email**: `admin@gitmirrors.local`
-- **Password**: `admin123`
+
+There is **no universal default password**. The initial password is established one of two ways:
+
+1. **Operator-provided secret (recommended):** set the `GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD` environment variable before the first start. That value becomes the initial admin password.
+2. **Auto-generated secret:** if the variable is unset, GitDuppy generates a strong random password and prints it **once** to the application logs at startup, e.g.:
+
+   ```
+   === INITIAL ADMIN CREATED (username: admin) — one-time generated password: <random> — change it immediately after first login ===
+   ```
+
+   Retrieve it with `docker compose logs gitduppy` (or your container runtime's log viewer).
 
 > [!IMPORTANT]
-> You must change this default password immediately upon your first successful login for security compliance.
+> Log in with this initial password and change it immediately via the change-password flow. The generated secret is shown only once and is not stored in plaintext.
 
 ---
 

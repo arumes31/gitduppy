@@ -19,6 +19,10 @@ import (
 	"go.uber.org/zap"
 )
 
+// maxMediaBytes caps the size of any single archived media asset to keep
+// disk usage bounded when mirroring issue/PR attachments.
+const maxMediaBytes = 100 << 20 // 100 MB
+
 type cacheEntry struct {
 	value      interface{}
 	expiration time.Time
@@ -115,7 +119,14 @@ func (f *GitHubMetadataFetcher) FetchRepositoryInfo(ctx context.Context, repoURL
 		return nil, fmt.Errorf("not a github url")
 	}
 
-	cacheKey := "repo_info:" + owner + "/" + repoName
+	// Include the auth scope in the cache key so private metadata fetched with
+	// one token is never served to a caller with a different or missing token.
+	tokenScope := "anon"
+	if token != "" {
+		sum := sha256.Sum256([]byte(token))
+		tokenScope = fmt.Sprintf("%x", sum[:8])
+	}
+	cacheKey := "repo_info:" + tokenScope + ":" + owner + "/" + repoName
 	if cached, ok := f.getCache(cacheKey); ok {
 		return cached.(*RepositoryInfo), nil
 	}
@@ -220,11 +231,11 @@ func (f *GitHubMetadataFetcher) fetchPaginatedJSON(ctx context.Context, owner, r
 					resetTime := time.Unix(resetUnix, 0)
 					sleepDuration := time.Until(resetTime) + 2*time.Second
 					if sleepDuration > 0 && sleepDuration < 5*time.Minute {
-						f.logger.Warn("GitHub rate limit exceeded. Backing off and sleeping...", 
-							zap.Duration("duration", sleepDuration), 
+						f.logger.Warn("GitHub rate limit exceeded. Backing off and sleeping...",
+							zap.Duration("duration", sleepDuration),
 							zap.Time("reset_time", resetTime))
 						resp.Body.Close()
-						
+
 						select {
 						case <-ctx.Done():
 							return ctx.Err()
@@ -253,7 +264,7 @@ func (f *GitHubMetadataFetcher) fetchPaginatedJSON(ctx context.Context, owner, r
 					resetTime := time.Unix(resetUnix, 0)
 					sleepDuration := time.Until(resetTime) + 2*time.Second
 					if sleepDuration > 0 && sleepDuration < 5*time.Minute {
-						f.logger.Info("GitHub rate limit near depletion. Proactively sleeping until reset...", 
+						f.logger.Info("GitHub rate limit near depletion. Proactively sleeping until reset...",
 							zap.Duration("duration", sleepDuration))
 						select {
 						case <-ctx.Done():
@@ -309,7 +320,7 @@ func (f *GitHubMetadataFetcher) fetchPaginatedJSON(ctx context.Context, owner, r
 // archiveMedia scans JSON bytes for external GitHub media URLs, downloads them, and rewrites URLs locally.
 func (f *GitHubMetadataFetcher) archiveMedia(ctx context.Context, backupDir string, token string, jsonBytes []byte) []byte {
 	mediaDir := filepath.Join(backupDir, "media")
-	
+
 	// Match user attachments, images, and raw user content domains from GitHub
 	re := regexp.MustCompile(`https?://(?:github\.com/assets/|github\.com/user-attachments/assets/|[\w.-]+\.githubusercontent\.com/[a-zA-Z0-9-_./~%#?&=]+)`)
 	matches := re.FindAll(jsonBytes, -1)
@@ -344,7 +355,7 @@ func (f *GitHubMetadataFetcher) archiveMedia(ctx context.Context, backupDir stri
 		// Determine filename
 		hash := sha256.Sum256([]byte(cleanURL))
 		hexHash := fmt.Sprintf("%x", hash[:8]) // Keep it short and clean
-		
+
 		ext := filepath.Ext(cleanURL)
 		if ext == "" {
 			ext = ".png" // Default fallback
@@ -371,7 +382,7 @@ func (f *GitHubMetadataFetcher) archiveMedia(ctx context.Context, backupDir stri
 		// Download if it doesn't exist
 		if _, err := os.Stat(destPath); os.IsNotExist(err) {
 			f.logger.Info("Archiving external media asset", zap.String("url", cleanURL))
-			
+
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, cleanURL, nil)
 			if err == nil {
 				if token != "" {
@@ -380,10 +391,22 @@ func (f *GitHubMetadataFetcher) archiveMedia(ctx context.Context, backupDir stri
 				resp, err := f.client.Do(req)
 				if err == nil {
 					if resp.StatusCode == http.StatusOK {
-						outFile, createErr := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
-						if createErr == nil {
-							_, _ = io.Copy(outFile, resp.Body)
-							outFile.Close()
+						switch {
+						case resp.ContentLength > maxMediaBytes:
+							f.logger.Warn("skipping oversized media asset", zap.String("url", cleanURL), zap.Int64("content_length", resp.ContentLength))
+						default:
+							outFile, createErr := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
+							if createErr == nil {
+								// Cap the bytes written so a huge or unknown-length
+								// asset cannot grow disk usage without bound.
+								written, copyErr := io.Copy(outFile, io.LimitReader(resp.Body, maxMediaBytes+1))
+								outFile.Close()
+								if copyErr != nil || written > maxMediaBytes {
+									// Partial/oversized download — discard it.
+									_ = os.Remove(destPath)
+									f.logger.Warn("media asset exceeded size cap or failed, discarded", zap.String("url", cleanURL))
+								}
+							}
 						}
 					}
 					resp.Body.Close()
@@ -391,10 +414,12 @@ func (f *GitHubMetadataFetcher) archiveMedia(ctx context.Context, backupDir stri
 			}
 		}
 
-		// If download succeeded (or already existed), replace URL in JSON
+		// If download succeeded (or already existed), replace URL in JSON.
+		// Use a path relative to the metadata JSON file (which lives in the
+		// github_backup dir alongside the media/ subdirectory) so the rewritten
+		// URL resolves to the archived asset regardless of how it is served.
 		if _, err := os.Stat(destPath); err == nil {
-			// Map to relative path
-			localURL := "/github_backup/media/" + filename
+			localURL := "media/" + filename
 			jsonStr = strings.ReplaceAll(jsonStr, urlStr, localURL)
 		}
 	}

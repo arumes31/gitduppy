@@ -11,7 +11,7 @@ type DeletedBranch struct {
 	ID           uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`
 	RepositoryID uuid.UUID `gorm:"type:uuid;index;not null" json:"repository_id"`
 	BranchName   string    `gorm:"size:255;not null" json:"branch_name"`
-	CommitSHA    string    `gorm:"size:40;not null" json:"commit_sha"`
+	CommitSHA    string    `gorm:"size:64;not null" json:"commit_sha"`
 	DeletedAt    time.Time `json:"deleted_at"`
 
 	// Relation

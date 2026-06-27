@@ -132,12 +132,41 @@ func (s *ConfigService) UpdateConfig(_ context.Context, _ *config.Config) error 
 	return errors.New("configuration persistence is not implemented")
 }
 
+// SettingWrite describes a single setting to persist.
+type SettingWrite struct {
+	Key         string
+	Value       string
+	Description string
+	Encrypt     bool
+}
+
 // SetSetting saves a setting to the database.
 func (s *ConfigService) SetSetting(ctx context.Context, key, value, description string, encrypt bool) error {
 	if s.db == nil {
 		return errors.New("database not configured")
 	}
+	return s.setSettingTx(ctx, s.db, key, value, description, encrypt)
+}
 
+// SetSettings persists multiple settings atomically in a single transaction, so
+// a partial failure cannot leave a related group of settings inconsistent.
+func (s *ConfigService) SetSettings(ctx context.Context, writes ...SettingWrite) error {
+	if s.db == nil {
+		return errors.New("database not configured")
+	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		for _, w := range writes {
+			if err := s.setSettingTx(ctx, tx, w.Key, w.Value, w.Description, w.Encrypt); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// setSettingTx upserts a single setting using the provided gorm handle (which
+// may be a transaction).
+func (s *ConfigService) setSettingTx(ctx context.Context, tx *gorm.DB, key, value, description string, encrypt bool) error {
 	storeValue := value
 	isEncrypted := false
 	if encrypt && value != "" {
@@ -164,14 +193,14 @@ func (s *ConfigService) SetSetting(ctx context.Context, key, value, description 
 
 	// Use FirstOrCreate logic or Update
 	var existing models.SystemSetting
-	if err := s.db.WithContext(ctx).Where("key = ?", key).First(&existing).Error; err != nil {
+	if err := tx.WithContext(ctx).Where("key = ?", key).First(&existing).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return s.db.WithContext(ctx).Create(&setting).Error
+			return tx.WithContext(ctx).Create(&setting).Error
 		}
 		return err
 	}
 
-	return s.db.WithContext(ctx).Model(&existing).Updates(map[string]interface{}{
+	return tx.WithContext(ctx).Model(&existing).Updates(map[string]interface{}{
 		"value":        storeValue,
 		"is_encrypted": isEncrypted,
 		"description":  description,

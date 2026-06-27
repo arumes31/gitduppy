@@ -32,6 +32,19 @@ func NewOAuthHandler(oauthService *services.OAuthService, authService *services.
 	}
 }
 
+// isSafeRedirect reports whether target is an app-local relative path that is
+// safe to redirect to. It rejects absolute URLs and protocol-relative ("//")
+// or backslash-prefixed values to prevent open redirects.
+func isSafeRedirect(target string) bool {
+	if target == "" || !strings.HasPrefix(target, "/") {
+		return false
+	}
+	if strings.HasPrefix(target, "//") || strings.HasPrefix(target, "/\\") {
+		return false
+	}
+	return true
+}
+
 // LoginWithProvider handles GET /api/v1/oauth/:provider/login.
 func (h *OAuthHandler) LoginWithProvider(c *gin.Context) {
 	provider := c.Param("provider")
@@ -54,7 +67,7 @@ func (h *OAuthHandler) LoginWithProvider(c *gin.Context) {
 	if redirectTarget == "" && c.Query("setup") != "" {
 		redirectTarget = "/dashboard?success=github_setup"
 	}
-	if redirectTarget != "" {
+	if isSafeRedirect(redirectTarget) {
 		c.SetCookie("oauth_redirect", redirectTarget, 600, "/", "", false, true)
 	}
 
@@ -148,7 +161,7 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 	}
 	c.SetCookie("oauth_redirect", "", -1, "/", "", false, true)
 
-	if redirectTarget != "" {
+	if isSafeRedirect(redirectTarget) {
 		c.Redirect(http.StatusFound, redirectTarget)
 	} else {
 		response.SuccessWithMessage(c, "Login successful", gin.H{
@@ -261,15 +274,34 @@ func (h *OAuthHandler) UnlinkAccount(c *gin.Context) {
 // ManifestCallback handles GET /api/v1/oauth/github/manifest-callback.
 // GitHub redirects here with a ?code=CODE parameter after manifest creation.
 func (h *OAuthHandler) ManifestCallback(c *gin.Context) {
+	// This callback persists GitHub App credentials, so it must only be usable
+	// by an authenticated admin who initiated the setup. The setup is started
+	// from the admin-only /config page, and the admin's session cookie is sent
+	// on this top-level redirect back from GitHub.
+	sessionCookie, cookieErr := c.Cookie("session")
+	if cookieErr != nil || sessionCookie == "" {
+		c.Redirect(http.StatusFound, "/config?error=unauthorized_setup")
+		return
+	}
+	user, sessErr := h.authService.ValidateSession(c.Request.Context(), sessionCookie)
+	if sessErr != nil || user == nil || !user.IsAdmin() {
+		c.Redirect(http.StatusFound, "/config?error=unauthorized_setup")
+		return
+	}
+
 	code := c.Query("code")
 	if code == "" {
 		response.BadRequest(c, "INVALID_REQUEST", "Missing code parameter")
 		return
 	}
 
-	// 1. Exchange manifest code for credentials
+	// 1. Exchange manifest code for credentials. Bound the exchange with an
+	// explicit timeout so a slow/hung GitHub response cannot block the request.
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
 	apiURL := fmt.Sprintf("https://api.github.com/app-manifests/%s/conversions", code)
-	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, apiURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, nil)
 	if err != nil {
 		c.Redirect(http.StatusFound, "/config?error=failed_to_create_exchange_request")
 		return

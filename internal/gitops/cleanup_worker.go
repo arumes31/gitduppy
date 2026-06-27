@@ -137,18 +137,35 @@ func (w *CleanupWorker) performCleanup() {
 			repoCutoff := repo.DeletedAt.Time.Add(time.Duration(retentionDays) * 24 * time.Hour)
 			if time.Now().After(repoCutoff) {
 				w.logger.Info("permanently deleting expired repository from paperbin", zap.String("repo", repo.Name), zap.String("id", repo.ID.String()), zap.Int("retention_days", retentionDays))
-				
-				// 1. Delete related DeletedBranches
-				_ = w.db.Where("repository_id = ?", repo.ID).Delete(&models.DeletedBranch{})
-				// 2. Delete related CloneJobs
-				_ = w.db.Where("repository_id = ?", repo.ID).Delete(&models.CloneJob{})
-				// 3. Hard delete from DB
-				if err := w.db.Unscoped().Delete(&repo).Error; err == nil {
-					// 4. Purge folders and archives on disk
-					paperbinPath := filepath.Join(filepath.Dir(repo.StoragePath), "paperbin", repo.ID.String())
-					_ = os.Remove(paperbinPath + ".tar.gz")
-					_ = os.RemoveAll(paperbinPath)
-					_ = os.RemoveAll(repo.StoragePath)
+
+				// Delete all DB records in a single transaction so the
+				// DeletedBranch/CloneJob removals and the repo hard-delete
+				// either all succeed or all roll back together.
+				dbErr := w.db.Transaction(func(tx *gorm.DB) error {
+					if err := tx.Where("repository_id = ?", repo.ID).Delete(&models.DeletedBranch{}).Error; err != nil {
+						return err
+					}
+					if err := tx.Where("repository_id = ?", repo.ID).Delete(&models.CloneJob{}).Error; err != nil {
+						return err
+					}
+					return tx.Unscoped().Delete(&repo).Error
+				})
+				if dbErr != nil {
+					w.logger.Error("failed to purge expired repository from DB", zap.String("id", repo.ID.String()), zap.Error(dbErr))
+					continue
+				}
+
+				// Only purge disk after the DB work has committed. Surface
+				// any storage cleanup failures explicitly.
+				paperbinPath := filepath.Join(filepath.Dir(repo.StoragePath), "paperbin", repo.ID.String())
+				if err := os.Remove(paperbinPath + ".tar.gz"); err != nil && !os.IsNotExist(err) {
+					w.logger.Error("failed to remove paperbin archive", zap.String("path", paperbinPath+".tar.gz"), zap.Error(err))
+				}
+				if err := os.RemoveAll(paperbinPath); err != nil {
+					w.logger.Error("failed to remove paperbin directory", zap.String("path", paperbinPath), zap.Error(err))
+				}
+				if err := os.RemoveAll(repo.StoragePath); err != nil {
+					w.logger.Error("failed to remove repository storage", zap.String("path", repo.StoragePath), zap.Error(err))
 				}
 			}
 		}
@@ -165,20 +182,33 @@ func (w *CleanupWorker) performCleanup() {
 					retentionDays = repo.RetentionDays
 				}
 			}
-			
+
 			branchCutoff := br.DeletedAt.Add(time.Duration(retentionDays) * 24 * time.Hour)
 			if time.Now().After(branchCutoff) {
 				w.logger.Info("permanently deleting expired pruned branch from paperbin", zap.String("branch", br.BranchName), zap.String("repo_id", br.RepositoryID.String()), zap.Int("retention_days", retentionDays))
-				
-				// Find repository path to delete git ref
+
+				// Find repository path to delete git ref. Only remove the DB
+				// row once the git ref has actually been deleted, otherwise the
+				// commit would be unreachable while the record claims it is gone.
 				var targetRepo models.Repository
-				if err := w.db.Unscoped().First(&targetRepo, br.RepositoryID).Error; err == nil {
-					paperbinRef := "refs/paperbin/heads/" + br.BranchName
-					_, _ = RunGitCommand(context.Background(), targetRepo.StoragePath, "update-ref", "-d", paperbinRef)
+				if err := w.db.Unscoped().First(&targetRepo, br.RepositoryID).Error; err != nil {
+					w.logger.Error("failed to load repository for branch purge", zap.String("repo_id", br.RepositoryID.String()), zap.Error(err))
+					continue
 				}
-				
-				// Delete DB record
-				_ = w.db.Delete(&br)
+
+				gitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				paperbinRef := "refs/paperbin/heads/" + br.BranchName
+				out, gitErr := RunGitCommand(gitCtx, targetRepo.StoragePath, "update-ref", "-d", paperbinRef)
+				cancel()
+				if gitErr != nil {
+					w.logger.Error("failed to delete paperbin git ref, keeping DB record", zap.String("ref", paperbinRef), zap.String("output", out), zap.Error(gitErr))
+					continue
+				}
+
+				// Delete DB record only after the git ref was removed.
+				if err := w.db.Delete(&br).Error; err != nil {
+					w.logger.Error("failed to delete pruned branch record", zap.String("branch", br.BranchName), zap.Error(err))
+				}
 			}
 		}
 	}

@@ -1,10 +1,13 @@
 package handlers
 
 import (
+	"context"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -402,7 +405,7 @@ func (h *RepositoryHandler) RestoreBranch(c *gin.Context) {
 	}
 
 	db := database.GetDB()
-	
+
 	var delBranch models.DeletedBranch
 	if err := db.First(&delBranch, branchID).Error; err != nil {
 		response.NotFound(c, "Deleted branch record not found")
@@ -421,7 +424,7 @@ func (h *RepositoryHandler) RestoreBranch(c *gin.Context) {
 	}
 
 	paperbinRef := "refs/paperbin/heads/" + delBranch.BranchName
-	
+
 	// Recreate branch
 	_, gitErr := gitops.RunGitCommand(c, repo.StoragePath, "branch", delBranch.BranchName, delBranch.CommitSHA)
 	if gitErr != nil {
@@ -502,14 +505,25 @@ func (h *RepositoryHandler) PermanentDeleteBranch(c *gin.Context) {
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		return true
+		// Restrict authenticated log streaming to same-origin requests so other
+		// websites cannot open a socket against a victim's session.
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			// Non-browser clients (no Origin header) are allowed.
+			return true
+		}
+		u, err := url.Parse(origin)
+		if err != nil {
+			return false
+		}
+		return strings.EqualFold(u.Host, r.Host)
 	},
 }
 
 // StreamRepositoryLogs upgrades request to websocket and streams live progress logs.
 func (h *RepositoryHandler) StreamRepositoryLogs(c *gin.Context) {
 	repoID := c.Param("id")
-	
+
 	ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		log.Printf("WebSocket upgrade failed: %v", err)
@@ -520,6 +534,16 @@ func (h *RepositoryHandler) StreamRepositoryLogs(c *gin.Context) {
 	logChan := gitops.GlobalLogHub.Subscribe(repoID)
 	defer gitops.GlobalLogHub.Unsubscribe(repoID, logChan)
 
+	// Both the keep-alive goroutine and the log-streaming loop write to the same
+	// websocket connection, so serialize all writes through a single mutex —
+	// concurrent gorilla/websocket writes are not safe.
+	var writeMu sync.Mutex
+	writeMessage := func(messageType int, data []byte) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return ws.WriteMessage(messageType, data)
+	}
+
 	// Keep alive ticker
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
@@ -527,7 +551,7 @@ func (h *RepositoryHandler) StreamRepositoryLogs(c *gin.Context) {
 		for {
 			select {
 			case <-ticker.C:
-				if err := ws.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
+				if err := writeMessage(websocket.PingMessage, []byte{}); err != nil {
 					return
 				}
 			case <-c.Request.Context().Done():
@@ -542,7 +566,7 @@ func (h *RepositoryHandler) StreamRepositoryLogs(c *gin.Context) {
 			if !ok {
 				return
 			}
-			if err := ws.WriteMessage(websocket.TextMessage, []byte(msg)); err != nil {
+			if err := writeMessage(websocket.TextMessage, []byte(msg)); err != nil {
 				return
 			}
 		case <-c.Request.Context().Done():
@@ -568,6 +592,12 @@ func (h *RepositoryHandler) GlobalSearch(c *gin.Context) {
 		return
 	}
 
+	// Reject overly broad queries before scanning every active repository.
+	if len(strings.TrimSpace(query)) < 3 {
+		response.BadRequest(c, "QUERY_TOO_SHORT", "Search query must be at least 3 characters")
+		return
+	}
+
 	db := database.GetDB()
 	var repos []models.Repository
 	if err := db.Where("is_active = ?", true).Find(&repos).Error; err != nil {
@@ -587,9 +617,12 @@ func (h *RepositoryHandler) GlobalSearch(c *gin.Context) {
 			continue
 		}
 
-		// Run git grep on HEAD
+		// Run git grep on HEAD with a per-repo timeout so one large repository
+		// cannot make the whole search hang.
 		args := []string{"grep", "-nI", "--no-color", "-e", query, "HEAD"}
-		output, err := gitops.RunGitCommand(c.Request.Context(), repo.StoragePath, args...)
+		repoCtx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+		output, err := gitops.RunGitCommand(repoCtx, repo.StoragePath, args...)
+		cancel()
 		if err != nil {
 			// git grep exits with 1 if no matches are found, which is normal
 			continue

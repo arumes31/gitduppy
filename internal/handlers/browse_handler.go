@@ -213,11 +213,15 @@ func (h *BrowseHandler) GetTree(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
 
-	// For each entry, use git log -1 --format to get last commit quickly
+	// For each entry, use git log -1 --format to get last commit quickly.
+	// Pin the log to the resolved commit hash so each entry's last commit is
+	// computed relative to the requested ref (not HEAD). The hash is a
+	// validated object id, so it cannot be interpreted as a git option.
+	refHash := hash.String()
 	for i, e := range entries {
 		logPath := e.Path
 		out, gerr := gitops.RunGitCommand(ctx, repo.StoragePath,
-			"log", "-1", "--format=%H|%s|%an|%ae|%aI", "--", logPath)
+			"log", "-1", "--format=%H|%s|%an|%ae|%aI", refHash, "--", logPath)
 		if gerr != nil || strings.TrimSpace(out) == "" {
 			continue
 		}
@@ -281,6 +285,14 @@ func (h *BrowseHandler) GetBlob(c *gin.Context) {
 		return
 	}
 
+	// Guard against oversized blobs before reading/base64-encoding them into
+	// memory, which could otherwise exhaust the process.
+	const maxBlobSize = 10 << 20 // 10 MB
+	if file.Size > maxBlobSize {
+		response.BadRequest(c, "FILE_TOO_LARGE", "File is too large to display")
+		return
+	}
+
 	content, err := file.Contents()
 	if err != nil {
 		response.InternalError(c, "Failed to read file")
@@ -320,7 +332,7 @@ func minInt(a, b int) int {
 
 // GetCommits handles GET /api/v1/repos/:id/commits?ref=main&limit=30
 func (h *BrowseHandler) GetCommits(c *gin.Context) {
-	_, repo, err := h.openRepo(c)
+	gitRepo, repo, err := h.openRepo(c)
 	if err != nil {
 		response.NotFound(c, err.Error())
 		return
@@ -336,8 +348,13 @@ func (h *BrowseHandler) GetCommits(c *gin.Context) {
 	if limit > 100 {
 		limit = 100
 	}
-	if ref == "" {
-		ref = "HEAD"
+
+	// Resolve the request-controlled ref to a concrete commit hash before
+	// passing it to git, so user input can never be interpreted as a git option.
+	hash, rerr := resolveRef(gitRepo, ref)
+	if rerr != nil {
+		response.BadRequest(c, "INVALID_REF", rerr.Error())
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
@@ -345,7 +362,7 @@ func (h *BrowseHandler) GetCommits(c *gin.Context) {
 
 	// Use git log CLI — fast and efficient
 	out, gerr := gitops.RunGitCommand(ctx, repo.StoragePath,
-		"log", ref,
+		"log", hash.String(),
 		fmt.Sprintf("--max-count=%d", limit),
 		"--format=%H|%s|%an|%ae|%aI",
 	)
@@ -391,6 +408,13 @@ func (h *BrowseHandler) GetCommit(c *gin.Context) {
 	}
 
 	sha := c.Param("sha")
+
+	// Reject anything that could be parsed as a git option before it reaches
+	// the command line.
+	if strings.HasPrefix(sha, "-") {
+		response.BadRequest(c, "INVALID_SHA", "Invalid commit identifier")
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
 	defer cancel()
@@ -516,6 +540,11 @@ func (h *BrowseHandler) DownloadRepo(c *gin.Context) {
 	ref := c.Query("ref")
 	if ref == "" {
 		ref = "HEAD"
+	}
+	// Reject refs that could be parsed as git options.
+	if strings.HasPrefix(ref, "-") {
+		response.BadRequest(c, "INVALID_REF", "Invalid ref")
+		return
 	}
 
 	// Clean/sanitize the repo name for filename

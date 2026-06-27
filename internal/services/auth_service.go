@@ -47,9 +47,17 @@ type LoginResponse struct {
 
 // Login authenticates a user and creates a session.
 func (s *AuthService) Login(_ context.Context, req *LoginRequest) (*LoginResponse, error) {
-	// Find user by username
+	// Find the user with a deterministic lookup: an exact username match takes
+	// precedence, falling back to an email match only when no username matches.
+	// A combined "username = ? OR email = ?" query could return whichever row
+	// the database happened to order first and authenticate the wrong account
+	// when one user's username equals another user's email.
 	var user models.User
-	if err := s.db.Where("username = ? OR email = ?", req.Username, req.Username).First(&user).Error; err != nil {
+	err := s.db.Where("username = ?", req.Username).First(&user).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		err = s.db.Where("email = ?", req.Username).First(&user).Error
+	}
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errors.New("invalid username or password")
 		}

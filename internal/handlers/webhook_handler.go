@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gitduppy/gitduppy/internal/middleware"
@@ -313,13 +314,15 @@ func (h *WebhookHandler) matchWebhookByRepoURL(wh *models.WebhookConfig, body []
 			return false
 		}
 
-		// If RepositoryID is set, ensure the payload's repoURL corresponds to that repository.
+		// If RepositoryID is set, ensure the payload's repoURL corresponds to that
+		// repository using exact canonical identity (substring matching would let
+		// "repo" match "repo-archive").
 		if wh.RepositoryID != nil {
 			var repo models.Repository
 			if err := h.webhookService.DB().First(&repo, wh.RepositoryID).Error; err != nil {
 				return false
 			}
-			if !containsFold(repoURL, repo.URL) && !containsFold(repo.URL, repoURL) {
+			if normalizeRepoURL(repoURL) != normalizeRepoURL(repo.URL) {
 				return false
 			}
 		}
@@ -404,6 +407,24 @@ func extractRepoURLFromPayload(body []byte) string {
 		return payload.Repository.HTMLURL
 	}
 	return payload.Repository.URL
+}
+
+// normalizeRepoURL reduces a git URL to a canonical lowercase host/path form
+// (scheme, ssh user, ".git" suffix and trailing slash removed) so two URLs that
+// refer to the same repository compare equal regardless of transport.
+func normalizeRepoURL(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	s = strings.TrimSuffix(s, ".git")
+	switch {
+	case strings.HasPrefix(s, "git@"):
+		s = strings.TrimPrefix(s, "git@")
+		s = strings.Replace(s, ":", "/", 1)
+	default:
+		if i := strings.Index(s, "://"); i >= 0 {
+			s = s[i+3:]
+		}
+	}
+	return strings.TrimSuffix(s, "/")
 }
 
 // containsFold is a case-insensitive strings.Contains.
@@ -507,14 +528,24 @@ func (h *WebhookHandler) triggerCloneJobs(c *gin.Context, webhook *models.Webhoo
 		return err
 	}
 
-	// If webhook has a URL pattern, find the specific matching repository
+	// If webhook has a URL pattern, find the specific matching repository.
+	// The webhook matched the pattern via a fold/substring comparison, and the
+	// payload URL (e.g. an html_url) may differ from the stored clone URL, so
+	// resolve the repository by canonical identity instead of an exact column
+	// match to avoid spurious "repository not found" failures.
 	if webhook.URLPattern != "" {
-		var repo models.Repository
-		if err := h.webhookService.DB().WithContext(c).Where("url = ?", repoURL).First(&repo).Error; err != nil {
-			return fmt.Errorf("repository not found for URL %s: %w", repoURL, err)
+		var repos []models.Repository
+		if err := h.webhookService.DB().WithContext(c).Find(&repos).Error; err != nil {
+			return err
 		}
-		_, err := h.webhookService.CloneService().CreateCloneJob(c, repo.ID, "webhook")
-		return err
+		target := normalizeRepoURL(repoURL)
+		for i := range repos {
+			if normalizeRepoURL(repos[i].URL) == target {
+				_, err := h.webhookService.CloneService().CreateCloneJob(c, repos[i].ID, "webhook")
+				return err
+			}
+		}
+		return fmt.Errorf("repository not found for URL %s", repoURL)
 	}
 
 	return nil
