@@ -242,13 +242,23 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 		logger.Info("performing fetch", zap.String("repo", repo.Name))
 
 		// Query references before fetch
-		refsBefore, _ := w.gitOps.GetReferences(w.ctx, repoPath)
+		refsBefore, refsBeforeErr := w.gitOps.GetReferences(w.ctx, repoPath)
 
 		err = w.gitOps.FetchRepository(w.ctx, cloneOpts)
 
 		// If fetch succeeded, check for pruned branches
 		if err == nil {
-			refsAfter, _ := w.gitOps.GetReferences(w.ctx, repoPath)
+			refsAfter, refsAfterErr := w.gitOps.GetReferences(w.ctx, repoPath)
+
+			// Skip prune detection entirely if either snapshot failed: a nil
+			// refsAfter would otherwise make every pre-fetch branch look deleted
+			// and create bogus DeletedBranch records.
+			if refsBeforeErr != nil || refsAfterErr != nil {
+				logger.Warn("skipping pruned-branch detection due to ref listing error",
+					zap.NamedError("refs_before_err", refsBeforeErr),
+					zap.NamedError("refs_after_err", refsAfterErr))
+				refsBefore = nil
+			}
 
 			// Find missing references that were branches
 			for refName, sha := range refsBefore {
@@ -410,30 +420,33 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 
 			// Merge GitHub topics into the existing tag set instead of
 			// replacing it, so manually-assigned tags (e.g. via TagIDs) are
-			// preserved across syncs.
-			tagSet := make(map[uuid.UUID]models.Tag)
+			// preserved across syncs. Only run the merge-and-Replace when the
+			// existing tags were loaded successfully — otherwise currentTags is
+			// incomplete and the Replace would wipe manual tags.
 			var currentTags []models.Tag
 			if err := w.db.Model(&repo).Association("Tags").Find(&currentTags); err != nil {
-				logger.Error("Failed to load existing repository tags", zap.Error(err))
-			}
-			for _, t := range currentTags {
-				tagSet[t.ID] = t
-			}
-			for _, topic := range info.Topics {
-				var tag models.Tag
-				if err := w.db.Where("name = ?", topic).FirstOrCreate(&tag, models.Tag{
-					Name:  topic,
-					Color: "#000000", // Default color for auto-generated tags
-				}).Error; err == nil {
-					tagSet[tag.ID] = tag
+				logger.Error("Failed to load existing repository tags, skipping tag sync to avoid wiping manual tags", zap.Error(err))
+			} else {
+				tagSet := make(map[uuid.UUID]models.Tag)
+				for _, t := range currentTags {
+					tagSet[t.ID] = t
 				}
-			}
-			merged := make([]models.Tag, 0, len(tagSet))
-			for _, t := range tagSet {
-				merged = append(merged, t)
-			}
-			if err := w.db.Model(&repo).Association("Tags").Replace(merged); err != nil {
-				logger.Error("Failed to sync repository tags", zap.Error(err))
+				for _, topic := range info.Topics {
+					var tag models.Tag
+					if err := w.db.Where("name = ?", topic).FirstOrCreate(&tag, models.Tag{
+						Name:  topic,
+						Color: "#000000", // Default color for auto-generated tags
+					}).Error; err == nil {
+						tagSet[tag.ID] = tag
+					}
+				}
+				merged := make([]models.Tag, 0, len(tagSet))
+				for _, t := range tagSet {
+					merged = append(merged, t)
+				}
+				if err := w.db.Model(&repo).Association("Tags").Replace(merged); err != nil {
+					logger.Error("Failed to sync repository tags", zap.Error(err))
+				}
 			}
 		}
 	}

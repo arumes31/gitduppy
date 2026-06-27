@@ -174,14 +174,17 @@ func (h *ConfigHandler) UpdateQuota(c *gin.Context) {
 		return
 	}
 
-	// Validate that quota_gb is a positive number before persisting it.
-	quotaVal, parseErr := strconv.ParseFloat(strings.TrimSpace(req.QuotaGB), 64)
+	// Validate that quota_gb is a positive number before persisting it. Persist
+	// the same normalized (trimmed) value that was validated so downstream
+	// consumers read back exactly what passed validation.
+	quotaStr := strings.TrimSpace(req.QuotaGB)
+	quotaVal, parseErr := strconv.ParseFloat(quotaStr, 64)
 	if parseErr != nil || quotaVal <= 0 {
 		response.BadRequest(c, "INVALID_QUOTA", "quota_gb must be a positive number")
 		return
 	}
 
-	if err := h.configService.SetSetting(c, "paperbin_quota_gb", req.QuotaGB, "Paperbin Storage Quota in GB", false); err != nil {
+	if err := h.configService.SetSetting(c, "paperbin_quota_gb", quotaStr, "Paperbin Storage Quota in GB", false); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}

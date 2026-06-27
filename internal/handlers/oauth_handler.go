@@ -271,6 +271,23 @@ func (h *OAuthHandler) UnlinkAccount(c *gin.Context) {
 	response.SuccessWithMessage(c, "OAuth account unlinked successfully", nil)
 }
 
+// ManifestSetup handles POST /api/v1/oauth/github/manifest-setup (admin only).
+// It issues a one-time setup nonce, stored in an httpOnly cookie, that the
+// browser passes to GitHub as the manifest "state". ManifestCallback validates
+// it so an attacker cannot drive an authenticated admin through the callback
+// with an attacker-controlled manifest code.
+func (h *OAuthHandler) ManifestSetup(c *gin.Context) {
+	user, ok := middleware.GetCurrentUser(c)
+	if !ok || !user.IsAdmin() {
+		response.Unauthorized(c, "Admin access required")
+		return
+	}
+
+	nonce := uuid.New().String()
+	c.SetCookie("github_setup_state", nonce, 600, "/", "", false, true)
+	response.Success(c, gin.H{"state": nonce})
+}
+
 // ManifestCallback handles GET /api/v1/oauth/github/manifest-callback.
 // GitHub redirects here with a ?code=CODE parameter after manifest creation.
 func (h *OAuthHandler) ManifestCallback(c *gin.Context) {
@@ -286,6 +303,17 @@ func (h *OAuthHandler) ManifestCallback(c *gin.Context) {
 	user, sessErr := h.authService.ValidateSession(c.Request.Context(), sessionCookie)
 	if sessErr != nil || user == nil || !user.IsAdmin() {
 		c.Redirect(http.StatusFound, "/config?error=unauthorized_setup")
+		return
+	}
+
+	// Validate the one-time setup nonce issued by ManifestSetup when the admin
+	// started the flow, then consume it. This blocks CSRF-driven callbacks that
+	// would otherwise persist attacker-supplied GitHub App credentials.
+	stateCookie, stateErr := c.Cookie("github_setup_state")
+	c.SetCookie("github_setup_state", "", -1, "/", "", false, true)
+	state := c.Query("state")
+	if stateErr != nil || stateCookie == "" || state == "" || state != stateCookie {
+		c.Redirect(http.StatusFound, "/config?error=invalid_setup_state")
 		return
 	}
 

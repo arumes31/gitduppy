@@ -278,7 +278,7 @@ if (oauthForm) {
         }
     };
 
-    window.registerGitHubAppAutomatically = function() {
+    window.registerGitHubAppAutomatically = async function() {
         const origin = window.location.origin;
         
         // Clean hostname (alphanumeric and hyphens only) and generate a random 5-character suffix for uniqueness
@@ -341,6 +341,21 @@ if (oauthForm) {
             window.open('https://github.com/login', '_blank', 'noopener');
             showToast('Sign in to GitHub, then click "Register GitHub App Automatically" again.', 'success');
             return;
+        }
+
+        // Obtain a one-time setup nonce bound to our session. GitHub echoes the
+        // ?state value back to manifest-callback, where it is validated to
+        // prevent CSRF-driven credential injection.
+        try {
+            const setupRes = await apiCall('/api/v1/oauth/github/manifest-setup', { method: 'POST' });
+            const state = setupRes && setupRes.data ? setupRes.data.state : '';
+            if (!state) {
+                showToast('Failed to initialize GitHub App setup.', 'error');
+                return;
+            }
+            manifestForm.action = 'https://github.com/settings/apps/new?state=' + encodeURIComponent(state);
+        } catch (e) {
+            return; // apiCall already surfaced the error
         }
         manifestForm.submit();
     };

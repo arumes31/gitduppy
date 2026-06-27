@@ -224,8 +224,8 @@ func createDefaultAdmin() error {
 		return nil
 	}
 	// Determine the initial admin password. Prefer an operator-supplied secret;
-	// otherwise generate a strong random one and print it once. This avoids
-	// baking a universal default password into every deployment.
+	// otherwise generate a strong random one (which is not logged by default).
+	// This avoids baking a universal default password into every deployment.
 	bootstrapPassword := os.Getenv("GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD")
 	generated := false
 	if bootstrapPassword == "" {
@@ -253,10 +253,18 @@ func createDefaultAdmin() error {
 	if err := db.Create(admin).Error; err != nil {
 		return fmt.Errorf("failed to create admin user: %w", err)
 	}
-	if generated {
-		log.Printf("=== INITIAL ADMIN CREATED (username: admin) — one-time generated password: %s — change it immediately after first login ===", bootstrapPassword)
-	} else {
+	switch {
+	case !generated:
 		log.Println("Default admin user created (username: admin) from GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD - change on first login")
+	case os.Getenv("GITMIRRORS_BOOTSTRAP_SHOW_PASSWORD") == "true":
+		// Explicit operator opt-in to print the one-time generated secret.
+		log.Printf("=== INITIAL ADMIN CREATED (username: admin) — one-time generated password: %s — change it immediately after first login ===", bootstrapPassword)
+	default:
+		// Never log the generated secret by default. Direct the operator to
+		// provide a password or opt in to a one-time display.
+		log.Println("Initial admin user 'admin' created with a random password that was NOT logged. " +
+			"Set GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD before first start to choose it, " +
+			"or set GITMIRRORS_BOOTSTRAP_SHOW_PASSWORD=true to print the generated one once at startup.")
 	}
 	defaultTags := []models.Tag{
 		{Name: "production", Color: "#ef4444"},
@@ -374,6 +382,7 @@ func setupRouter(
 		// OAuth routes
 		oauth := v1.Group("/oauth")
 		{
+			oauth.POST("/github/manifest-setup", authMiddleware.Middleware(), middleware.RequireAdmin(), oauthHandler.ManifestSetup)
 			oauth.GET("/github/manifest-callback", oauthHandler.ManifestCallback)
 			oauth.GET("/:provider/login", oauthHandler.LoginWithProvider)
 			oauth.GET("/:provider/callback", oauthHandler.Callback)

@@ -49,19 +49,13 @@ On the first run (when no users exist yet), GitDuppy seeds a single administrato
 - **Username**: `admin`
 - **Email**: `admin@gitmirrors.local`
 
-There is **no universal default password**. The initial password is established one of two ways:
+There is **no universal default password**, and the initial password is **never written to the application logs**. Establish it one of two ways:
 
-1. **Operator-provided secret (recommended):** set the `GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD` environment variable before the first start. That value becomes the initial admin password.
-2. **Auto-generated secret:** if the variable is unset, GitDuppy generates a strong random password and prints it **once** to the application logs at startup, e.g.:
-
-   ```
-   === INITIAL ADMIN CREATED (username: admin) — one-time generated password: <random> — change it immediately after first login ===
-   ```
-
-   Retrieve it with `docker compose logs gitduppy` (or your container runtime's log viewer).
+1. **Operator-provided secret (recommended):** set the `GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD` environment variable before the first start. That value becomes the initial admin password, and you already know it out-of-band.
+2. **Auto-generated secret:** if the variable is unset, GitDuppy generates a strong random password but does **not** display it. To retrieve it for the very first login, opt in explicitly by also setting `GITMIRRORS_BOOTSTRAP_SHOW_PASSWORD=true`, which prints the generated password **once** at startup. Leave this unset in normal operation.
 
 > [!IMPORTANT]
-> Log in with this initial password and change it immediately via the change-password flow. The generated secret is shown only once and is not stored in plaintext.
+> Prefer supplying `GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD` over the one-time display. Log in with the initial password and change it immediately via the change-password flow. The password is stored only as a bcrypt hash, never in plaintext.
 
 ---
 
