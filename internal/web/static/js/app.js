@@ -117,10 +117,61 @@ if (document.getElementById('stats-container')) {
             
             // Fetch jobs
             fetchJobs();
+            fetchAndRenderTimeline();
+
+            // Fetch paperbin quota and warning
+            try {
+                const quotaData = await apiCall('/api/v1/dashboard/paperbin-quota');
+                const banner = document.getElementById('quota-warning-banner');
+                if (banner) {
+                    banner.style.display = quotaData.data && quotaData.data.exceeded ? 'flex' : 'none';
+                }
+            } catch (e) {
+                console.error('Failed to fetch paperbin quota status:', e);
+            }
         } catch (error) {
             console.error('Failed to fetch stats:', error);
         }
     };
+
+    async function fetchAndRenderTimeline() {
+        const container = document.getElementById('timeline-chart-container');
+        if (!container) return;
+
+        try {
+            const res = await apiCall('/api/v1/dashboard/timeline?limit=50');
+            const jobs = res.data || [];
+            if (jobs.length === 0) {
+                container.innerHTML = '<p class="text-muted text-center py-4">No recent jobs to display on timeline.</p>';
+                return;
+            }
+
+            container.innerHTML = jobs.map(job => {
+                const repoName = job.repository ? job.repository.name : 'Unknown';
+                const status = job.status;
+                const duration = job.duration_ms ? (job.duration_ms / 1000).toFixed(1) + 's' : '0s';
+                
+                // Construct progress width (Gantt duration bar)
+                const startTime = job.started_at ? new Date(job.started_at).toLocaleTimeString() : 'Pending';
+                const completedTime = job.completed_at ? new Date(job.completed_at).toLocaleTimeString() : '';
+                
+                // Color mapping
+                const barClass = status === 'success' ? 'success' : (status === 'failed' ? 'failed' : 'running');
+                const widthPercent = job.status === 'running' ? '100%' : (job.duration_ms ? Math.min(100, Math.max(10, (job.duration_ms / 1000) * 2)) + '%' : '10%');
+
+                return `
+                <div class="timeline-row" style="margin-bottom: 12px;">
+                    <div class="timeline-row-label" title="${repoName}">${repoName}</div>
+                    <div class="timeline-bar-container" title="Status: ${status}\nDuration: ${duration}\nStarted: ${startTime}\nCompleted: ${completedTime}">
+                        <div class="timeline-bar ${barClass}" style="width: ${widthPercent};"></div>
+                        <span style="position:absolute; left:8px; top:2px; font-size:0.75rem; color:#fff; font-weight:600; text-shadow:0 1px 2px rgba(0,0,0,0.8);">${duration} (${status})</span>
+                    </div>
+                </div>`;
+            }).join('');
+        } catch (e) {
+            container.innerHTML = '<p class="text-muted text-center py-4">Failed to load timeline data.</p>';
+        }
+    }
     
     async function fetchJobs() {
         try {
@@ -196,10 +247,35 @@ if (oauthForm) {
             if (cfg && cfg.oauth && cfg.oauth.github) {
                 document.getElementById('client_id').value = cfg.oauth.github.client_id || '';
             }
+            
+            // Load Paperbin Quota Settings
+            const quotaRes = await apiCall('/api/v1/config/quota');
+            if (quotaRes && quotaRes.data) {
+                document.getElementById('paperbin_quota_gb').value = quotaRes.data.quota_gb || '50';
+            }
         } catch (error) {
             console.error('Failed to load configuration:', error);
         }
     }
+
+    window.saveQuotaConfig = async function(e) {
+        e.preventDefault();
+        const quotaGB = document.getElementById('paperbin_quota_gb').value;
+        const btn = document.querySelector('#quota-form button');
+        
+        btn.disabled = true;
+        try {
+            const result = await apiCall('/api/v1/config/quota', {
+                method: 'PUT',
+                body: JSON.stringify({ quota_gb: quotaGB })
+            });
+            showToast(result.message || 'Quota settings saved successfully');
+        } catch (error) {
+            console.error(error);
+        } finally {
+            btn.disabled = false;
+        }
+    };
 
     window.registerGitHubAppAutomatically = function() {
         const origin = window.location.origin;
@@ -241,12 +317,31 @@ if (oauthForm) {
 
         const manifestInput = document.getElementById('github-manifest-input');
         const manifestForm = document.getElementById('github-manifest-form');
-        if (manifestInput && manifestForm) {
-            manifestInput.value = JSON.stringify(manifest);
-            manifestForm.submit();
-        } else {
+        if (!manifestInput || !manifestForm) {
             showToast('Failed to find automatic registration form.', 'error');
+            return;
         }
+        manifestInput.value = JSON.stringify(manifest);
+
+        // GitHub's App-manifest endpoint (github.com/settings/apps/new) requires an
+        // authenticated github.com session. When the manifest is POSTed while signed
+        // out, GitHub discards the form body during its login redirect and renders a
+        // 500 error. We cannot sign the user in to GitHub from here — creating this
+        // App is precisely what would grant us OAuth (chicken-and-egg) — so make sure
+        // they are signed in to GitHub before submitting.
+        const signedIn = confirm(
+            'A GitHub App will be created on your GitHub account.\n\n' +
+            'You must be signed in to GitHub.com in this browser first, otherwise ' +
+            'GitHub returns a 500 error.\n\n' +
+            'OK – I am signed in to GitHub, continue.\n' +
+            'Cancel – open GitHub sign-in in a new tab first.'
+        );
+        if (!signedIn) {
+            window.open('https://github.com/login', '_blank', 'noopener');
+            showToast('Sign in to GitHub, then click "Register GitHub App Automatically" again.', 'success');
+            return;
+        }
+        manifestForm.submit();
     };
 
     // Load active settings on configuration page load
@@ -269,6 +364,46 @@ if (oauthForm) {
         window.history.replaceState({}, document.title, window.location.pathname);
     }
 })();
+
+// ============================================================
+// MAINTENANCE MODE (global banner + dashboard toggle)
+// ============================================================
+function applyMaintenanceState(enabled) {
+    const banner = document.getElementById('maintenance-banner');
+    if (banner) {
+        banner.style.display = enabled ? 'flex' : 'none';
+        if (enabled && window.lucide) lucide.createIcons();
+    }
+    const sw = document.getElementById('maintenance-switch');
+    if (sw) sw.checked = enabled;
+}
+
+async function refreshMaintenanceState() {
+    if (!document.getElementById('maintenance-banner') && !document.getElementById('maintenance-switch')) return;
+    try {
+        const res = await fetch('/api/v1/config/maintenance', { headers: { 'Content-Type': 'application/json' } });
+        if (!res.ok) return;
+        const data = await res.json();
+        applyMaintenanceState(!!(data.data && data.data.enabled));
+    } catch (e) { /* silent — banner just stays hidden */ }
+}
+
+window.toggleMaintenanceMode = async function(enabled) {
+    try {
+        const result = await apiCall('/api/v1/config/maintenance', {
+            method: 'PUT',
+            body: JSON.stringify({ enabled })
+        });
+        applyMaintenanceState(enabled);
+        showToast(result.message || (enabled ? 'Maintenance mode enabled' : 'Maintenance mode disabled'), 'success');
+    } catch (error) {
+        // Revert the switch on failure (e.g. non-admin user).
+        const sw = document.getElementById('maintenance-switch');
+        if (sw) sw.checked = !enabled;
+    }
+};
+
+refreshMaintenanceState();
 
 // Add simple CSS for spinner animation
 const style = document.createElement('style');
@@ -321,6 +456,9 @@ if (reposGrid) {
                     <div style="display:flex; align-items:center; gap:6px;">
                         ${visibilityBadge(repo.visibility)}
                         <span class="status-badge ${statusLabel}">${statusLabel}</span>
+                        <button class="btn btn-secondary btn-sm sync-card-btn" onclick="event.stopPropagation(); triggerSyncNow('${repo.id}', this)" title="Sync Now" style="padding:4px 8px; border-radius:4px; height:24px; display:inline-flex; align-items:center; justify-content:center;">
+                            <i data-lucide="refresh-cw" style="width:12px; height:12px;"></i>
+                        </button>
                     </div>
                 </div>
                 <p class="repo-card-desc">${desc}</p>
@@ -531,6 +669,76 @@ if (reposGrid) {
         }
     };
 
+    window.openAddRepoModal = function() {
+        document.getElementById('add-repo-modal').style.display = 'flex';
+    };
+
+    window.closeAddRepoModal = function() {
+        document.getElementById('add-repo-modal').style.display = 'none';
+        document.getElementById('add-repo-form').reset();
+        toggleAddAuthFields('none');
+    };
+
+    window.toggleAddAuthFields = function(val) {
+        document.getElementById('add-auth-token-fields').style.display = val === 'https' ? 'block' : 'none';
+        document.getElementById('add-auth-ssh-fields').style.display = val === 'ssh' ? 'block' : 'none';
+    };
+
+    window.submitAddRepo = async function(e) {
+        e.preventDefault();
+        const payload = {
+            name: document.getElementById('add-repo-name').value,
+            url: document.getElementById('add-repo-url').value,
+            branch: document.getElementById('add-repo-branch').value,
+            auth_type: document.getElementById('add-repo-auth').value,
+            storage_path: 'repos/' + document.getElementById('add-repo-name').value,
+            clone_interval_minutes: parseInt(document.getElementById('add-repo-interval').value),
+            retention_days: parseInt(document.getElementById('add-repo-retention').value),
+            lfs_enabled: document.getElementById('add-repo-lfs').checked,
+            mirror_wiki: document.getElementById('add-repo-wiki').checked,
+            mirror_issues: document.getElementById('add-repo-issues').checked,
+            mirror_pull_requests: document.getElementById('add-repo-prs').checked,
+            mirror_releases: document.getElementById('add-repo-releases').checked
+        };
+        
+        if (payload.auth_type === 'https') {
+            payload.credentials = {
+                token: document.getElementById('add-repo-token').value
+            };
+        } else if (payload.auth_type === 'ssh') {
+            payload.credentials = {
+                ssh_key: document.getElementById('add-repo-sshkey').value
+            };
+        }
+
+        try {
+            await apiCall('/api/v1/repositories', {
+                method: 'POST',
+                body: JSON.stringify(payload)
+            });
+            showToast('Repository added successfully');
+            closeAddRepoModal();
+            loadRepos();
+        } catch (error) {
+            console.error(error);
+        }
+    };
+
+    window.triggerSyncNow = async function(id, btn) {
+        const originalHTML = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<svg class="spin" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>';
+        try {
+            await apiCall(`/api/v1/repositories/${id}/clone`, { method: 'POST' });
+            showToast('Sync job queued successfully');
+        } catch (error) {
+            console.error(error);
+        } finally {
+            btn.innerHTML = originalHTML;
+            btn.disabled = false;
+        }
+    };
+
     loadRepos();
 }
 
@@ -544,6 +752,62 @@ if (repoBrowser) {
     let currentPath = '';
     let currentCommitSha = '';
     let allRefs = [];
+
+    let logWS = null;
+    function startLiveLogStream(id) {
+        if (logWS) {
+            logWS.close();
+        }
+
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/api/v1/repositories/${id}/logs/stream`;
+        
+        const logsPanel = document.getElementById('live-logs-panel');
+        const logsConsole = document.getElementById('live-logs-console');
+        const logsStatus = document.getElementById('live-logs-status');
+
+        if (!logsPanel || !logsConsole || !logsStatus) return;
+
+        logsPanel.style.display = 'block';
+        logsConsole.textContent = '';
+        logsStatus.className = 'status-badge warning';
+        logsStatus.textContent = 'streaming...';
+
+        logWS = new WebSocket(wsUrl);
+        
+        logWS.onmessage = (event) => {
+            logsConsole.textContent += event.data + '\n';
+            logsConsole.scrollTop = logsConsole.scrollHeight;
+        };
+
+        logWS.onerror = (error) => {
+            logsStatus.className = 'status-badge error';
+            logsStatus.textContent = 'error';
+        };
+
+        logWS.onclose = () => {
+            logsStatus.className = 'status-badge success';
+            logsStatus.textContent = 'idle';
+        };
+    }
+
+    window.syncRepoNow = async function() {
+        const btn = document.getElementById('sync-now-btn');
+        const originalHTML = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<svg class="spin" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg> <span>Syncing...</span>';
+        
+        try {
+            await apiCall(`/api/v1/repositories/${REPO_ID}/clone`, { method: 'POST' });
+            showToast('Sync job queued successfully');
+            startLiveLogStream(REPO_ID);
+        } catch (error) {
+            console.error(error);
+        } finally {
+            btn.innerHTML = originalHTML;
+            btn.disabled = false;
+        }
+    };
 
     window.downloadRepoZip = function() {
         window.location.href = `/api/v1/repos/${REPO_ID}/download?ref=${encodeURIComponent(currentRef)}`;
@@ -560,8 +824,13 @@ if (repoBrowser) {
             const status = repo.last_clone_status || repo.status || 'pending';
             badge.className = `status-badge ${status === 'success' ? 'synced' : status}`;
             badge.textContent = status === 'success' ? 'synced' : status;
+            badge.insertAdjacentHTML('afterend', visibilityBadge(repo.visibility));
             currentRef = repo.branch || 'main';
             document.getElementById('current-branch-label').textContent = currentRef;
+
+            if (status === 'cloning' || status === 'pending') {
+                startLiveLogStream(REPO_ID);
+            }
         } catch (e) {
             document.getElementById('repo-name-title').textContent = 'Repository';
         }

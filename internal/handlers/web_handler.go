@@ -78,3 +78,12 @@ func (h *WebHandler) RepoCommit(c *gin.Context) {
 		"sha":    c.Param("sha"),
 	})
 }
+
+// Search renders the global code search page.
+func (h *WebHandler) Search(c *gin.Context) {
+	user, _ := c.Get("user")
+	c.HTML(http.StatusOK, "search.html", gin.H{
+		"title": "Search - GitDuppy",
+		"user":  user,
+	})
+}

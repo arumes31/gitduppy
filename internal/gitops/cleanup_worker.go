@@ -126,41 +126,60 @@ func (w *CleanupWorker) performCleanup() {
 		log.Printf("Cleaned up %d expired sessions", sessionResult.RowsAffected)
 	}
 
-	// Clean up old soft-deleted repositories (older than 30 days)
-	var expiredRepos []models.Repository
-	if err := w.db.Unscoped().Where("deleted_at IS NOT NULL AND deleted_at < ?", cutoff).Find(&expiredRepos).Error; err == nil {
-		for _, repo := range expiredRepos {
-			w.logger.Info("permanently deleting expired repository from paperbin", zap.String("repo", repo.Name), zap.String("id", repo.ID.String()))
-			
-			// 1. Delete related DeletedBranches
-			_ = w.db.Where("repository_id = ?", repo.ID).Delete(&models.DeletedBranch{})
-			// 2. Delete related CloneJobs
-			_ = w.db.Where("repository_id = ?", repo.ID).Delete(&models.CloneJob{})
-			// 3. Hard delete from DB
-			if err := w.db.Unscoped().Delete(&repo).Error; err == nil {
-				// 4. Purge folders on disk
-				paperbinPath := filepath.Join(filepath.Dir(repo.StoragePath), "paperbin", repo.ID.String())
-				_ = os.RemoveAll(paperbinPath)
-				_ = os.RemoveAll(repo.StoragePath)
+	// Clean up old soft-deleted repositories based on custom retention policies
+	var allDeletedRepos []models.Repository
+	if err := w.db.Unscoped().Where("deleted_at IS NOT NULL").Find(&allDeletedRepos).Error; err == nil {
+		for _, repo := range allDeletedRepos {
+			retentionDays := repo.RetentionDays
+			if retentionDays <= 0 {
+				retentionDays = 30
+			}
+			repoCutoff := repo.DeletedAt.Time.Add(time.Duration(retentionDays) * 24 * time.Hour)
+			if time.Now().After(repoCutoff) {
+				w.logger.Info("permanently deleting expired repository from paperbin", zap.String("repo", repo.Name), zap.String("id", repo.ID.String()), zap.Int("retention_days", retentionDays))
+				
+				// 1. Delete related DeletedBranches
+				_ = w.db.Where("repository_id = ?", repo.ID).Delete(&models.DeletedBranch{})
+				// 2. Delete related CloneJobs
+				_ = w.db.Where("repository_id = ?", repo.ID).Delete(&models.CloneJob{})
+				// 3. Hard delete from DB
+				if err := w.db.Unscoped().Delete(&repo).Error; err == nil {
+					// 4. Purge folders and archives on disk
+					paperbinPath := filepath.Join(filepath.Dir(repo.StoragePath), "paperbin", repo.ID.String())
+					_ = os.Remove(paperbinPath + ".tar.gz")
+					_ = os.RemoveAll(paperbinPath)
+					_ = os.RemoveAll(repo.StoragePath)
+				}
 			}
 		}
 	}
 
-	// Clean up old deleted branches (older than 30 days)
-	var expiredBranches []models.DeletedBranch
-	if err := w.db.Where("deleted_at < ?", cutoff).Find(&expiredBranches).Error; err == nil {
-		for _, br := range expiredBranches {
-			w.logger.Info("permanently deleting expired pruned branch from paperbin", zap.String("branch", br.BranchName), zap.String("repo_id", br.RepositoryID.String()))
-			
-			// Find repository path to delete git ref
+	// Clean up old deleted branches based on repository-specific retention policies
+	var deletedBranches []models.DeletedBranch
+	if err := w.db.Find(&deletedBranches).Error; err == nil {
+		for _, br := range deletedBranches {
 			var repo models.Repository
+			retentionDays := 30
 			if err := w.db.Unscoped().First(&repo, br.RepositoryID).Error; err == nil {
-				paperbinRef := "refs/paperbin/heads/" + br.BranchName
-				_, _ = RunGitCommand(context.Background(), repo.StoragePath, "update-ref", "-d", paperbinRef)
+				if repo.RetentionDays > 0 {
+					retentionDays = repo.RetentionDays
+				}
 			}
 			
-			// Delete DB record
-			_ = w.db.Delete(&br)
+			branchCutoff := br.DeletedAt.Add(time.Duration(retentionDays) * 24 * time.Hour)
+			if time.Now().After(branchCutoff) {
+				w.logger.Info("permanently deleting expired pruned branch from paperbin", zap.String("branch", br.BranchName), zap.String("repo_id", br.RepositoryID.String()), zap.Int("retention_days", retentionDays))
+				
+				// Find repository path to delete git ref
+				var targetRepo models.Repository
+				if err := w.db.Unscoped().First(&targetRepo, br.RepositoryID).Error; err == nil {
+					paperbinRef := "refs/paperbin/heads/" + br.BranchName
+					_, _ = RunGitCommand(context.Background(), targetRepo.StoragePath, "update-ref", "-d", paperbinRef)
+				}
+				
+				// Delete DB record
+				_ = w.db.Delete(&br)
+			}
 		}
 	}
 

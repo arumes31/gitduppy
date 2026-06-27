@@ -33,6 +33,11 @@
                 <span>Download ZIP</span>
             </button>
 
+            <button class="btn btn-primary" id="sync-now-btn" onclick="syncRepoNow()">
+                <i data-lucide="refresh-cw"></i>
+                <span>Sync Now</span>
+            </button>
+
             <!-- Breadcrumb path -->
             <nav class="file-breadcrumb" id="file-breadcrumb">
                 <span class="bc-item bc-root" onclick="navigateTo('')"><i data-lucide="home"></i></span>
@@ -92,6 +97,17 @@
         <button class="btn btn-secondary" onclick="toggleCommitsPanel()">
             <i data-lucide="git-commit"></i> View Commit History
         </button>
+    </div>
+
+    <!-- Live Terminal Logs Console -->
+    <div class="glass-panel p-6 mt-6" id="live-logs-panel" style="display:none;">
+        <div class="card-header border-bottom pb-4" style="display:flex; justify-content:space-between; align-items:center;">
+            <h3 class="card-title" style="display:flex; align-items:center; gap:8px;">
+                <i data-lucide="terminal"></i> Live Sync Output
+            </h3>
+            <span class="status-badge warning" id="live-logs-status">connecting...</span>
+        </div>
+        <div class="terminal-console" id="live-logs-console"></div>
     </div>
 
 </div>

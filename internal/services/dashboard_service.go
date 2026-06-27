@@ -2,6 +2,10 @@ package services
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gitduppy/gitduppy/internal/database"
@@ -176,4 +180,52 @@ func (s *DashboardService) GetTopRepositories(ctx context.Context, limit int) ([
 		Limit(limit).
 		Find(&repos).Error
 	return repos, err
+}
+
+// GetTimelineData returns the recent clone jobs preloading their repositories.
+func (s *DashboardService) GetTimelineData(ctx context.Context, limit int) ([]models.CloneJob, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	var jobs []models.CloneJob
+	err := s.db.WithContext(ctx).
+		Preload("Repository").
+		Order("started_at DESC, created_at DESC").
+		Limit(limit).
+		Find(&jobs).Error
+	return jobs, err
+}
+
+// GetPaperbinSize calculates the total storage size used by the paperbin and retrieves the configured quota limit.
+func (s *DashboardService) GetPaperbinSize(ctx context.Context) (int64, int64, error) {
+	var setting models.SystemSetting
+	quotaGB := int64(50) // Default quota is 50 GB
+	if err := s.db.WithContext(ctx).Where("key = ?", "paperbin_quota_gb").First(&setting).Error; err == nil {
+		if val, parseErr := strconv.ParseInt(setting.Value, 10, 64); parseErr == nil && val > 0 {
+			quotaGB = val
+		}
+	}
+
+	var totalSize int64
+	// Walk the repos base directory to sum up all files in any "paperbin" subdirectory
+	_ = filepath.Walk("repos", func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		parts := strings.Split(filepath.ToSlash(path), "/")
+		isPaperbin := false
+		for _, part := range parts {
+			if part == "paperbin" {
+				isPaperbin = true
+				break
+			}
+		}
+		if isPaperbin && !info.IsDir() {
+			totalSize += info.Size()
+		}
+		return nil
+	})
+
+	return totalSize, quotaGB, nil
 }

@@ -15,6 +15,10 @@
             <i data-lucide="trash-2"></i>
             <span id="paperbin-btn-text">Paperbin</span>
         </button>
+        <button class="btn btn-primary" onclick="openAddRepoModal()">
+            <i data-lucide="plus"></i>
+            <span>Add Repository</span>
+        </button>
     </div>
 </div>
 
@@ -58,6 +62,89 @@
             </div>
             <p id="deleted-branches-empty" class="text-muted text-center py-6" style="display:none">No pruned branches in paperbin.</p>
         </div>
+    </div>
+</div>
+
+<!-- Add Repository Modal -->
+<div id="add-repo-modal" class="modal-overlay" style="display:none;">
+    <div class="modal-content glass-panel">
+        <div class="modal-header">
+            <h3 class="card-title">Add Repository</h3>
+            <button class="btn btn-icon btn-ghost" onclick="closeAddRepoModal()"><i data-lucide="x"></i></button>
+        </div>
+        <form id="add-repo-form" onsubmit="submitAddRepo(event)" class="modal-body">
+            <div class="form-group-row">
+                <div>
+                    <label class="form-label" for="add-repo-name">Name</label>
+                    <input type="text" id="add-repo-name" class="form-control" required placeholder="my-awesome-repo">
+                </div>
+                <div>
+                    <label class="form-label" for="add-repo-branch">Default Branch</label>
+                    <input type="text" id="add-repo-branch" class="form-control" value="main" required>
+                </div>
+            </div>
+            <div>
+                <label class="form-label" for="add-repo-url">Git URL</label>
+                <input type="text" id="add-repo-url" class="form-control" required placeholder="https://github.com/user/repo.git">
+            </div>
+            <div class="form-group-row">
+                <div>
+                    <label class="form-label" for="add-repo-auth">Authentication</label>
+                    <select id="add-repo-auth" class="form-control" onchange="toggleAddAuthFields(this.value)">
+                        <option value="none">None</option>
+                        <option value="https">HTTPS Token / Password</option>
+                        <option value="ssh">SSH Key</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label" for="add-repo-retention">Retention (Days)</label>
+                    <input type="number" id="add-repo-retention" class="form-control" value="30" min="1" required>
+                </div>
+            </div>
+            
+            <!-- Dynamic Credential Fields -->
+            <div id="add-auth-token-fields" style="display:none;">
+                <label class="form-label" for="add-repo-token">Token / Password</label>
+                <input type="password" id="add-repo-token" class="form-control" placeholder="ghp_...">
+            </div>
+            <div id="add-auth-ssh-fields" style="display:none;">
+                <label class="form-label" for="add-repo-sshkey">SSH Private Key</label>
+                <textarea id="add-repo-sshkey" class="form-control" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+            </div>
+
+            <div>
+                <label class="form-label" for="add-repo-interval">Clone Interval (Minutes)</label>
+                <input type="number" id="add-repo-interval" class="form-control" value="60" min="5" required>
+            </div>
+
+            <div class="checkbox-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="add-repo-wiki" checked>
+                    <span>Mirror Wiki (.wiki.git)</span>
+                </label>
+                <label class="checkbox-label">
+                    <input type="checkbox" id="add-repo-lfs" checked>
+                    <span>Enable LFS</span>
+                </label>
+                <label class="checkbox-label">
+                    <input type="checkbox" id="add-repo-issues" checked>
+                    <span>Mirror Issues</span>
+                </label>
+                <label class="checkbox-label">
+                    <input type="checkbox" id="add-repo-prs" checked>
+                    <span>Mirror Pull Requests</span>
+                </label>
+                <label class="checkbox-label">
+                    <input type="checkbox" id="add-repo-releases" checked>
+                    <span>Mirror Releases</span>
+                </label>
+            </div>
+
+            <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:16px;">
+                <button type="button" class="btn btn-secondary" onclick="closeAddRepoModal()">Cancel</button>
+                <button type="submit" class="btn btn-primary">Create</button>
+            </div>
+        </form>
     </div>
 </div>
 {{end}}

@@ -309,6 +309,7 @@ func setupRouter(
 		webGroup.GET("/repos", webHandler.RepoList)
 		webGroup.GET("/repos/:id", webHandler.RepoDetail)
 		webGroup.GET("/repos/:id/commit/:sha", webHandler.RepoCommit)
+		webGroup.GET("/search", webHandler.Search)
 	}
 
 	// Health check endpoints (no auth required)
@@ -365,6 +366,9 @@ func setupRouter(
 			users.PATCH("/:id/status", middleware.RequireAdmin(), userHandler.SetUserStatus)
 		}
 
+		// Global search route
+		v1.GET("/search", authMiddleware.Middleware(), repoHandler.GlobalSearch)
+
 		// Repository routes
 		repos := v1.Group("/repositories")
 		repos.Use(authMiddleware.Middleware())
@@ -382,6 +386,7 @@ func setupRouter(
 			repos.PATCH("/:id/status", repoHandler.SetRepositoryStatus)
 			repos.POST("/:id/clone", repoHandler.TriggerClone)
 			repos.GET("/:id/logs", repoHandler.GetRepositoryLogs)
+			repos.GET("/:id/logs/stream", repoHandler.StreamRepositoryLogs)
 			repos.GET("/:id/jobs", cloneHandler.ListRepositoryJobs)
 		}
 
@@ -447,6 +452,8 @@ func setupRouter(
 			dashboard.GET("/chart-data", dashboardHandler.GetChartData)
 			dashboard.GET("/top-repositories", dashboardHandler.GetTopRepositories)
 			dashboard.GET("/recent-jobs", dashboardHandler.GetRecentJobs)
+			dashboard.GET("/timeline", dashboardHandler.GetTimeline)
+			dashboard.GET("/paperbin-quota", dashboardHandler.GetPaperbinQuota)
 		}
 
 		// Backup routes
@@ -464,6 +471,10 @@ func setupRouter(
 			configRoutes.GET("", configHandler.GetConfig)
 			configRoutes.PUT("", middleware.RequireAdmin(), configHandler.UpdateConfig)
 			configRoutes.PUT("/oauth", middleware.RequireAdmin(), configHandler.UpdateOAuthSettings)
+			configRoutes.GET("/maintenance", configHandler.GetMaintenanceMode)
+			configRoutes.PUT("/maintenance", middleware.RequireAdmin(), configHandler.UpdateMaintenanceMode)
+			configRoutes.GET("/quota", configHandler.GetQuota)
+			configRoutes.PUT("/quota", middleware.RequireAdmin(), configHandler.UpdateQuota)
 		}
 
 		// Incoming webhook receiver (no auth required, uses HMAC signature)

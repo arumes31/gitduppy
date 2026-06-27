@@ -67,3 +67,33 @@ func (h *DashboardHandler) GetRecentJobs(c *gin.Context) {
 
 	response.Success(c, jobs)
 }
+
+// GetTimeline handles GET /api/v1/dashboard/timeline.
+func (h *DashboardHandler) GetTimeline(c *gin.Context) {
+	limit := validator.ParseInt(c.Query("limit"), 50)
+	timeline, err := h.dashboardService.GetTimelineData(c, limit)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.Success(c, timeline)
+}
+
+// GetPaperbinQuota handles GET /api/v1/dashboard/paperbin-quota.
+func (h *DashboardHandler) GetPaperbinQuota(c *gin.Context) {
+	sizeBytes, quotaGB, err := h.dashboardService.GetPaperbinSize(c)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	
+	quotaBytes := quotaGB * 1024 * 1024 * 1024
+	exceeded := sizeBytes > quotaBytes
+	
+	response.Success(c, gin.H{
+		"size_bytes":  sizeBytes,
+		"quota_gb":    quotaGB,
+		"quota_bytes": quotaBytes,
+		"exceeded":    exceeded,
+	})
+}

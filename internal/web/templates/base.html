@@ -30,6 +30,10 @@
                     <i data-lucide="git-fork"></i>
                     <span>Repositories</span>
                 </a>
+                <a href="/search" class="nav-item {{if eq .title "Search - GitDuppy"}}active{{end}}">
+                    <i data-lucide="search"></i>
+                    <span>Code Search</span>
+                </a>
                 <a href="/config" class="nav-item {{if eq .title "Settings - GitDuppy"}}active{{end}}">
                     <i data-lucide="settings"></i>
                     <span>Settings</span>
@@ -52,6 +56,12 @@
         {{end}}
 
         <main class="main-content">
+            {{if .user}}
+            <div id="maintenance-banner" class="maintenance-banner" style="display:none">
+                <i data-lucide="wrench"></i>
+                <span>Maintenance mode is enabled — scheduled mirroring is paused.</span>
+            </div>
+            {{end}}
             {{template "content" .}}
         </main>
     </div>

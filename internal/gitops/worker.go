@@ -16,6 +16,52 @@ import (
 	"gorm.io/gorm"
 )
 
+// LogHub manages subscribers for real-time repository progress logs.
+type LogHub struct {
+	mu          sync.Mutex
+	subscribers map[string][]chan string
+}
+
+// GlobalLogHub is the global instance for logging subscription.
+var GlobalLogHub = &LogHub{
+	subscribers: make(map[string][]chan string),
+}
+
+// Subscribe returns a channel of logs for a repository.
+func (h *LogHub) Subscribe(repoID string) chan string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	ch := make(chan string, 100)
+	h.subscribers[repoID] = append(h.subscribers[repoID], ch)
+	return ch
+}
+
+// Unsubscribe removes a channel subscription.
+func (h *LogHub) Unsubscribe(repoID string, ch chan string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	subs := h.subscribers[repoID]
+	for i, sub := range subs {
+		if sub == ch {
+			h.subscribers[repoID] = append(subs[:i], subs[i+1:]...)
+			close(ch)
+			break
+		}
+	}
+}
+
+// Broadcast sends a message to all subscribers for a repository.
+func (h *LogHub) Broadcast(repoID string, message string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, ch := range h.subscribers[repoID] {
+		select {
+		case ch <- message:
+		default:
+		}
+	}
+}
+
 // WorkerConfig holds configuration for the clone worker.
 type WorkerConfig struct {
 	MaxConcurrent    int
@@ -182,8 +228,9 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 
 	// Create progress callback
 	progress := &CloneProgress{
-		jobID: job.ID,
-		db:    w.db,
+		jobID:        job.ID,
+		repositoryID: repo.ID.String(),
+		db:           w.db,
 	}
 	cloneOpts.Progress = progress
 
@@ -441,14 +488,16 @@ func (w *CloneWorker) handleFailure(logger *zap.Logger, repo models.Repository, 
 
 // CloneProgress implements git.Progress interface.
 type CloneProgress struct {
-	jobID uuid.UUID
-	db    *gorm.DB
+	jobID        uuid.UUID
+	repositoryID string
+	db           *gorm.DB
 }
 
 // Write implements the Write method for progress tracking.
 func (p *CloneProgress) Write(b []byte) (n int, err error) {
 	message := string(b)
 	p.db.Model(&models.CloneJob{}).Where("id = ?", p.jobID).Update("output_log", message)
+	GlobalLogHub.Broadcast(p.repositoryID, message)
 
 	return len(b), nil
 }
@@ -501,6 +550,13 @@ func (s *Scheduler) run() {
 // scheduleCloneJobs schedules clone jobs for all active repositories.
 func (s *Scheduler) scheduleCloneJobs() {
 	s.logger.Debug("checking for repositories to clone")
+
+	// Skip scheduling while maintenance mode is enabled.
+	var setting models.SystemSetting
+	if err := s.db.Where("key = ?", "maintenance_mode").First(&setting).Error; err == nil && setting.Value == "true" {
+		s.logger.Info("maintenance mode enabled, skipping scheduled clone jobs")
+		return
+	}
 
 	var repos []models.Repository
 	if err := s.db.Where("is_active = ? AND status != 'cloning'", true).Find(&repos).Error; err != nil {

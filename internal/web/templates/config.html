@@ -53,6 +53,30 @@
                     </button>
                 </div>
             </form>
+    <div class="card glass-panel mb-6">
+        <div class="card-header border-bottom">
+            <div class="flex items-center gap-3">
+                <i data-lucide="trash-2" class="icon-lg"></i>
+                <div>
+                    <h3 class="card-title">Paperbin Quota Settings</h3>
+                    <p class="text-sm text-muted">Configure the storage limit for soft-deleted repositories</p>
+                </div>
+            </div>
+        </div>
+        <div class="card-body">
+            <form id="quota-form" class="settings-form" onsubmit="saveQuotaConfig(event)">
+                <div class="form-group">
+                    <label for="paperbin_quota_gb">Paperbin Storage Quota (GB)</label>
+                    <input type="number" id="paperbin_quota_gb" name="paperbin_quota_gb" class="form-control" value="50" min="1" required>
+                    <p class="help-text">An admin warning banner will be displayed if soft-deleted repositories exceed this size.</p>
+                </div>
+                <div class="form-actions mt-6">
+                    <button type="submit" class="btn btn-primary btn-glow">
+                        <i data-lucide="save"></i>
+                        <span>Save Quota</span>
+                    </button>
+                </div>
+            </form>
         </div>
     </div>
 </div>

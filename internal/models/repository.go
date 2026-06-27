@@ -26,6 +26,7 @@ type Repository struct {
 	IsActive             bool       `gorm:"default:true" json:"is_active"`
 	Visibility           string     `gorm:"size:20" json:"visibility,omitempty"` // "public", "private", or "" if unknown
 	CloneIntervalMinutes int        `gorm:"default:60" json:"clone_interval_minutes"`
+	RetentionDays        int        `gorm:"default:30" json:"retention_days"`
 	Description          *string    `gorm:"type:text" json:"description,omitempty"`
 	CreatedBy            *uuid.UUID `gorm:"type:uuid" json:"created_by,omitempty"`
 	LastCloneAt          *time.Time `json:"last_clone_at,omitempty"`

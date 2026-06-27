@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,15 +13,22 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
 )
 
+type cacheEntry struct {
+	value      interface{}
+	expiration time.Time
+}
+
 // GitHubMetadataFetcher is responsible for fetching GitHub-specific metadata.
 type GitHubMetadataFetcher struct {
 	logger *zap.Logger
 	client *http.Client
+	cache  sync.Map
 }
 
 // NewGitHubMetadataFetcher creates a new instance.
@@ -80,11 +88,36 @@ type RepositoryInfo struct {
 	Visibility  string // "public" or "private"
 }
 
+func (f *GitHubMetadataFetcher) getCache(key string) (interface{}, bool) {
+	val, ok := f.cache.Load(key)
+	if !ok {
+		return nil, false
+	}
+	entry := val.(cacheEntry)
+	if time.Now().After(entry.expiration) {
+		f.cache.Delete(key)
+		return nil, false
+	}
+	return entry.value, true
+}
+
+func (f *GitHubMetadataFetcher) setCache(key string, val interface{}, ttl time.Duration) {
+	f.cache.Store(key, cacheEntry{
+		value:      val,
+		expiration: time.Now().Add(ttl),
+	})
+}
+
 // FetchRepositoryInfo fetches the description, topics and visibility for a GitHub repository.
 func (f *GitHubMetadataFetcher) FetchRepositoryInfo(ctx context.Context, repoURL, token string) (*RepositoryInfo, error) {
 	owner, repoName, err := f.parseGitHubURL(repoURL)
 	if err != nil {
 		return nil, fmt.Errorf("not a github url")
+	}
+
+	cacheKey := "repo_info:" + owner + "/" + repoName
+	if cached, ok := f.getCache(cacheKey); ok {
+		return cached.(*RepositoryInfo), nil
 	}
 
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repoName)
@@ -135,11 +168,14 @@ func (f *GitHubMetadataFetcher) FetchRepositoryInfo(ctx context.Context, repoURL
 		visibility = "private"
 	}
 
-	return &RepositoryInfo{
+	repoInfo := &RepositoryInfo{
 		Description: data.Description,
 		Topics:      data.Topics,
 		Visibility:  visibility,
-	}, nil
+	}
+
+	f.setCache(cacheKey, repoInfo, 1*time.Hour)
+	return repoInfo, nil
 }
 
 // fetchPaginatedJSON fetches all pages from a GitHub API list endpoint and
@@ -264,7 +300,106 @@ func (f *GitHubMetadataFetcher) fetchPaginatedJSON(ctx context.Context, owner, r
 		return err
 	}
 
+	// Archive media and rewrite remote URLs to local path
+	data = f.archiveMedia(ctx, filepath.Dir(filePath), token, data)
+
 	return os.WriteFile(filePath, data, 0o640)
+}
+
+// archiveMedia scans JSON bytes for external GitHub media URLs, downloads them, and rewrites URLs locally.
+func (f *GitHubMetadataFetcher) archiveMedia(ctx context.Context, backupDir string, token string, jsonBytes []byte) []byte {
+	mediaDir := filepath.Join(backupDir, "media")
+	
+	// Match user attachments, images, and raw user content domains from GitHub
+	re := regexp.MustCompile(`https?://(?:github\.com/assets/|github\.com/user-attachments/assets/|[\w.-]+\.githubusercontent\.com/[a-zA-Z0-9-_./~%#?&=]+)`)
+	matches := re.FindAll(jsonBytes, -1)
+	if len(matches) == 0 {
+		return jsonBytes
+	}
+
+	// Deduplicate matches
+	uniqueURLs := make(map[string]bool)
+	for _, match := range matches {
+		uniqueURLs[string(match)] = true
+	}
+
+	// Create media directory
+	if err := os.MkdirAll(mediaDir, 0o750); err != nil {
+		f.logger.Error("Failed to create media directory", zap.Error(err))
+		return jsonBytes
+	}
+
+	jsonStr := string(jsonBytes)
+
+	for urlStr := range uniqueURLs {
+		// Check context cancellation
+		if ctx.Err() != nil {
+			break
+		}
+
+		// Clean URL from escaped quotes if matched inside JSON string raw matches
+		cleanURL := strings.ReplaceAll(urlStr, `\"`, "")
+		cleanURL = strings.Trim(cleanURL, `"'`)
+
+		// Determine filename
+		hash := sha256.Sum256([]byte(cleanURL))
+		hexHash := fmt.Sprintf("%x", hash[:8]) // Keep it short and clean
+		
+		ext := filepath.Ext(cleanURL)
+		if ext == "" {
+			ext = ".png" // Default fallback
+		} else {
+			// Strip query parameters
+			if idx := strings.Index(ext, "?"); idx >= 0 {
+				ext = ext[:idx]
+			}
+			// Strip any non-alphanumeric chars at the end of extension
+			extClean := ""
+			for _, char := range ext {
+				if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '.' {
+					extClean += string(char)
+				}
+			}
+			ext = extClean
+			if len(ext) > 5 {
+				ext = ".png"
+			}
+		}
+		filename := fmt.Sprintf("media-%s%s", hexHash, ext)
+		destPath := filepath.Join(mediaDir, filename)
+
+		// Download if it doesn't exist
+		if _, err := os.Stat(destPath); os.IsNotExist(err) {
+			f.logger.Info("Archiving external media asset", zap.String("url", cleanURL))
+			
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, cleanURL, nil)
+			if err == nil {
+				if token != "" {
+					req.Header.Set("Authorization", "token "+token)
+				}
+				resp, err := f.client.Do(req)
+				if err == nil {
+					if resp.StatusCode == http.StatusOK {
+						outFile, createErr := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
+						if createErr == nil {
+							_, _ = io.Copy(outFile, resp.Body)
+							outFile.Close()
+						}
+					}
+					resp.Body.Close()
+				}
+			}
+		}
+
+		// If download succeeded (or already existed), replace URL in JSON
+		if _, err := os.Stat(destPath); err == nil {
+			// Map to relative path
+			localURL := "/github_backup/media/" + filename
+			jsonStr = strings.ReplaceAll(jsonStr, urlStr, localURL)
+		}
+	}
+
+	return []byte(jsonStr)
 }
 
 // parseNextLink extracts the "next" URL from a GitHub Link header.

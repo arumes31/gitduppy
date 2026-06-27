@@ -1,11 +1,15 @@
 package services
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gitduppy/gitduppy/internal/database"
@@ -122,6 +126,7 @@ type CreateRepositoryRequest struct {
 	MirrorReleases       bool                       `json:"mirror_releases"`
 	MirrorWiki           bool                       `json:"mirror_wiki"`
 	CloneIntervalMinutes int                        `json:"clone_interval_minutes" validate:"min=5"`
+	RetentionDays        int                        `json:"retention_days"`
 	Description          *string                    `json:"description,omitempty"`
 	TagIDs               []uuid.UUID                `json:"tag_ids,omitempty"`
 }
@@ -138,14 +143,32 @@ func (s *RepositoryService) CreateRepository(_ context.Context, req *CreateRepos
 		}
 	}
 
+	repoID := uuid.New()
+	idStr := repoID.String()
+
+	// Shard storage path: baseDir/shards/ab/cd/uuid to prevent filesystem limits
+	storagePath := req.StoragePath
+	if storagePath == "" || !strings.Contains(storagePath, "shards") {
+		baseDir := "repos"
+		if req.StoragePath != "" {
+			baseDir = filepath.Dir(req.StoragePath)
+		}
+		storagePath = filepath.Join(baseDir, "shards", idStr[0:2], idStr[2:4], idStr)
+	}
+
+	retentionDays := req.RetentionDays
+	if retentionDays <= 0 {
+		retentionDays = 30
+	}
+
 	repo := &models.Repository{
-		ID:                   uuid.New(),
+		ID:                   repoID,
 		Name:                 req.Name,
 		URL:                  req.URL,
 		Branch:               req.Branch,
 		AuthType:             req.AuthType,
 		EncryptedCredentials: encryptedCredentials,
-		StoragePath:          req.StoragePath,
+		StoragePath:          storagePath,
 		Status:               "pending",
 		IsBare:               req.IsBare,
 		LFSEnabled:           req.LFSEnabled,
@@ -155,6 +178,7 @@ func (s *RepositoryService) CreateRepository(_ context.Context, req *CreateRepos
 		MirrorWiki:           req.MirrorWiki,
 		IsActive:             true,
 		CloneIntervalMinutes: req.CloneIntervalMinutes,
+		RetentionDays:        retentionDays,
 		Description:          req.Description,
 		CreatedBy:            &createdBy,
 	}
@@ -193,6 +217,7 @@ type UpdateRepositoryRequest struct {
 	MirrorWiki           *bool                      `json:"mirror_wiki,omitempty"`
 	IsActive             *bool                      `json:"is_active,omitempty"`
 	CloneIntervalMinutes *int                       `json:"clone_interval_minutes,omitempty"`
+	RetentionDays        *int                       `json:"retention_days,omitempty"`
 	Description          *string                    `json:"description,omitempty"`
 	TagIDs               []uuid.UUID                `json:"tag_ids,omitempty"`
 }
@@ -270,6 +295,9 @@ func (s *RepositoryService) applyUpdateFields(repo *models.Repository, req *Upda
 	if req.CloneIntervalMinutes != nil {
 		repo.CloneIntervalMinutes = *req.CloneIntervalMinutes
 	}
+	if req.RetentionDays != nil {
+		repo.RetentionDays = *req.RetentionDays
+	}
 	if req.Description != nil {
 		repo.Description = req.Description
 	}
@@ -288,31 +316,40 @@ func (s *RepositoryService) applyUpdateFields(repo *models.Repository, req *Upda
 	return nil
 }
 
-// DeleteRepository soft-deletes a repository and moves its folder to the paperbin.
+// DeleteRepository soft-deletes a repository and moves its compressed folder to the paperbin.
 func (s *RepositoryService) DeleteRepository(_ context.Context, id uuid.UUID) error {
 	var repo models.Repository
 	if err := s.db.First(&repo, id).Error; err != nil {
 		return err
 	}
 
-	// Move local folder to paperbin
+	// Compress local folder and move to paperbin
 	paperbinPath := filepath.Join(filepath.Dir(repo.StoragePath), "paperbin", repo.ID.String())
+	tarGzPath := paperbinPath + ".tar.gz"
+	
 	if _, err := os.Stat(repo.StoragePath); err == nil {
 		if err := os.MkdirAll(filepath.Dir(paperbinPath), 0750); err != nil {
 			return fmt.Errorf("failed to create paperbin parent directory: %w", err)
 		}
-		// In case a paperbin folder already exists, remove it first
-		_ = os.RemoveAll(paperbinPath)
-		if err := os.Rename(repo.StoragePath, paperbinPath); err != nil {
-			return fmt.Errorf("failed to move repository to paperbin: %w", err)
+		// In case a paperbin archive already exists, remove it first
+		_ = os.Remove(tarGzPath)
+		
+		if err := tarGzCompress(repo.StoragePath, tarGzPath); err != nil {
+			return fmt.Errorf("failed to compress repository to paperbin: %w", err)
 		}
+		
+		// Remove original folder after successful compression
+		_ = os.RemoveAll(repo.StoragePath)
 	}
 
 	// Perform soft delete
 	result := s.db.Delete(&repo)
 	if result.Error != nil {
-		// If DB delete fails, try to move folder back
-		_ = os.Rename(paperbinPath, repo.StoragePath)
+		// If DB delete fails, try to decompress folder back
+		if _, err := os.Stat(tarGzPath); err == nil {
+			_ = tarGzDecompress(tarGzPath, repo.StoragePath)
+			_ = os.Remove(tarGzPath)
+		}
 		return result.Error
 	}
 	return nil
@@ -325,23 +362,36 @@ func (s *RepositoryService) RestoreRepository(_ context.Context, id uuid.UUID) e
 		return err
 	}
 
-	// Move local folder back from paperbin
+	// Decompress local folder back from paperbin
 	paperbinPath := filepath.Join(filepath.Dir(repo.StoragePath), "paperbin", repo.ID.String())
-	if _, err := os.Stat(paperbinPath); err == nil {
+	tarGzPath := paperbinPath + ".tar.gz"
+
+	if _, err := os.Stat(tarGzPath); err == nil {
 		if err := os.MkdirAll(filepath.Dir(repo.StoragePath), 0750); err != nil {
 			return fmt.Errorf("failed to create repository parent directory: %w", err)
 		}
 		// In case a destination folder already exists, remove it
 		_ = os.RemoveAll(repo.StoragePath)
+		
+		if err := tarGzDecompress(tarGzPath, repo.StoragePath); err != nil {
+			return fmt.Errorf("failed to restore repository from paperbin archive: %w", err)
+		}
+		
+		// Delete compressed file
+		_ = os.Remove(tarGzPath)
+	} else if _, err := os.Stat(paperbinPath); err == nil {
+		// Fallback for uncompressed folders
+		_ = os.RemoveAll(repo.StoragePath)
 		if err := os.Rename(paperbinPath, repo.StoragePath); err != nil {
-			return fmt.Errorf("failed to restore repository from paperbin: %w", err)
+			return fmt.Errorf("failed to restore repository from paperbin directory: %w", err)
 		}
 	}
 
 	// Restore DB record
 	if err := s.db.Unscoped().Model(&repo).Update("deleted_at", nil).Error; err != nil {
-		// If DB update fails, try to move folder back to paperbin
-		_ = os.Rename(repo.StoragePath, paperbinPath)
+		// If DB update fails, try to compress folder back to paperbin
+		_ = tarGzCompress(repo.StoragePath, tarGzPath)
+		_ = os.RemoveAll(repo.StoragePath)
 		return err
 	}
 	return nil
@@ -369,10 +419,11 @@ func (s *RepositoryService) PermanentDeleteRepository(_ context.Context, id uuid
 		return err
 	}
 
-	// Delete paperbin folder on disk
+	// Delete paperbin compressed archive and uncompressed folders on disk
 	paperbinPath := filepath.Join(filepath.Dir(repo.StoragePath), "paperbin", repo.ID.String())
+	_ = os.Remove(paperbinPath + ".tar.gz")
 	_ = os.RemoveAll(paperbinPath)
-	// Also delete normal storage path in case it wasn't moved
+	// Also delete normal storage path in case it wasn't moved/compressed
 	_ = os.RemoveAll(repo.StoragePath)
 
 	return nil
@@ -406,4 +457,102 @@ func (s *RepositoryService) GetDecryptedCredentials(_ context.Context, repoID uu
 		return nil, err
 	}
 	return &payload, nil
+}
+
+// tarGzCompress archives and compresses a directory into a .tar.gz file.
+func tarGzCompress(srcDir, destFile string) error {
+	d, err := os.Create(destFile)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+
+	gw := gzip.NewWriter(d)
+	defer gw.Close()
+
+	tw := tar.NewWriter(gw)
+	defer tw.Close()
+
+	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		header, err := tar.FileInfoHeader(info, info.Name())
+		if err != nil {
+			return err
+		}
+
+		relPath, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return err
+		}
+		header.Name = filepath.ToSlash(relPath)
+
+		if err := tw.WriteHeader(header); err != nil {
+			return err
+		}
+
+		if info.Mode().IsDir() {
+			return nil
+		}
+
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+
+		_, err = io.Copy(tw, file)
+		return err
+	})
+}
+
+// tarGzDecompress extracts a .tar.gz file into a destination directory.
+func tarGzDecompress(srcFile, destDir string) error {
+	r, err := os.Open(srcFile)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	gr, err := gzip.NewReader(r)
+	if err != nil {
+		return err
+	}
+	defer gr.Close()
+
+	tr := tar.NewReader(gr)
+
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		target := filepath.Join(destDir, header.Name)
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return err
+			}
+			outFile, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR|os.O_TRUNC, header.FileInfo().Mode())
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(outFile, tr); err != nil {
+				outFile.Close()
+				return err
+			}
+			outFile.Close()
+		}
+	}
+	return nil
 }

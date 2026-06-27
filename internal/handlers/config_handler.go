@@ -111,3 +111,80 @@ func (h *ConfigHandler) UpdateOAuthSettings(c *gin.Context) {
 
 	response.SuccessWithMessage(c, "OAuth configuration updated successfully.", nil)
 }
+
+const maintenanceModeKey = "maintenance_mode"
+
+// GetMaintenanceMode handles GET /api/v1/config/maintenance.
+// Available to any authenticated user so the UI can render a banner.
+func (h *ConfigHandler) GetMaintenanceMode(c *gin.Context) {
+	enabled := false
+	if val, err := h.configService.GetSettingString(c, maintenanceModeKey); err == nil {
+		enabled = val == "true"
+	}
+	response.Success(c, gin.H{"enabled": enabled})
+}
+
+// UpdateMaintenanceModeRequest represents the payload to toggle maintenance mode.
+type UpdateMaintenanceModeRequest struct {
+	Enabled *bool `json:"enabled" binding:"required"`
+}
+
+// UpdateMaintenanceMode handles PUT /api/v1/config/maintenance (admin only).
+func (h *ConfigHandler) UpdateMaintenanceMode(c *gin.Context) {
+	user, ok := middleware.GetCurrentUser(c)
+	if !ok || !user.IsAdmin() {
+		response.Unauthorized(c, "Admin access required")
+		return
+	}
+
+	var req UpdateMaintenanceModeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "INVALID_REQUEST", err.Error())
+		return
+	}
+
+	value := "false"
+	if *req.Enabled {
+		value = "true"
+	}
+
+	if err := h.configService.SetSetting(c, maintenanceModeKey, value, "Pause scheduled mirroring while maintenance is in progress", false); err != nil {
+		response.InternalError(c, "Failed to update maintenance mode")
+		return
+	}
+
+	response.SuccessWithMessage(c, "Maintenance mode updated.", gin.H{"enabled": *req.Enabled})
+}
+
+// GetQuota handles GET /api/v1/config/quota.
+func (h *ConfigHandler) GetQuota(c *gin.Context) {
+	val, err := h.configService.GetSettingString(c, "paperbin_quota_gb")
+	if err != nil || val == "" {
+		val = "50"
+	}
+	response.Success(c, gin.H{"quota_gb": val})
+}
+
+// UpdateQuota handles PUT /api/v1/config/quota (admin only).
+func (h *ConfigHandler) UpdateQuota(c *gin.Context) {
+	user, ok := middleware.GetCurrentUser(c)
+	if !ok || !user.IsAdmin() {
+		response.Unauthorized(c, "Admin access required")
+		return
+	}
+
+	var req struct {
+		QuotaGB string `json:"quota_gb" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "INVALID_REQUEST", err.Error())
+		return
+	}
+
+	if err := h.configService.SetSetting(c, "paperbin_quota_gb", req.QuotaGB, "Paperbin Storage Quota in GB", false); err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.SuccessWithMessage(c, "Quota updated successfully", nil)
+}

@@ -2,6 +2,10 @@ package handlers
 
 import (
 	"log"
+	"net/http"
+	"os"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gitduppy/gitduppy/internal/database"
@@ -13,6 +17,7 @@ import (
 	"github.com/gitduppy/gitduppy/pkg/response"
 	"github.com/gitduppy/gitduppy/pkg/validator"
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 )
 
 const stringTrue = "true"
@@ -133,6 +138,7 @@ func (h *RepositoryHandler) CreateRepository(c *gin.Context) {
 		MirrorReleases       bool                       `json:"mirror_releases"`
 		MirrorWiki           bool                       `json:"mirror_wiki"`
 		CloneIntervalMinutes int                        `json:"clone_interval_minutes" validate:"min=5"`
+		RetentionDays        int                        `json:"retention_days"`
 		Description          *string                    `json:"description,omitempty"`
 		TagIDs               []uuid.UUID                `json:"tag_ids,omitempty"`
 	}
@@ -166,6 +172,7 @@ func (h *RepositoryHandler) CreateRepository(c *gin.Context) {
 		MirrorReleases:       req.MirrorReleases,
 		MirrorWiki:           req.MirrorWiki,
 		CloneIntervalMinutes: req.CloneIntervalMinutes,
+		RetentionDays:        req.RetentionDays,
 		Description:          req.Description,
 		TagIDs:               req.TagIDs,
 	}, user.ID)
@@ -491,4 +498,131 @@ func (h *RepositoryHandler) PermanentDeleteBranch(c *gin.Context) {
 	}
 
 	response.SuccessWithMessage(c, "Pruned branch deleted permanently from paperbin", nil)
+}
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
+
+// StreamRepositoryLogs upgrades request to websocket and streams live progress logs.
+func (h *RepositoryHandler) StreamRepositoryLogs(c *gin.Context) {
+	repoID := c.Param("id")
+	
+	ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		log.Printf("WebSocket upgrade failed: %v", err)
+		return
+	}
+	defer ws.Close()
+
+	logChan := gitops.GlobalLogHub.Subscribe(repoID)
+	defer gitops.GlobalLogHub.Unsubscribe(repoID, logChan)
+
+	// Keep alive ticker
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := ws.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
+					return
+				}
+			case <-c.Request.Context().Done():
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case msg, ok := <-logChan:
+			if !ok {
+				return
+			}
+			if err := ws.WriteMessage(websocket.TextMessage, []byte(msg)); err != nil {
+				return
+			}
+		case <-c.Request.Context().Done():
+			return
+		}
+	}
+}
+
+// CodeSearchResult represents a single search match in a repository.
+type CodeSearchResult struct {
+	RepoID     string `json:"repo_id"`
+	RepoName   string `json:"repo_name"`
+	File       string `json:"file"`
+	LineNumber string `json:"line_number"`
+	Content    string `json:"content"`
+}
+
+// GlobalSearch handles GET /api/v1/search.
+func (h *RepositoryHandler) GlobalSearch(c *gin.Context) {
+	query := c.Query("q")
+	if query == "" {
+		response.BadRequest(c, "MISSING_QUERY", "Search query is required")
+		return
+	}
+
+	db := database.GetDB()
+	var repos []models.Repository
+	if err := db.Where("is_active = ?", true).Find(&repos).Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	var results []CodeSearchResult
+	limit := 100 // Cap results to prevent long run times or huge payloads
+
+	for _, repo := range repos {
+		if len(results) >= limit {
+			break
+		}
+		// If repo not cloned yet or deleted on disk, skip
+		if _, err := os.Stat(repo.StoragePath); err != nil {
+			continue
+		}
+
+		// Run git grep on HEAD
+		args := []string{"grep", "-nI", "--no-color", "-e", query, "HEAD"}
+		output, err := gitops.RunGitCommand(c.Request.Context(), repo.StoragePath, args...)
+		if err != nil {
+			// git grep exits with 1 if no matches are found, which is normal
+			continue
+		}
+
+		lines := strings.Split(output, "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+
+			// Format: HEAD:path/to/file:line_number:matching content line
+			parts := strings.SplitN(line, ":", 4)
+			if len(parts) >= 4 {
+				filePath := strings.TrimPrefix(parts[0]+":"+parts[1], "HEAD:")
+				lineNumber := parts[2]
+				content := parts[3]
+
+				results = append(results, CodeSearchResult{
+					RepoID:     repo.ID.String(),
+					RepoName:   repo.Name,
+					File:       filePath,
+					LineNumber: lineNumber,
+					Content:    content,
+				})
+
+				if len(results) >= limit {
+					break
+				}
+			}
+		}
+	}
+
+	response.Success(c, results)
 }
