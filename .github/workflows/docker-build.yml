@@ -20,12 +20,6 @@ jobs:
       contents: read
       packages: write
 
-    strategy:
-      fail-fast: false
-      matrix:
-        platform:
-          - linux/amd64
-          - linux/arm64
 
     steps:
       - name: Checkout code
@@ -62,6 +56,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=dev-
+            type=sha,format=long
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
             type=raw,value=dev,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
             type=raw,value=prod,enable=${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release' }}
@@ -70,12 +65,12 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          platforms: ${{ matrix.platform }}
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.platform }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           build-args: |
             BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.release.created_at }}
             VERSION=${{ github.sha }}
@@ -85,5 +80,5 @@ jobs:
 
       - name: Generate image digest
         run: |
-          echo "Image built for ${{ matrix.platform }}"
+          echo "Image built for linux/amd64,linux/arm64"
           echo "Tags: ${{ steps.meta.outputs.tags }}"
