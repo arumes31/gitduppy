@@ -133,7 +133,6 @@ func (h *RepositoryHandler) CreateRepository(c *gin.Context) {
 		Branch               string                     `json:"branch" validate:"required"`
 		AuthType             string                     `json:"auth_type" validate:"required,oneof=none https ssh token"`
 		Credentials          *crypto.CredentialsPayload `json:"credentials,omitempty"`
-		StoragePath          string                     `json:"storage_path" validate:"required"`
 		IsBare               bool                       `json:"is_bare"`
 		LFSEnabled           bool                       `json:"lfs_enabled"`
 		MirrorIssues         bool                       `json:"mirror_issues"`
@@ -167,7 +166,6 @@ func (h *RepositoryHandler) CreateRepository(c *gin.Context) {
 		Branch:               req.Branch,
 		AuthType:             req.AuthType,
 		Credentials:          req.Credentials,
-		StoragePath:          req.StoragePath,
 		IsBare:               req.IsBare,
 		LFSEnabled:           req.LFSEnabled,
 		MirrorIssues:         req.MirrorIssues,
@@ -605,57 +603,86 @@ func (h *RepositoryHandler) GlobalSearch(c *gin.Context) {
 		return
 	}
 
-	var results []CodeSearchResult
-	limit := 100 // Cap results to prevent long run times or huge payloads
+	const (
+		resultLimit    = 100              // cap results to bound payload size
+		searchWorkers  = 8                // concurrent repos scanned at once
+		perRepoTimeout = 10 * time.Second // one slow repo cannot stall the batch
+		overallTimeout = 20 * time.Second // hard ceiling for the whole search
+	)
 
-	for _, repo := range repos {
-		if len(results) >= limit {
+	// Scan repositories concurrently (bounded) under one overall deadline instead
+	// of sequentially with a per-repo timeout each — a large fleet previously made
+	// worst-case latency the sum of every repo's timeout.
+	overallCtx, cancelAll := context.WithTimeout(c.Request.Context(), overallTimeout)
+	defer cancelAll()
+
+	var (
+		mu      sync.Mutex
+		results []CodeSearchResult
+		wg      sync.WaitGroup
+		sem     = make(chan struct{}, searchWorkers)
+	)
+
+	for i := range repos {
+		repo := repos[i]
+		// Stop launching more work once we already have enough results.
+		mu.Lock()
+		done := len(results) >= resultLimit
+		mu.Unlock()
+		if done || overallCtx.Err() != nil {
 			break
 		}
-		// If repo not cloned yet or deleted on disk, skip
+		// Skip repos not present on disk without spending a worker slot.
 		if _, err := os.Stat(repo.StoragePath); err != nil {
 			continue
 		}
 
-		// Run git grep on HEAD with a per-repo timeout so one large repository
-		// cannot make the whole search hang.
-		args := []string{"grep", "-nI", "--no-color", "-e", query, "HEAD"}
-		repoCtx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
-		output, err := gitops.RunGitCommand(repoCtx, repo.StoragePath, args...)
-		cancel()
-		if err != nil {
-			// git grep exits with 1 if no matches are found, which is normal
-			continue
-		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
 
-		lines := strings.Split(output, "\n")
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
+			repoCtx, cancel := context.WithTimeout(overallCtx, perRepoTimeout)
+			defer cancel()
+			output, err := gitops.RunGitCommand(repoCtx, repo.StoragePath, "grep", "-nI", "--no-color", "-e", query, "HEAD")
+			if err != nil {
+				// git grep exits 1 when there are no matches, which is normal.
+				return
 			}
 
-			// Format: HEAD:path/to/file:line_number:matching content line
-			parts := strings.SplitN(line, ":", 4)
-			if len(parts) >= 4 {
-				filePath := strings.TrimPrefix(parts[0]+":"+parts[1], "HEAD:")
-				lineNumber := parts[2]
-				content := parts[3]
-
+			for _, line := range strings.Split(output, "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				// Format: HEAD:path/to/file:line_number:matching content line
+				parts := strings.SplitN(line, ":", 4)
+				if len(parts) < 4 {
+					continue
+				}
+				mu.Lock()
+				if len(results) >= resultLimit {
+					mu.Unlock()
+					cancelAll() // enough results — stop the remaining scans
+					return
+				}
 				results = append(results, CodeSearchResult{
 					RepoID:     repo.ID.String(),
 					RepoName:   repo.Name,
-					File:       filePath,
-					LineNumber: lineNumber,
-					Content:    content,
+					File:       strings.TrimPrefix(parts[0]+":"+parts[1], "HEAD:"),
+					LineNumber: parts[2],
+					Content:    parts[3],
 				})
-
-				if len(results) >= limit {
-					break
-				}
+				mu.Unlock()
 			}
-		}
+		}()
 	}
 
+	wg.Wait()
+
+	if len(results) > resultLimit {
+		results = results[:resultLimit]
+	}
 	response.Success(c, results)
 }

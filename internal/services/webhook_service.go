@@ -11,26 +11,82 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gitduppy/gitduppy/internal/database"
+	"github.com/gitduppy/gitduppy/internal/metrics"
 	"github.com/gitduppy/gitduppy/internal/models"
+	"github.com/gitduppy/gitduppy/pkg/crypto"
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
+
+// encSecretPrefix tags a webhook secret that is stored encrypted at rest, so
+// legacy plaintext secrets (written before encryption) remain readable.
+const encSecretPrefix = "enc:"
 
 // WebhookService handles webhook configuration and delivery.
 type WebhookService struct {
 	db           *gorm.DB
 	cloneService *CloneService
+	encryption   *crypto.EncryptionService
 }
 
-// NewWebhookService creates a new webhook service.
-func NewWebhookService(cloneService *CloneService) *WebhookService {
+// NewWebhookService creates a new webhook service. encryption may be nil, in
+// which case secrets are stored as-is (used only where no master key is wired).
+func NewWebhookService(cloneService *CloneService, encryption *crypto.EncryptionService) *WebhookService {
 	return &WebhookService{
 		db:           database.GetDB(),
 		cloneService: cloneService,
+		encryption:   encryption,
 	}
+}
+
+// encryptSecret returns the at-rest representation of a webhook secret. Empty
+// secrets stay empty; otherwise the value is AES-encrypted and prefix-tagged. If
+// encryption fails it falls back to storing plaintext (so the secret is not lost)
+// but logs an error so operators can tell it was persisted unencrypted.
+func (s *WebhookService) encryptSecret(secret string) string {
+	if secret == "" || s.encryption == nil {
+		return secret
+	}
+	ct, err := s.encryption.EncryptString(secret)
+	if err != nil {
+		zap.L().Named("webhook-service").Error("failed to encrypt webhook secret; storing it UNENCRYPTED (plaintext) as a fallback", zap.Error(err))
+		return secret
+	}
+	return encSecretPrefix + ct
+}
+
+// DecryptSecret exposes the at-rest secret in usable plaintext for callers
+// outside this package (e.g. the incoming-webhook signature verifier). A prefixed
+// value that cannot be decrypted returns an error rather than a bogus secret.
+func (s *WebhookService) DecryptSecret(stored string) (string, error) {
+	return s.decryptSecret(stored)
+}
+
+// decryptSecret returns the usable secret from its at-rest representation,
+// transparently handling legacy plaintext values that lack the prefix. A value
+// tagged as encrypted that fails to decrypt returns ("", error) so callers never
+// mistake the raw ciphertext for the real secret.
+func (s *WebhookService) decryptSecret(stored string) (string, error) {
+	if !strings.HasPrefix(stored, encSecretPrefix) {
+		// Truly legacy plaintext secret (written before encryption existed).
+		return stored, nil
+	}
+	// The value is tagged as encrypted. If encryption is not wired we cannot
+	// recover the plaintext, so fail loudly rather than hand back the raw
+	// ciphertext (which would silently be used as if it were the real secret).
+	if s.encryption == nil {
+		return "", fmt.Errorf("decrypt webhook secret: value is encrypted but encryption is disabled")
+	}
+	pt, err := s.encryption.DecryptString(strings.TrimPrefix(stored, encSecretPrefix))
+	if err != nil {
+		return "", fmt.Errorf("decrypt webhook secret: %w", err)
+	}
+	return pt, nil
 }
 
 // WebhookFilter represents filters for listing webhooks.
@@ -101,7 +157,7 @@ func (s *WebhookService) CreateWebhook(_ context.Context, userID uuid.UUID, req 
 		UserID:         userID,
 		Name:           req.Name,
 		URL:            req.URL,
-		Secret:         req.Secret,
+		Secret:         s.encryptSecret(req.Secret),
 		Events:         req.Events,
 		IsActive:       req.IsActive,
 		RetryCount:     req.RetryCount,
@@ -149,7 +205,7 @@ func (s *WebhookService) UpdateWebhook(ctx context.Context, id uuid.UUID, req *U
 		webhook.URL = *req.URL
 	}
 	if req.Secret != nil {
-		webhook.Secret = *req.Secret
+		webhook.Secret = s.encryptSecret(*req.Secret)
 	}
 	if req.Events != nil {
 		webhook.Events = req.Events
@@ -186,8 +242,16 @@ func (s *WebhookService) DeleteWebhook(_ context.Context, id uuid.UUID) error {
 
 // SendEvent sends a webhook event to all subscribed webhooks.
 func (s *WebhookService) SendEvent(_ context.Context, eventType string, payload map[string]interface{}) error {
+	// events is a JSONB array column, so the containment operand must be a JSON
+	// array literal (e.g. ["clone.failed"]). Passing a Go []string encodes a
+	// Postgres text[] instead, which errors with "invalid input syntax for type
+	// json" and silently drops every webhook match.
+	eventJSON, err := json.Marshal([]string{eventType})
+	if err != nil {
+		return err
+	}
 	var webhooks []models.WebhookConfig
-	if err := s.db.Where("is_active = ? AND events @> ?", true, []string{eventType}).Find(&webhooks).Error; err != nil {
+	if err := s.db.Where("is_active = ? AND events @> ?::jsonb", true, string(eventJSON)).Find(&webhooks).Error; err != nil {
 		return err
 	}
 
@@ -207,7 +271,14 @@ func (s *WebhookService) deliverWebhook(webhook models.WebhookConfig, eventType 
 		return
 	}
 
-	for attempt := 1; attempt <= webhook.RetryCount; attempt++ {
+	// Floor the retry count so a webhook stored/updated with 0 (or a negative
+	// value — UpdateWebhook applies no lower bound) still delivers at least once
+	// instead of silently dropping the event.
+	retries := webhook.RetryCount
+	if retries < 1 {
+		retries = 3
+	}
+	for attempt := 1; attempt <= retries; attempt++ {
 		success := s.attemptDelivery(webhook, eventType, payloadJSON, attempt)
 		if success {
 			break
@@ -218,8 +289,14 @@ func (s *WebhookService) deliverWebhook(webhook models.WebhookConfig, eventType 
 
 // attemptDelivery attempts a single webhook delivery.
 func (s *WebhookService) attemptDelivery(webhook models.WebhookConfig, eventType string, payloadJSON []byte, attempt int) bool {
-	// Create request.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(webhook.TimeoutSeconds)*time.Second)
+	// Create request. Floor the timeout: a stored 0 (or negative) would make
+	// context.WithTimeout an already-expired deadline, failing every delivery
+	// instantly, so fall back to the default 30s.
+	timeoutSeconds := webhook.TimeoutSeconds
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = 30
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "POST", webhook.URL, bytes.NewBuffer(payloadJSON))
@@ -232,9 +309,20 @@ func (s *WebhookService) attemptDelivery(webhook models.WebhookConfig, eventType
 	req.Header.Set("X-GitMirrors-Event", eventType)
 	req.Header.Set("X-GitMirrors-Delivery-Attempt", strconv.Itoa(attempt))
 
-	// Add HMAC signature if secret is set.
-	if webhook.Secret != "" {
-		signature := s.generateHMACSignature(payloadJSON, webhook.Secret)
+	// Add HMAC signature if a secret is configured (decrypt the at-rest secret
+	// first). If the stored secret cannot be decrypted, fail safe: record a failed
+	// delivery and do NOT send. Sending unsigned would silently downgrade a
+	// signature-protected webhook to an unauthenticated one for any receiver that
+	// only verifies when a signature is present.
+	secret, decErr := s.decryptSecret(webhook.Secret)
+	if decErr != nil {
+		zap.L().Named("webhook-service").Error("cannot decrypt webhook secret; skipping delivery (not sending unsigned)",
+			zap.String("webhook_id", webhook.ID.String()), zap.Error(decErr))
+		s.recordDelivery(webhook.ID, eventType, string(payloadJSON), 0, "webhook secret could not be decrypted", false, attempt)
+		return false
+	}
+	if secret != "" {
+		signature := s.generateHMACSignature(payloadJSON, secret)
 		req.Header.Set("X-GitMirrors-Signature", signature)
 	}
 
@@ -273,6 +361,12 @@ func (s *WebhookService) recordDelivery(webhookID uuid.UUID, eventType, payload 
 		DeliveredAt:     time.Now(),
 	}
 	s.db.Create(delivery)
+
+	outcome := "failed"
+	if success {
+		outcome = "success"
+	}
+	metrics.WebhookDeliveriesTotal.WithLabelValues(outcome).Inc()
 }
 
 // GetWebhookDeliveries retrieves deliveries for a webhook.

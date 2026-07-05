@@ -1,0 +1,8 @@
+.git
+data/
+tmp/
+gitduppy.exe
+gitduppy.exe~
+bin/
+graphify-out/
+*.log

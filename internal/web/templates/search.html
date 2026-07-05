@@ -39,11 +39,24 @@ async function performGlobalSearch(event) {
     const query = document.getElementById('global-search-input').value.trim();
     if (!query) return;
 
+    // Mirror the server's minimum-length rule so we don't fire an expensive
+    // whole-fleet git grep for one or two characters.
+    if (query.length < 3) {
+        showToast('Search query must be at least 3 characters', 'error');
+        return;
+    }
+
     const loading = document.getElementById('search-loading');
     const container = document.getElementById('search-results-container');
     const list = document.getElementById('search-results-list');
     const empty = document.getElementById('search-empty');
     const countTitle = document.getElementById('results-count');
+    const searchBtn = document.getElementById('search-btn');
+
+    // Disable the button while a search is in flight to prevent piling up
+    // concurrent expensive requests via double-clicks / repeated Enter.
+    if (searchBtn.disabled) return;
+    searchBtn.disabled = true;
 
     loading.style.display = 'block';
     container.style.display = 'none';
@@ -53,7 +66,7 @@ async function performGlobalSearch(event) {
     try {
         const res = await fetch(`/api/v1/search?q=${encodeURIComponent(query)}`);
         const data = await res.json();
-        
+
         loading.style.display = 'none';
         
         if (!data.data || data.data.length === 0) {
@@ -101,6 +114,8 @@ async function performGlobalSearch(event) {
     } catch (e) {
         loading.style.display = 'none';
         showToast('Search request failed: ' + e.message, 'error');
+    } finally {
+        searchBtn.disabled = false;
     }
 }
 </script>

@@ -2,14 +2,37 @@ package middleware
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gitduppy/gitduppy/internal/config"
 )
 
+// isStaticAsset reports whether a path serves immutable, cacheable static assets
+// (JS/CSS/fonts/images) rather than dynamic API/HTML responses.
+func isStaticAsset(path string) bool {
+	return strings.HasPrefix(path, "/assets/") || strings.HasPrefix(path, "/static/")
+}
+
 // SecurityHeaders returns a middleware that adds security headers with config.
 func SecurityHeaders(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Static assets are safe (and desirable) to cache; everything else is
+		// dynamic and must not be stored. Set the caching headers up front so the
+		// asset branch can opt out of the no-store defaults below.
+		if isStaticAsset(c.Request.URL.Path) {
+			c.Header("X-Content-Type-Options", "nosniff")
+			// These protections must also cover static responses (e.g. an
+			// inline-rendered SVG): pin HTTPS, forbid framing, and limit the
+			// referer. Only the caching policy differs from dynamic responses.
+			c.Header("Strict-Transport-Security", "max-age="+strconv.Itoa(cfg.Security.HSTSMaxAge)+"; includeSubDomains; preload")
+			c.Header("X-Frame-Options", "DENY")
+			c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
+			c.Header("Cache-Control", "public, max-age=86400")
+			c.Next()
+			return
+		}
+
 		// Prevent MIME type sniffing
 		c.Header("X-Content-Type-Options", "nosniff")
 

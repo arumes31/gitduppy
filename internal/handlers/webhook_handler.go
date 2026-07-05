@@ -214,9 +214,16 @@ func (h *WebhookHandler) ReceiveWebhook(c *gin.Context) {
 		return
 	}
 
-	// Verify HMAC signature if webhook has a secret.
-	if webhook.Secret != "" {
-		if !h.verifySignature(c, webhook.Secret, body, provider) {
+	// Verify HMAC signature if webhook has a secret (decrypt the at-rest value).
+	// Fail closed: if a stored secret cannot be decrypted, reject rather than
+	// skipping verification (which would accept unauthenticated payloads).
+	secret, decErr := h.webhookService.DecryptSecret(webhook.Secret)
+	if decErr != nil {
+		response.Unauthorized(c, "Webhook secret misconfigured")
+		return
+	}
+	if secret != "" {
+		if !h.verifySignature(c, secret, body, provider) {
 			response.Unauthorized(c, "Invalid signature")
 			return
 		}
@@ -467,22 +474,21 @@ func (h *WebhookHandler) verifySignature(c *gin.Context, secret string, body []b
 
 	switch provider {
 	case providerGitHub:
-		signature = c.GetHeader("X-Hub-Signature-256")
-		if signature == "" {
-			signature = c.GetHeader("X-Hub-Signature")
-			hashFunc = sha1.New
-		} else {
+		// Use TrimPrefix (not a fixed [7:] slice) so a short/garbage header
+		// value cannot panic with a slice-bounds error.
+		if sig := c.GetHeader("X-Hub-Signature-256"); sig != "" {
 			hashFunc = sha256.New
-			signature = signature[7:] // Remove "sha256=" prefix
+			signature = strings.TrimPrefix(sig, "sha256=")
+		} else {
+			hashFunc = sha1.New
+			signature = strings.TrimPrefix(c.GetHeader("X-Hub-Signature"), "sha1=")
 		}
 	case providerGitLab:
-		signature = c.GetHeader("X-Gitlab-Token")
 		// GitLab uses simple token comparison, not HMAC
-		return signature == secret
+		return hmac.Equal([]byte(c.GetHeader("X-Gitlab-Token")), []byte(secret))
 	case providerBitbucket:
-		signature = c.GetHeader("X-Hub-Signature")
 		hashFunc = sha256.New
-		signature = signature[7:] // Remove "sha256=" prefix
+		signature = strings.TrimPrefix(c.GetHeader("X-Hub-Signature"), "sha256=")
 	default:
 		// Generic - assume SHA256
 		signature = c.GetHeader("X-Signature")
@@ -493,17 +499,13 @@ func (h *WebhookHandler) verifySignature(c *gin.Context, secret string, body []b
 		return false
 	}
 
-	if provider == providerGitLab {
-		// GitLab uses simple token, not HMAC
-		return signature == secret
-	}
-
-	// Verify HMAC
+	// Verify HMAC using a constant-time comparison to avoid leaking the
+	// expected signature byte-by-byte via response timing.
 	mac := hmac.New(hashFunc, []byte(secret))
 	mac.Write(body)
 	expectedMAC := hex.EncodeToString(mac.Sum(nil))
 
-	return expectedMAC == signature
+	return hmac.Equal([]byte(expectedMAC), []byte(signature))
 }
 
 // parseWebhookPayload parses the webhook payload based on provider.

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -43,6 +44,16 @@ func main() {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
+	// Normalize the storage base to an absolute path. It is baked into every
+	// repository's StoragePath and resolved directly by browse/clone/cleanup; a
+	// relative base would break the moment the process working directory differs.
+	if abs, absErr := filepath.Abs(cfg.Storage.BasePath); absErr != nil {
+		log.Fatalf("Failed to resolve storage base path %q: %v", cfg.Storage.BasePath, absErr)
+	} else if abs != cfg.Storage.BasePath {
+		log.Printf("Resolved storage base path %q -> %q", cfg.Storage.BasePath, abs)
+		cfg.Storage.BasePath = abs
+	}
+
 	// Connect to database
 	if err := database.Connect(&cfg.Database); err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
@@ -52,6 +63,12 @@ func main() {
 	// Run migrations
 	if err := database.AutoMigrate(); err != nil {
 		log.Fatalf("Failed to run migrations: %v", err)
+	}
+
+	// Normalize legacy repository storage paths to the current canonical form so
+	// upgrades from builds that stored base-relative paths keep resolving on disk.
+	if err := database.MigrateStoragePaths(cfg.Storage.BasePath); err != nil {
+		log.Fatalf("Failed to migrate repository storage paths: %v", err)
 	}
 
 	// Create default admin user if none exists
@@ -68,13 +85,13 @@ func main() {
 	// Initialize services
 	authService := services.NewAuthService(cfg.Security.SessionDuration)
 	userService := services.NewUserService()
-	repoService := services.NewRepositoryService(encryptionService)
+	repoService := services.NewRepositoryService(encryptionService, cfg.Storage.BasePath)
 	cloneService := services.NewCloneService()
 	apiKeyService := services.NewAPIKeyService()
-	webhookService := services.NewWebhookService(cloneService)
+	webhookService := services.NewWebhookService(cloneService, encryptionService)
 	auditService := services.NewAuditService()
 	tagService := services.NewTagService()
-	dashboardService := services.NewDashboardService()
+	dashboardService := services.NewDashboardService(cfg.Storage.BasePath)
 
 	configService := services.NewConfigService(cfg, database.GetDB(), encryptionService)
 	oauthService := services.NewOAuthService(configService)
@@ -95,6 +112,8 @@ func main() {
 
 	cloneWorker := gitops.NewCloneWorker(workerConfig, gitOps, encryptionService)
 	cloneWorker.SetNotificationServices(webhookService, emailService)
+	// Dispatch newly created clone jobs straight to the worker pool.
+	cloneService.SetEnqueuer(cloneWorker)
 	cloneWorker.Start()
 	defer cloneWorker.Stop()
 
@@ -103,13 +122,24 @@ func main() {
 	scheduler.Start()
 	defer scheduler.Stop()
 
+	// Refresh repository/storage Prometheus gauges on a schedule so scrapes see
+	// current values regardless of dashboard traffic.
+	if cfg.Monitoring.MetricsEnabled {
+		stopMetrics := dashboardService.StartMetricsCollector(30 * time.Second)
+		defer stopMetrics()
+	}
+
 	// Initialize cleanup worker
 	cleanupWorker := gitops.NewCleanupWorker(gitops.DefaultCleanupConfig())
 	cleanupWorker.Start()
 	defer cleanupWorker.Stop()
 
+	// Only honor forwarded headers (X-Forwarded-Proto for the Secure cookie flag)
+	// when trusted proxies are configured; otherwise a direct client could spoof them.
+	handlers.SetTrustProxyHeaders(len(cfg.Server.TrustedProxies) > 0)
+
 	// Initialize handlers
-	authHandler := handlers.NewAuthHandler(authService)
+	authHandler := handlers.NewAuthHandler(authService, auditService)
 	userHandler := handlers.NewUserHandler(userService)
 	repoHandler := handlers.NewRepositoryHandler(repoService, cloneService, tagService, auditService)
 	cloneHandler := handlers.NewCloneHandler(cloneService)
@@ -118,6 +148,7 @@ func main() {
 	tagHandler := handlers.NewTagHandler(tagService)
 	dashboardHandler := handlers.NewDashboardHandler(dashboardService, cloneService)
 	healthHandler := handlers.NewHealthHandler(Version, BuildTime)
+	healthHandler.SetQueueDepthProvider(cloneWorker.QueueDepth)
 	oauthHandler := handlers.NewOAuthHandler(oauthService, authService)
 	backupHandler := handlers.NewBackupHandler(backupService)
 	configHandler := handlers.NewConfigHandler(configService)
@@ -129,8 +160,10 @@ func main() {
 	// Initialize middleware
 	authMiddleware := middleware.NewAuthMiddleware()
 	corsConfig := middleware.DefaultCORSConfig()
+	// NewRateLimiter takes a refill rate in requests-per-SECOND, so convert the
+	// configured per-minute budget; burst stays at one minute's worth of tokens.
 	rateLimiter := middleware.NewRateLimiter(
-		float64(cfg.Security.RateLimit.APIRequestsPerMinute),
+		float64(cfg.Security.RateLimit.APIRequestsPerMinute)/60.0,
 		cfg.Security.RateLimit.APIRequestsPerMinute,
 	)
 	loggerConfig := middleware.DefaultLoggerConfig()
@@ -328,6 +361,9 @@ func setupRouter(
 	router.Use(middleware.CORS(corsConfig))
 	router.Use(rateLimiter.Middleware())
 	router.Use(middleware.SecurityHeaders(cfg))
+	if cfg.Monitoring.MetricsEnabled {
+		router.Use(middleware.Metrics())
+	}
 
 	// Prometheus metrics endpoint (no auth required)
 	if cfg.Monitoring.MetricsEnabled {

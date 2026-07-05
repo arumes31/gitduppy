@@ -19,17 +19,27 @@ import (
 	"gorm.io/gorm"
 )
 
+// maxRepositoriesPerPage caps list page size so a single request cannot pull the
+// entire repositories table (and eager-load every row's tags/user).
+const maxRepositoriesPerPage = 200
+
 // RepositoryService handles repository CRUD operations.
 type RepositoryService struct {
 	db                *gorm.DB
 	encryptionService *crypto.EncryptionService
+	basePath          string
 }
 
-// NewRepositoryService creates a new repository service.
-func NewRepositoryService(encryptionService *crypto.EncryptionService) *RepositoryService {
+// NewRepositoryService creates a new repository service. basePath is the storage
+// root under which every repository's sharded working tree lives; it is baked
+// into each repository's StoragePath at creation so that all consumers (browse,
+// delete, restore, paperbin, cleanup) resolve the same on-disk location without
+// having to re-join the base path themselves.
+func NewRepositoryService(encryptionService *crypto.EncryptionService, basePath string) *RepositoryService {
 	return &RepositoryService{
 		db:                database.GetDB(),
 		encryptionService: encryptionService,
+		basePath:          basePath,
 	}
 }
 
@@ -54,6 +64,10 @@ func (s *RepositoryService) ListRepositories(_ context.Context, filter *Reposito
 	}
 	if filter.PerPage < 1 {
 		filter.PerPage = 20
+	}
+	// Cap page size so a client cannot pull the entire table in one request.
+	if filter.PerPage > maxRepositoriesPerPage {
+		filter.PerPage = maxRepositoriesPerPage
 	}
 
 	query := s.db.Model(&models.Repository{}).Preload("Tags").Preload("CreatedByUser")
@@ -118,7 +132,8 @@ type CreateRepositoryRequest struct {
 	Branch               string                     `json:"branch" validate:"required"`
 	AuthType             string                     `json:"auth_type" validate:"required,oneof=none https ssh token"`
 	Credentials          *crypto.CredentialsPayload `json:"credentials,omitempty"`
-	StoragePath          string                     `json:"storage_path" validate:"required"`
+	// Note: storage path is derived server-side from the configured storage base
+	// and the repository ID; it is intentionally not accepted from the request.
 	IsBare               bool                       `json:"is_bare"`
 	LFSEnabled           bool                       `json:"lfs_enabled"`
 	MirrorIssues         bool                       `json:"mirror_issues"`
@@ -146,15 +161,10 @@ func (s *RepositoryService) CreateRepository(_ context.Context, req *CreateRepos
 	repoID := uuid.New()
 	idStr := repoID.String()
 
-	// Shard storage path: baseDir/shards/ab/cd/uuid to prevent filesystem limits
-	storagePath := req.StoragePath
-	if storagePath == "" || !strings.Contains(storagePath, "shards") {
-		baseDir := "repos"
-		if req.StoragePath != "" {
-			baseDir = filepath.Dir(req.StoragePath)
-		}
-		storagePath = filepath.Join(baseDir, "shards", idStr[0:2], idStr[2:4], idStr)
-	}
+	// Shard storage path: basePath/shards/ab/cd/uuid to prevent filesystem limits.
+	// The base storage root is joined in here so the persisted StoragePath is the
+	// full on-disk location; every consumer uses it directly without re-joining.
+	storagePath := filepath.Join(s.basePath, "shards", idStr[0:2], idStr[2:4], idStr)
 
 	retentionDays := req.RetentionDays
 	if retentionDays <= 0 {

@@ -65,8 +65,17 @@ func ValidateGitURL(rawURL string) bool {
 		return false
 	}
 
-	// Must have a scheme and host
-	if parsed.Scheme == "" || parsed.Host == "" {
+	// Only well-known git transports are permitted. Arbitrary schemes such as
+	// ftp, file, or ext:: must be rejected even when the path ends in .git, so a
+	// malicious clone URL cannot reach an unsafe transport.
+	switch parsed.Scheme {
+	case "http", "https", "git", "ssh":
+	default:
+		return false
+	}
+
+	// Must have a host
+	if parsed.Host == "" {
 		return false
 	}
 

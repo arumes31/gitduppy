@@ -27,6 +27,7 @@ func NewBackupService(cfg *config.Config) *BackupService {
 	return &BackupService{
 		db:     database.GetDB(),
 		config: cfg,
+		logger: zap.L().Named("backup-service"),
 	}
 }
 
