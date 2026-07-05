@@ -128,6 +128,18 @@ func MigrateStoragePaths(basePath string) error {
 					log.Printf("storage-path migration: cannot move %q -> %q: %v (leaving pointer unchanged)", old, canonical, mvErr)
 					continue
 				}
+
+				// Relocate the companion wiki mirror (the clone worker stores it at
+				// StoragePath + ".wiki") alongside the main tree so its lookup keeps
+				// finding the existing clone instead of re-cloning it.
+				oldWiki, newWiki := old+".wiki", canonical+".wiki"
+				if _, wErr := os.Stat(oldWiki); wErr == nil {
+					if _, nwErr := os.Stat(newWiki); os.IsNotExist(nwErr) {
+						if mvErr := os.Rename(oldWiki, newWiki); mvErr != nil {
+							log.Printf("storage-path migration: cannot move wiki %q -> %q: %v (wiki will be re-cloned)", oldWiki, newWiki, mvErr)
+						}
+					}
+				}
 			}
 		}
 

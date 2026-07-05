@@ -24,9 +24,10 @@ type DashboardService struct {
 	db       *gorm.DB
 	basePath string
 
-	storageMu    sync.Mutex
-	storageBytes int64
-	storageAt    time.Time
+	storageMu         sync.Mutex
+	storageBytes      int64
+	storageAt         time.Time
+	storageRefreshing bool
 }
 
 // NewDashboardService creates a new dashboard service. basePath is the storage
@@ -38,21 +39,37 @@ func NewDashboardService(basePath string) *DashboardService {
 	}
 }
 
-// totalStorageBytes returns the on-disk size of the storage tree, walking it at
-// most once per storageSizeTTL and serving a cached value in between so repeated
-// dashboard polls do not each pay for a full filesystem walk.
+// totalStorageBytes returns the on-disk size of the storage tree without ever
+// blocking the request: it returns the last cached value immediately and, when
+// that value is stale (or unset), kicks off a single background walk to refresh
+// it. The expensive filepath.Walk never runs while storageMu is held, and the
+// request never waits on it, so a cancelled request context is moot here.
+// The first dashboard load reports 0 until the initial background walk lands.
 func (s *DashboardService) totalStorageBytes() int64 {
 	if s.basePath == "" {
 		return 0
 	}
 	s.storageMu.Lock()
-	defer s.storageMu.Unlock()
-	if !s.storageAt.IsZero() && time.Since(s.storageAt) < storageSizeTTL {
-		return s.storageBytes
+	cached := s.storageBytes
+	stale := s.storageAt.IsZero() || time.Since(s.storageAt) >= storageSizeTTL
+	if stale && !s.storageRefreshing {
+		s.storageRefreshing = true
+		go s.refreshStorage()
 	}
-	s.storageBytes = dirSize(s.basePath)
+	s.storageMu.Unlock()
+	return cached
+}
+
+// refreshStorage walks the storage tree off the request path and updates the
+// cached total. Only one refresh runs at a time (guarded by storageRefreshing),
+// and storageMu is not held during the walk.
+func (s *DashboardService) refreshStorage() {
+	size := dirSize(s.basePath)
+	s.storageMu.Lock()
+	s.storageBytes = size
 	s.storageAt = time.Now()
-	return s.storageBytes
+	s.storageRefreshing = false
+	s.storageMu.Unlock()
 }
 
 // dirSize returns the total size in bytes of all files under root. Missing paths
