@@ -77,34 +77,45 @@ func (rl *RateLimiter) cleanupWorker(interval time.Duration) {
 	}
 }
 
-// getLimiter returns or creates a rate limiter for a key.
-func (rl *RateLimiter) getLimiter(key string) *rateLimiter {
+// getLimiter returns or creates a rate limiter for a key with the given params.
+func (rl *RateLimiter) getLimiter(key string, rps float64, burst int) *rateLimiter {
 	value, ok := rl.limiters.Load(key)
 	if ok {
 		return value.(*rateLimiter)
 	}
 
 	// Create new limiter
-	limiter := newRateLimiter(rl.rps, rl.burst)
+	limiter := newRateLimiter(rps, burst)
 	// Use LoadOrStore to prevent race condition
 	value, _ = rl.limiters.LoadOrStore(key, limiter)
 	return value.(*rateLimiter)
 }
 
+// limitFor picks a rate-limit category (key prefix + params) for a request path.
+// Authentication and expensive fan-out endpoints (global search, dashboard stats
+// which walk the DB/filesystem) get tighter budgets than ordinary API calls so a
+// single client cannot exhaust the server through them.
+func (rl *RateLimiter) limitFor(path string) (prefix string, rps float64, burst int) {
+	switch {
+	case strings.HasPrefix(path, "/api/v1/auth"),
+		strings.HasPrefix(path, "/api/v1/oauth"):
+		// Auth is the most abuse-prone surface (credential stuffing).
+		return "auth:", rl.rps / 6, max(1, rl.burst/6)
+	case strings.HasPrefix(path, "/api/v1/search"),
+		strings.HasPrefix(path, "/api/v1/dashboard"):
+		return "expensive:", rl.rps / 3, max(1, rl.burst/3)
+	default:
+		return "api:", rl.rps, rl.burst
+	}
+}
+
 // Middleware returns a rate limiting middleware function.
 func (rl *RateLimiter) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Use client IP as the key
-		key := c.ClientIP()
+		prefix, rps, burst := rl.limitFor(c.Request.URL.Path)
+		key := prefix + c.ClientIP()
 
-		// Stricter limits for auth endpoints
-		if strings.HasPrefix(c.Request.URL.Path, "/api/v1/auth") {
-			key = "auth:" + key
-		} else {
-			key = "api:" + key
-		}
-
-		limiter := rl.getLimiter(key)
+		limiter := rl.getLimiter(key, rps, burst)
 
 		if !limiter.allow() {
 			c.JSON(429, gin.H{

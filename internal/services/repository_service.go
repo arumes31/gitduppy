@@ -19,6 +19,10 @@ import (
 	"gorm.io/gorm"
 )
 
+// maxRepositoriesPerPage caps list page size so a single request cannot pull the
+// entire repositories table (and eager-load every row's tags/user).
+const maxRepositoriesPerPage = 200
+
 // RepositoryService handles repository CRUD operations.
 type RepositoryService struct {
 	db                *gorm.DB
@@ -60,6 +64,10 @@ func (s *RepositoryService) ListRepositories(_ context.Context, filter *Reposito
 	}
 	if filter.PerPage < 1 {
 		filter.PerPage = 20
+	}
+	// Cap page size so a client cannot pull the entire table in one request.
+	if filter.PerPage > maxRepositoriesPerPage {
+		filter.PerPage = maxRepositoriesPerPage
 	}
 
 	query := s.db.Model(&models.Repository{}).Preload("Tags").Preload("CreatedByUser")

@@ -28,6 +28,20 @@ type cacheEntry struct {
 	expiration time.Time
 }
 
+// sharedGitHubClient is reused across all fetcher instances so that per-job
+// fetchers share one connection pool (keep-alives, bounded idle conns) instead
+// of each spinning up a fresh client and dialing new TCP/TLS connections.
+//
+//nolint:gochecknoglobals
+var sharedGitHubClient = &http.Client{
+	Timeout: 60 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
+
 // GitHubMetadataFetcher is responsible for fetching GitHub-specific metadata.
 type GitHubMetadataFetcher struct {
 	logger *zap.Logger
@@ -35,11 +49,12 @@ type GitHubMetadataFetcher struct {
 	cache  sync.Map
 }
 
-// NewGitHubMetadataFetcher creates a new instance.
+// NewGitHubMetadataFetcher creates a new instance backed by the shared,
+// connection-pooling HTTP client.
 func NewGitHubMetadataFetcher() *GitHubMetadataFetcher {
 	return &GitHubMetadataFetcher{
 		logger: zap.L().Named("github-fetcher"),
-		client: &http.Client{Timeout: 60 * time.Second},
+		client: sharedGitHubClient,
 	}
 }
 

@@ -11,26 +11,68 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gitduppy/gitduppy/internal/database"
+	"github.com/gitduppy/gitduppy/internal/metrics"
 	"github.com/gitduppy/gitduppy/internal/models"
+	"github.com/gitduppy/gitduppy/pkg/crypto"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
+
+// encSecretPrefix tags a webhook secret that is stored encrypted at rest, so
+// legacy plaintext secrets (written before encryption) remain readable.
+const encSecretPrefix = "enc:"
 
 // WebhookService handles webhook configuration and delivery.
 type WebhookService struct {
 	db           *gorm.DB
 	cloneService *CloneService
+	encryption   *crypto.EncryptionService
 }
 
-// NewWebhookService creates a new webhook service.
-func NewWebhookService(cloneService *CloneService) *WebhookService {
+// NewWebhookService creates a new webhook service. encryption may be nil, in
+// which case secrets are stored as-is (used only where no master key is wired).
+func NewWebhookService(cloneService *CloneService, encryption *crypto.EncryptionService) *WebhookService {
 	return &WebhookService{
 		db:           database.GetDB(),
 		cloneService: cloneService,
+		encryption:   encryption,
 	}
+}
+
+// encryptSecret returns the at-rest representation of a webhook secret. Empty
+// secrets stay empty; otherwise the value is AES-encrypted and prefix-tagged.
+func (s *WebhookService) encryptSecret(secret string) string {
+	if secret == "" || s.encryption == nil {
+		return secret
+	}
+	ct, err := s.encryption.EncryptString(secret)
+	if err != nil {
+		return secret // fall back to plaintext rather than losing the secret
+	}
+	return encSecretPrefix + ct
+}
+
+// DecryptSecret exposes the at-rest secret in usable plaintext for callers
+// outside this package (e.g. the incoming-webhook signature verifier).
+func (s *WebhookService) DecryptSecret(stored string) string {
+	return s.decryptSecret(stored)
+}
+
+// decryptSecret returns the usable secret from its at-rest representation,
+// transparently handling legacy plaintext values that lack the prefix.
+func (s *WebhookService) decryptSecret(stored string) string {
+	if s.encryption == nil || !strings.HasPrefix(stored, encSecretPrefix) {
+		return stored
+	}
+	pt, err := s.encryption.DecryptString(strings.TrimPrefix(stored, encSecretPrefix))
+	if err != nil {
+		return stored
+	}
+	return pt
 }
 
 // WebhookFilter represents filters for listing webhooks.
@@ -101,7 +143,7 @@ func (s *WebhookService) CreateWebhook(_ context.Context, userID uuid.UUID, req 
 		UserID:         userID,
 		Name:           req.Name,
 		URL:            req.URL,
-		Secret:         req.Secret,
+		Secret:         s.encryptSecret(req.Secret),
 		Events:         req.Events,
 		IsActive:       req.IsActive,
 		RetryCount:     req.RetryCount,
@@ -149,7 +191,7 @@ func (s *WebhookService) UpdateWebhook(ctx context.Context, id uuid.UUID, req *U
 		webhook.URL = *req.URL
 	}
 	if req.Secret != nil {
-		webhook.Secret = *req.Secret
+		webhook.Secret = s.encryptSecret(*req.Secret)
 	}
 	if req.Events != nil {
 		webhook.Events = req.Events
@@ -240,9 +282,9 @@ func (s *WebhookService) attemptDelivery(webhook models.WebhookConfig, eventType
 	req.Header.Set("X-GitMirrors-Event", eventType)
 	req.Header.Set("X-GitMirrors-Delivery-Attempt", strconv.Itoa(attempt))
 
-	// Add HMAC signature if secret is set.
-	if webhook.Secret != "" {
-		signature := s.generateHMACSignature(payloadJSON, webhook.Secret)
+	// Add HMAC signature if secret is set (decrypt the at-rest secret first).
+	if secret := s.decryptSecret(webhook.Secret); secret != "" {
+		signature := s.generateHMACSignature(payloadJSON, secret)
 		req.Header.Set("X-GitMirrors-Signature", signature)
 	}
 
@@ -281,6 +323,12 @@ func (s *WebhookService) recordDelivery(webhookID uuid.UUID, eventType, payload 
 		DeliveredAt:     time.Now(),
 	}
 	s.db.Create(delivery)
+
+	outcome := "failed"
+	if success {
+		outcome = "success"
+	}
+	metrics.WebhookDeliveriesTotal.WithLabelValues(outcome).Inc()
 }
 
 // GetWebhookDeliveries retrieves deliveries for a webhook.

@@ -214,9 +214,9 @@ func (h *WebhookHandler) ReceiveWebhook(c *gin.Context) {
 		return
 	}
 
-	// Verify HMAC signature if webhook has a secret.
-	if webhook.Secret != "" {
-		if !h.verifySignature(c, webhook.Secret, body, provider) {
+	// Verify HMAC signature if webhook has a secret (decrypt the at-rest value).
+	if secret := h.webhookService.DecryptSecret(webhook.Secret); secret != "" {
+		if !h.verifySignature(c, secret, body, provider) {
 			response.Unauthorized(c, "Invalid signature")
 			return
 		}

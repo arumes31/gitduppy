@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -41,6 +42,16 @@ func main() {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
+	}
+
+	// Normalize the storage base to an absolute path. It is baked into every
+	// repository's StoragePath and resolved directly by browse/clone/cleanup; a
+	// relative base would break the moment the process working directory differs.
+	if abs, absErr := filepath.Abs(cfg.Storage.BasePath); absErr != nil {
+		log.Fatalf("Failed to resolve storage base path %q: %v", cfg.Storage.BasePath, absErr)
+	} else if abs != cfg.Storage.BasePath {
+		log.Printf("Resolved storage base path %q -> %q", cfg.Storage.BasePath, abs)
+		cfg.Storage.BasePath = abs
 	}
 
 	// Connect to database
@@ -77,7 +88,7 @@ func main() {
 	repoService := services.NewRepositoryService(encryptionService, cfg.Storage.BasePath)
 	cloneService := services.NewCloneService()
 	apiKeyService := services.NewAPIKeyService()
-	webhookService := services.NewWebhookService(cloneService)
+	webhookService := services.NewWebhookService(cloneService, encryptionService)
 	auditService := services.NewAuditService()
 	tagService := services.NewTagService()
 	dashboardService := services.NewDashboardService(cfg.Storage.BasePath)
@@ -117,7 +128,7 @@ func main() {
 	defer cleanupWorker.Stop()
 
 	// Initialize handlers
-	authHandler := handlers.NewAuthHandler(authService)
+	authHandler := handlers.NewAuthHandler(authService, auditService)
 	userHandler := handlers.NewUserHandler(userService)
 	repoHandler := handlers.NewRepositoryHandler(repoService, cloneService, tagService, auditService)
 	cloneHandler := handlers.NewCloneHandler(cloneService)
@@ -126,6 +137,7 @@ func main() {
 	tagHandler := handlers.NewTagHandler(tagService)
 	dashboardHandler := handlers.NewDashboardHandler(dashboardService, cloneService)
 	healthHandler := handlers.NewHealthHandler(Version, BuildTime)
+	healthHandler.SetQueueDepthProvider(cloneWorker.QueueDepth)
 	oauthHandler := handlers.NewOAuthHandler(oauthService, authService)
 	backupHandler := handlers.NewBackupHandler(backupService)
 	configHandler := handlers.NewConfigHandler(configService)
@@ -336,6 +348,9 @@ func setupRouter(
 	router.Use(middleware.CORS(corsConfig))
 	router.Use(rateLimiter.Middleware())
 	router.Use(middleware.SecurityHeaders(cfg))
+	if cfg.Monitoring.MetricsEnabled {
+		router.Use(middleware.Metrics())
+	}
 
 	// Prometheus metrics endpoint (no auth required)
 	if cfg.Monitoring.MetricsEnabled {

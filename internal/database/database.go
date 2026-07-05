@@ -71,8 +71,48 @@ func AutoMigrate() error {
 		return fmt.Errorf("migration failed: %w", err)
 	}
 
+	createPerformanceIndexes()
+
 	log.Println("Database migrations completed successfully")
 	return nil
+}
+
+// createPerformanceIndexes adds indexes for the hot query paths (dashboard
+// aggregates, the scheduler scan, per-repo job listing, and the search LIKE).
+// All are IF NOT EXISTS so the step is idempotent across restarts. Failures are
+// logged but not fatal — a missing index degrades performance, not correctness.
+func createPerformanceIndexes() {
+	indexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_clone_jobs_status ON clone_jobs(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_clone_jobs_repo_created ON clone_jobs(repository_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_clone_jobs_created_at ON clone_jobs(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_repositories_active_status ON repositories(is_active, status)`,
+		`CREATE INDEX IF NOT EXISTS idx_repositories_last_clone_at ON repositories(last_clone_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_deleted_branches_repo ON deleted_branches(repository_id)`,
+	}
+	for _, stmt := range indexes {
+		if err := DB.Exec(stmt).Error; err != nil {
+			log.Printf("index creation skipped (%q): %v", stmt, err)
+		}
+	}
+
+	// Trigram indexes accelerate the repository search's LIKE '%term%' (which a
+	// btree cannot use). Requires the pg_trgm extension; creating it needs
+	// elevated privileges, so treat any failure here as best-effort.
+	if err := DB.Exec(`CREATE EXTENSION IF NOT EXISTS pg_trgm`).Error; err != nil {
+		log.Printf("pg_trgm extension unavailable, skipping trigram indexes: %v", err)
+		return
+	}
+	trgm := []string{
+		`CREATE INDEX IF NOT EXISTS idx_repositories_name_trgm ON repositories USING gin (name gin_trgm_ops)`,
+		`CREATE INDEX IF NOT EXISTS idx_repositories_url_trgm ON repositories USING gin (url gin_trgm_ops)`,
+	}
+	for _, stmt := range trgm {
+		if err := DB.Exec(stmt).Error; err != nil {
+			log.Printf("trigram index creation skipped (%q): %v", stmt, err)
+		}
+	}
 }
 
 // MigrateStoragePaths brings every repository's StoragePath into the canonical

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gitduppy/gitduppy/internal/database"
+	"github.com/gitduppy/gitduppy/internal/metrics"
 	"github.com/gitduppy/gitduppy/internal/models"
 	"gorm.io/gorm"
 )
@@ -28,7 +29,16 @@ type DashboardService struct {
 	storageBytes      int64
 	storageAt         time.Time
 	storageRefreshing bool
+
+	statsMu     sync.Mutex
+	cachedStats *DashboardStats
+	statsAt     time.Time
 }
+
+// statsCacheTTL is how long a computed dashboard-stats snapshot is reused. The
+// dashboard polls frequently; a few seconds of staleness is imperceptible and
+// spares the DB a dozen aggregate queries per poll.
+const statsCacheTTL = 5 * time.Second
 
 // NewDashboardService creates a new dashboard service. basePath is the storage
 // root used to compute total on-disk usage.
@@ -73,15 +83,18 @@ func (s *DashboardService) refreshStorage() {
 }
 
 // dirSize returns the total size in bytes of all files under root. Missing paths
-// contribute zero rather than erroring so the stat is best-effort.
+// contribute zero rather than erroring so the stat is best-effort. Uses WalkDir
+// to avoid a stat() syscall per entry.
 func dirSize(root string) int64 {
 	var total int64
-	_ = filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
-		if err != nil || info == nil {
+	_ = filepath.WalkDir(root, func(_ string, d os.DirEntry, err error) error {
+		if err != nil || d == nil {
 			return nil //nolint:nilerr // best-effort: skip unreadable entries
 		}
-		if !info.IsDir() {
-			total += info.Size()
+		if !d.IsDir() {
+			if info, ierr := d.Info(); ierr == nil {
+				total += info.Size()
+			}
 		}
 		return nil
 	})
@@ -120,8 +133,17 @@ type StatusBreakdown struct {
 	Cancelled int64 `json:"cancelled"`
 }
 
-// GetStats returns dashboard statistics.
+// GetStats returns dashboard statistics, cached for statsCacheTTL to absorb
+// frequent polling.
 func (s *DashboardService) GetStats(ctx context.Context) (*DashboardStats, error) {
+	s.statsMu.Lock()
+	if s.cachedStats != nil && time.Since(s.statsAt) < statsCacheTTL {
+		cached := s.cachedStats
+		s.statsMu.Unlock()
+		return cached, nil
+	}
+	s.statsMu.Unlock()
+
 	stats := &DashboardStats{
 		RecentActivity:            &RecentActivity{},
 		CloneJobStatusBreakdown:   &StatusBreakdown{},
@@ -130,24 +152,70 @@ func (s *DashboardService) GetStats(ctx context.Context) (*DashboardStats, error
 
 	db := s.db.WithContext(ctx)
 
-	// Repository counts
-	db.Model(&models.Repository{}).Where("is_active = ?", true).Count(&stats.TotalRepositories)
-	db.Model(&models.Repository{}).Where("is_active = ? AND status = 'success'", true).Count(&stats.ActiveRepositories)
-	db.Model(&models.Repository{}).Where("is_active = ? AND status = 'failed'", true).Count(&stats.FailedRepositories)
-
-	// Clone job counts
-	db.Model(&models.CloneJob{}).Count(&stats.TotalCloneJobs)
-
-	// Success rate calculation
-	var totalSuccess, totalCompleted int64
-	db.Model(&models.CloneJob{}).Where("status = 'success'").Count(&totalSuccess)
-	db.Model(&models.CloneJob{}).Where("status IN ?", []string{"success", "failed"}).Count(&totalCompleted)
-	if totalCompleted > 0 {
-		stats.SuccessRate = float64(totalSuccess) / float64(totalCompleted) * 100
+	// Repository counts + status breakdown in one grouped scan instead of five
+	// separate COUNT queries.
+	type repoStatusRow struct {
+		IsActive bool
+		Status   string
+		Count    int64
 	}
-	// Successful / failed clone totals surfaced directly on the dashboard cards.
-	stats.SuccessfulClones = totalSuccess
-	db.Model(&models.CloneJob{}).Where("status = 'failed'").Count(&stats.FailedClones)
+	var repoRows []repoStatusRow
+	db.Model(&models.Repository{}).Select("is_active, status, COUNT(*) as count").Group("is_active, status").Scan(&repoRows)
+	for _, r := range repoRows {
+		if r.IsActive {
+			stats.TotalRepositories += r.Count
+			switch r.Status {
+			case "success":
+				stats.ActiveRepositories += r.Count
+			case "failed":
+				stats.FailedRepositories += r.Count
+			}
+		}
+		switch r.Status {
+		case "pending":
+			stats.RepositoryStatusBreakdown.Pending += r.Count
+		case "cloning":
+			stats.RepositoryStatusBreakdown.Running += r.Count
+		case "success":
+			stats.RepositoryStatusBreakdown.Success += r.Count
+		case "failed":
+			stats.RepositoryStatusBreakdown.Failed += r.Count
+		}
+	}
+	// Surface repository status counts as a Prometheus gauge.
+	metrics.RepositoriesTotal.WithLabelValues("pending").Set(float64(stats.RepositoryStatusBreakdown.Pending))
+	metrics.RepositoriesTotal.WithLabelValues("cloning").Set(float64(stats.RepositoryStatusBreakdown.Running))
+	metrics.RepositoriesTotal.WithLabelValues("success").Set(float64(stats.RepositoryStatusBreakdown.Success))
+	metrics.RepositoriesTotal.WithLabelValues("failed").Set(float64(stats.RepositoryStatusBreakdown.Failed))
+
+	// Clone job counts + status breakdown + success/fail totals in one grouped
+	// scan instead of eight separate COUNT queries.
+	type jobStatusRow struct {
+		Status string
+		Count  int64
+	}
+	var jobRows []jobStatusRow
+	db.Model(&models.CloneJob{}).Select("status, COUNT(*) as count").Group("status").Scan(&jobRows)
+	for _, r := range jobRows {
+		stats.TotalCloneJobs += r.Count
+		switch r.Status {
+		case "pending":
+			stats.CloneJobStatusBreakdown.Pending += r.Count
+		case "running":
+			stats.CloneJobStatusBreakdown.Running += r.Count
+		case "success":
+			stats.CloneJobStatusBreakdown.Success += r.Count
+			stats.SuccessfulClones += r.Count
+		case "failed":
+			stats.CloneJobStatusBreakdown.Failed += r.Count
+			stats.FailedClones += r.Count
+		case "cancelled":
+			stats.CloneJobStatusBreakdown.Cancelled += r.Count
+		}
+	}
+	if completed := stats.SuccessfulClones + stats.FailedClones; completed > 0 {
+		stats.SuccessRate = float64(stats.SuccessfulClones) / float64(completed) * 100
+	}
 
 	// Total on-disk storage used by mirrored repositories (best-effort, cached
 	// walk — see totalStorageBytes).
@@ -173,18 +241,12 @@ func (s *DashboardService) GetStats(ctx context.Context) (*DashboardStats, error
 	db.Model(&models.CloneJob{}).Where("status = 'failed' AND completed_at >= ?", last24h).Count(&stats.RecentActivity.FailuresLast24h)
 	db.Model(&models.Repository{}).Where("created_at >= ?", last7d).Count(&stats.RecentActivity.NewReposLast7d)
 
-	// Clone job status breakdown
-	db.Model(&models.CloneJob{}).Where("status = 'pending'").Count(&stats.CloneJobStatusBreakdown.Pending)
-	db.Model(&models.CloneJob{}).Where("status = 'running'").Count(&stats.CloneJobStatusBreakdown.Running)
-	db.Model(&models.CloneJob{}).Where("status = 'success'").Count(&stats.CloneJobStatusBreakdown.Success)
-	db.Model(&models.CloneJob{}).Where("status = 'failed'").Count(&stats.CloneJobStatusBreakdown.Failed)
-	db.Model(&models.CloneJob{}).Where("status = 'cancelled'").Count(&stats.CloneJobStatusBreakdown.Cancelled)
+	// Status breakdowns were computed above in the grouped scans.
 
-	// Repository status breakdown
-	db.Model(&models.Repository{}).Where("status = 'pending'").Count(&stats.RepositoryStatusBreakdown.Pending)
-	db.Model(&models.Repository{}).Where("status = 'cloning'").Count(&stats.RepositoryStatusBreakdown.Running)
-	db.Model(&models.Repository{}).Where("status = 'success'").Count(&stats.RepositoryStatusBreakdown.Success)
-	db.Model(&models.Repository{}).Where("status = 'failed'").Count(&stats.RepositoryStatusBreakdown.Failed)
+	s.statsMu.Lock()
+	s.cachedStats = stats
+	s.statsAt = time.Now()
+	s.statsMu.Unlock()
 
 	return stats, nil
 }
@@ -261,9 +323,11 @@ func (s *DashboardService) GetTimelineData(ctx context.Context, limit int) ([]mo
 	}
 
 	var jobs []models.CloneJob
+	// Order by effective activity time: pending jobs have NULL started_at (which
+	// Postgres would otherwise sort first), so fall back to created_at.
 	err := s.db.WithContext(ctx).
 		Preload("Repository").
-		Order("started_at DESC, created_at DESC").
+		Order("COALESCE(started_at, created_at) DESC").
 		Limit(limit).
 		Find(&jobs).Error
 	return jobs, err
@@ -279,22 +343,28 @@ func (s *DashboardService) GetPaperbinSize(ctx context.Context) (int64, int64, e
 		}
 	}
 
+	// Walk the configured storage base (not a hard-coded "repos" dir, which was
+	// wrong whenever Storage.BasePath differed) summing files under any
+	// "paperbin" subdirectory.
+	root := s.basePath
+	if root == "" {
+		root = "repos"
+	}
 	var totalSize int64
-	// Walk the repos base directory to sum up all files in any "paperbin" subdirectory
-	_ = filepath.Walk("repos", func(path string, info os.FileInfo, err error) error {
-		if err != nil {
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d == nil {
+			return nil //nolint:nilerr // best-effort
+		}
+		if d.IsDir() {
 			return nil
 		}
-		parts := strings.Split(filepath.ToSlash(path), "/")
-		isPaperbin := false
-		for _, part := range parts {
+		for _, part := range strings.Split(filepath.ToSlash(path), "/") {
 			if part == "paperbin" {
-				isPaperbin = true
+				if info, ierr := d.Info(); ierr == nil {
+					totalSize += info.Size()
+				}
 				break
 			}
-		}
-		if isPaperbin && !info.IsDir() {
-			totalSize += info.Size()
 		}
 		return nil
 	})

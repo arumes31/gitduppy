@@ -58,7 +58,7 @@ func (h *OAuthHandler) LoginWithProvider(c *gin.Context) {
 
 	// Generate state parameter to prevent CSRF
 	state := uuid.New().String()
-	c.SetCookie("oauth_state", state, 3600, "/", "", false, true)
+	c.SetCookie("oauth_state", state, 3600, "/", "", requestIsHTTPS(c), true)
 
 	// Remember where to send the browser after a successful login. This makes
 	// browser-initiated logins (including the automated App-setup flow) land on a
@@ -68,7 +68,7 @@ func (h *OAuthHandler) LoginWithProvider(c *gin.Context) {
 		redirectTarget = "/dashboard?success=github_setup"
 	}
 	if isSafeRedirect(redirectTarget) {
-		c.SetCookie("oauth_redirect", redirectTarget, 600, "/", "", false, true)
+		c.SetCookie("oauth_redirect", redirectTarget, 600, "/", "", requestIsHTTPS(c), true)
 	}
 
 	url := oauthConfig.AuthCodeURL(state, oauth2.AccessTypeOffline)
@@ -86,7 +86,7 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 		response.BadRequest(c, "INVALID_STATE", "Invalid or missing state parameter")
 		return
 	}
-	c.SetCookie("oauth_state", "", -1, "/", "", false, true)
+	c.SetCookie("oauth_state", "", -1, "/", "", requestIsHTTPS(c), true)
 
 	state := c.Query("state")
 	if state != stateCookie {
@@ -148,8 +148,8 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 		return
 	}
 
-	// Set session cookie
-	c.SetCookie("session", sessionToken, 86400, "/", "", false, true)
+	// Set session cookie (HttpOnly, SameSite=Lax, Secure over HTTPS)
+	setSessionCookie(c, sessionToken, 86400)
 
 	// Redirect to frontend or return success. A redirect target may come from the
 	// query string or from the oauth_redirect cookie set at login time.
@@ -159,7 +159,7 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 			redirectTarget = cookie
 		}
 	}
-	c.SetCookie("oauth_redirect", "", -1, "/", "", false, true)
+	c.SetCookie("oauth_redirect", "", -1, "/", "", requestIsHTTPS(c), true)
 
 	if isSafeRedirect(redirectTarget) {
 		c.Redirect(http.StatusFound, redirectTarget)
@@ -191,7 +191,7 @@ func (h *OAuthHandler) LinkAccount(c *gin.Context) {
 
 	// Generate state parameter
 	state := uuid.New().String()
-	c.SetCookie("oauth_link_state", state, 3600, "/", "", false, true)
+	c.SetCookie("oauth_link_state", state, 3600, "/", "", requestIsHTTPS(c), true)
 
 	url := oauthConfig.AuthCodeURL(state, oauth2.AccessTypeOffline)
 	c.JSON(http.StatusOK, gin.H{"auth_url": url})
@@ -214,7 +214,7 @@ func (h *OAuthHandler) LinkCallback(c *gin.Context) {
 		response.BadRequest(c, "INVALID_STATE", "Invalid or missing state parameter")
 		return
 	}
-	c.SetCookie("oauth_link_state", "", -1, "/", "", false, true)
+	c.SetCookie("oauth_link_state", "", -1, "/", "", requestIsHTTPS(c), true)
 
 	state := c.Query("state")
 	if state != stateCookie {
@@ -284,7 +284,7 @@ func (h *OAuthHandler) ManifestSetup(c *gin.Context) {
 	}
 
 	nonce := uuid.New().String()
-	c.SetCookie("github_setup_state", nonce, 600, "/", "", false, true)
+	c.SetCookie("github_setup_state", nonce, 600, "/", "", requestIsHTTPS(c), true)
 	response.Success(c, gin.H{"state": nonce})
 }
 
@@ -310,7 +310,7 @@ func (h *OAuthHandler) ManifestCallback(c *gin.Context) {
 	// started the flow, then consume it. This blocks CSRF-driven callbacks that
 	// would otherwise persist attacker-supplied GitHub App credentials.
 	stateCookie, stateErr := c.Cookie("github_setup_state")
-	c.SetCookie("github_setup_state", "", -1, "/", "", false, true)
+	c.SetCookie("github_setup_state", "", -1, "/", "", requestIsHTTPS(c), true)
 	state := c.Query("state")
 	if stateErr != nil || stateCookie == "" || state == "" || state != stateCookie {
 		c.Redirect(http.StatusFound, "/config?error=invalid_setup_state")

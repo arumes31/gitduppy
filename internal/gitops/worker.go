@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gitduppy/gitduppy/internal/database"
+	"github.com/gitduppy/gitduppy/internal/metrics"
 	"github.com/gitduppy/gitduppy/internal/models"
 	"github.com/gitduppy/gitduppy/pkg/crypto"
 	"github.com/google/uuid"
@@ -220,7 +221,18 @@ func (w *CloneWorker) Enqueue(job *models.CloneJob) {
 	case w.notify <- struct{}{}:
 	default:
 	}
+	metrics.CloneQueueDepth.Set(float64(w.QueueDepth()))
 	w.logger.Debug("job enqueued", zap.String("job_id", job.ID.String()))
+}
+
+// QueueDepth returns how many clone jobs are waiting to be processed: the
+// in-memory backlog plus whatever is buffered in the worker channel. Exposed for
+// health/monitoring so operators can see queue pressure.
+func (w *CloneWorker) QueueDepth() int {
+	w.pendingMu.Lock()
+	backlog := len(w.pending)
+	w.pendingMu.Unlock()
+	return backlog + len(w.jobQueue)
 }
 
 // dispatch drains the overflow backlog into jobQueue, blocking on a full queue
@@ -280,6 +292,13 @@ func (w *CloneWorker) worker(id int) {
 func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 	logger.Info("processing clone job", zap.String("job_id", job.ID.String()))
 
+	// Reflect in-flight work and remaining backlog in metrics.
+	metrics.ActiveCloneJobs.Inc()
+	defer func() {
+		metrics.ActiveCloneJobs.Dec()
+		metrics.CloneQueueDepth.Set(float64(w.QueueDepth()))
+	}()
+
 	// Update job status to running
 	now := time.Now()
 	w.db.Model(job).Updates(map[string]interface{}{
@@ -336,6 +355,16 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 	}
 	cloneOpts.Progress = progress
 
+	// Bound the whole git operation by the configured clone timeout so a hung
+	// remote cannot pin a worker slot forever. Derived from w.ctx so a shutdown
+	// still cancels it.
+	opCtx := w.ctx
+	if w.config.CloneTimeout > 0 {
+		var cancel context.CancelFunc
+		opCtx, cancel = context.WithTimeout(w.ctx, time.Duration(w.config.CloneTimeout)*time.Second)
+		defer cancel()
+	}
+
 	// Perform clone or fetch. Decide based solely on whether a valid repository
 	// already exists on disk — not on LastCloneAt. A repo can be present on disk
 	// while LastCloneAt is still nil (duplicate queued jobs, or a prior clone
@@ -349,13 +378,13 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 		logger.Info("performing fetch", zap.String("repo", repo.Name))
 
 		// Query references before fetch
-		refsBefore, refsBeforeErr := w.gitOps.GetReferences(w.ctx, repoPath)
+		refsBefore, refsBeforeErr := w.gitOps.GetReferences(opCtx, repoPath)
 
-		err = w.gitOps.FetchRepository(w.ctx, cloneOpts)
+		err = w.gitOps.FetchRepository(opCtx, cloneOpts)
 
 		// If fetch succeeded, check for pruned branches
 		if err == nil {
-			refsAfter, refsAfterErr := w.gitOps.GetReferences(w.ctx, repoPath)
+			refsAfter, refsAfterErr := w.gitOps.GetReferences(opCtx, repoPath)
 
 			// Skip prune detection entirely if either snapshot failed: a nil
 			// refsAfter would otherwise make every pre-fetch branch look deleted
@@ -367,7 +396,10 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 				refsBefore = nil
 			}
 
-			// Find missing references that were branches
+			// Find missing references that were branches. Protect each pruned
+			// commit with a paperbin ref, then persist all DeletedBranch records in
+			// a single transaction so a mid-loop failure cannot leave a partial set.
+			var deletedBranches []models.DeletedBranch
 			for refName, sha := range refsBefore {
 				isBranch := strings.HasPrefix(refName, "refs/heads/") || strings.HasPrefix(refName, "refs/remotes/origin/")
 				if isBranch {
@@ -383,29 +415,29 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 
 						logger.Info("pruned branch detected (deleted online)", zap.String("branch", branchName), zap.String("sha", sha))
 
-						// 1. Create a paperbin ref in the local repo to keep the commit alive.
+						// Create a paperbin ref in the local repo to keep the commit alive.
 						paperbinRef := "refs/paperbin/heads/" + branchName
-						_, updateErr := RunGitCommand(w.ctx, repoPath, "update-ref", paperbinRef, sha)
+						_, updateErr := RunGitCommand(opCtx, repoPath, "update-ref", paperbinRef, sha)
 						if updateErr != nil {
 							// Without the paperbin ref the commit is not protected, so the
-							// branch would not actually be restorable. Skip creating the
-							// DeletedBranch record in that case.
+							// branch would not actually be restorable. Skip recording it.
 							logger.Error("failed to create paperbin ref, skipping paperbin record", zap.String("ref", paperbinRef), zap.Error(updateErr))
 							continue
 						}
 
-						// 2. Save in database under DeletedBranch
-						deletedBranch := &models.DeletedBranch{
+						deletedBranches = append(deletedBranches, models.DeletedBranch{
 							ID:           uuid.New(),
 							RepositoryID: repo.ID,
 							BranchName:   branchName,
 							CommitSHA:    sha,
 							DeletedAt:    time.Now(),
-						}
-						if dbErr := w.db.Create(deletedBranch).Error; dbErr != nil {
-							logger.Error("failed to save deleted branch in DB", zap.Error(dbErr))
-						}
+						})
 					}
+				}
+			}
+			if len(deletedBranches) > 0 {
+				if dbErr := w.db.Create(&deletedBranches).Error; dbErr != nil {
+					logger.Error("failed to save deleted branches in DB", zap.Int("count", len(deletedBranches)), zap.Error(dbErr))
 				}
 			}
 		}
@@ -422,7 +454,16 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 			}
 		}
 		logger.Info("performing clone", zap.String("repo", repo.Name))
-		err = w.gitOps.CloneRepository(w.ctx, cloneOpts)
+		err = w.gitOps.CloneRepository(opCtx, cloneOpts)
+	}
+
+	// If the worker is shutting down (w.ctx cancelled, not a per-op timeout), put
+	// the job back to pending rather than marking it failed, so a restart resumes
+	// it instead of surfacing a spurious failure.
+	if err != nil && w.ctx.Err() != nil {
+		logger.Info("clone interrupted by shutdown, requeuing job", zap.String("job_id", job.ID.String()))
+		w.db.Model(job).Updates(map[string]interface{}{"status": "pending", "started_at": nil})
+		return
 	}
 
 	if err != nil {
@@ -457,6 +498,13 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 		"output_log":       "Clone completed successfully",
 	})
 
+	// Housekeeping: let git repack/prune loose objects when its own heuristics say
+	// it is worthwhile. "--auto" is a cheap no-op until thresholds are crossed, so
+	// this keeps long-lived mirrors compact without adding a heavy fixed cost.
+	if _, gcErr := RunGitCommand(opCtx, repoPath, "gc", "--auto"); gcErr != nil {
+		logger.Debug("git gc --auto skipped", zap.String("repo", repo.Name), zap.Error(gcErr))
+	}
+
 	// Mirror Wiki if requested
 	if repo.MirrorWiki {
 		wikiURL := repo.URL
@@ -482,13 +530,20 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 		}
 		wikiOpts.Progress = progress
 
+		// Decide fetch vs clone from what is actually on disk (consistent with the
+		// main tree), not from LastCloneAt which can be nil for an already-present
+		// wiki and would force a clone into a populated directory.
 		var wikiErr error
-		if repo.LastCloneAt != nil && w.gitOps.IsRepositoryCloned(wikiPath) {
+		if w.gitOps.IsRepositoryCloned(wikiPath) {
 			logger.Info("performing wiki fetch", zap.String("repo", repo.Name))
-			wikiErr = w.gitOps.FetchRepository(w.ctx, wikiOpts)
+			wikiErr = w.gitOps.FetchRepository(opCtx, wikiOpts)
 		} else {
+			// Clear any leftover incomplete wiki tree so the clone can self-heal.
+			if _, statErr := os.Stat(wikiPath); statErr == nil {
+				_ = os.RemoveAll(wikiPath)
+			}
 			logger.Info("performing wiki clone", zap.String("repo", repo.Name))
-			wikiErr = w.gitOps.CloneRepository(w.ctx, wikiOpts)
+			wikiErr = w.gitOps.CloneRepository(opCtx, wikiOpts)
 		}
 		if wikiErr != nil {
 			logger.Warn("wiki clone/fetch failed", zap.Error(wikiErr))
@@ -505,7 +560,7 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 			token = creds.Password
 		}
 
-		if err := fetcher.FetchMetadata(w.ctx, repo.URL, repoPath, token, repo.MirrorIssues, repo.MirrorPullRequests, repo.MirrorReleases); err != nil {
+		if err := fetcher.FetchMetadata(opCtx, repo.URL, repoPath, token, repo.MirrorIssues, repo.MirrorPullRequests, repo.MirrorReleases); err != nil {
 			logger.Warn("failed to fetch github metadata", zap.Error(err))
 		}
 	}
@@ -588,12 +643,17 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 		})
 	}
 
+	metrics.CloneJobsTotal.WithLabelValues("success", job.TriggerType).Inc()
+	metrics.CloneJobDuration.Observe(time.Since(now).Seconds())
+
 	logger.Info("clone job completed successfully", zap.String("job_id", job.ID.String()))
 }
 
 // failJob marks a job as failed.
 func (w *CloneWorker) failJob(logger *zap.Logger, job *models.CloneJob, errMsg string) {
 	logger.Error("job failed", zap.String("job_id", job.ID.String()), zap.String("error", errMsg))
+
+	metrics.CloneJobsTotal.WithLabelValues("failed", job.TriggerType).Inc()
 
 	w.db.Model(job).Updates(map[string]interface{}{
 		"status":       "failed",
@@ -608,8 +668,7 @@ func (w *CloneWorker) failJob(logger *zap.Logger, job *models.CloneJob, errMsg s
 }
 
 // handleFailure handles job failure with retry logic.
-func (w *CloneWorker) handleFailure(logger *zap.Logger, repo models.Repository, job *models.CloneJob, _ error) {
-	_ = job // unused but kept for compatibility or just rename it. Actually I'll just rename to _ in signature if possible or just use it.
+func (w *CloneWorker) handleFailure(logger *zap.Logger, repo models.Repository, _ *models.CloneJob, _ error) {
 	// Increment retry count
 	var repoData models.Repository
 	w.db.First(&repoData, repo.ID)
@@ -625,28 +684,59 @@ func (w *CloneWorker) handleFailure(logger *zap.Logger, repo models.Repository, 
 			zap.Duration("backoff", backoff),
 		)
 
+		repoID := repo.ID
 		time.AfterFunc(backoff, func() {
-			w.Enqueue(&models.CloneJob{
-				RepositoryID: repo.ID,
+			// Persist a real, PK-bearing job row before enqueuing. processJob
+			// updates the row by primary key, so an in-memory job with no ID
+			// (as before) silently no-ops and the retry never happens.
+			retryJob := &models.CloneJob{
+				ID:           uuid.New(),
+				RepositoryID: repoID,
 				TriggerType:  "scheduled",
-			})
+				Status:       "pending",
+				CreatedAt:    time.Now(),
+			}
+			if err := w.db.Create(retryJob).Error; err != nil {
+				w.logger.Error("failed to persist retry clone job", zap.String("repo_id", repoID.String()), zap.Error(err))
+				return
+			}
+			w.Enqueue(retryJob)
 		})
 	}
 }
+
+// progressDBInterval throttles how often clone progress is persisted to the DB.
+// Git emits progress lines very frequently; writing every one caused heavy write
+// amplification. Live subscribers still receive every line via the LogHub.
+const progressDBInterval = 2 * time.Second
 
 // CloneProgress implements git.Progress interface.
 type CloneProgress struct {
 	jobID        uuid.UUID
 	repositoryID string
 	db           *gorm.DB
+
+	mu          sync.Mutex
+	lastPersist time.Time
 }
 
-// Write implements the Write method for progress tracking.
+// Write implements the Write method for progress tracking. Every chunk is
+// broadcast live, but the DB is updated at most once per progressDBInterval to
+// avoid write amplification during large clones.
 func (p *CloneProgress) Write(b []byte) (n int, err error) {
 	message := string(b)
-	p.db.Model(&models.CloneJob{}).Where("id = ?", p.jobID).Update("output_log", message)
 	GlobalLogHub.Broadcast(p.repositoryID, message)
 
+	p.mu.Lock()
+	persist := time.Since(p.lastPersist) >= progressDBInterval
+	if persist {
+		p.lastPersist = time.Now()
+	}
+	p.mu.Unlock()
+
+	if persist {
+		p.db.Model(&models.CloneJob{}).Where("id = ?", p.jobID).Update("output_log", message)
+	}
 	return len(b), nil
 }
 
@@ -659,12 +749,18 @@ type Scheduler struct {
 	logger *zap.Logger
 }
 
+// schedulerTickInterval is how often the scheduler evaluates repositories. It is
+// intentionally finer than the smallest allowed per-repo clone interval (5 min)
+// so a repo configured for 5-minute syncs is not delayed by up to a full extra
+// tick before its job is queued.
+const schedulerTickInterval = time.Minute
+
 // NewScheduler creates a new scheduler.
 func NewScheduler(worker *CloneWorker) *Scheduler {
 	return &Scheduler{
 		db:     database.GetDB(),
 		worker: worker,
-		ticker: time.NewTicker(5 * time.Minute),
+		ticker: time.NewTicker(schedulerTickInterval),
 		done:   make(chan bool),
 		logger: zap.L().Named("scheduler"),
 	}
@@ -717,6 +813,17 @@ func (s *Scheduler) scheduleCloneJobs() {
 		// Check if clone interval has elapsed
 		if repo.LastCloneAt == nil ||
 			now.Sub(*repo.LastCloneAt) >= time.Duration(repo.CloneIntervalMinutes)*time.Minute {
+
+			// Skip repos that already have an unfinished job to avoid piling up
+			// duplicate clones into the same directory (a slow clone can span
+			// several scheduler ticks).
+			var inflight int64
+			s.db.Model(&models.CloneJob{}).
+				Where("repository_id = ? AND status IN ?", repo.ID, []string{"pending", "running"}).
+				Count(&inflight)
+			if inflight > 0 {
+				continue
+			}
 
 			job := &models.CloneJob{
 				ID:           uuid.New(),

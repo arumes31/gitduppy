@@ -4,8 +4,8 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gitduppy/gitduppy/internal/metrics"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -17,14 +17,7 @@ type MetricsHandler struct {
 // NewMetricsHandler creates a new metrics handler with registered metrics.
 func NewMetricsHandler() *MetricsHandler {
 	registry := prometheus.NewRegistry()
-
-	// Register standard Go metrics
-	registry.MustRegister(collectors.NewGoCollector())
-	registry.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
-
-	// Register custom application metrics
-	registerCustomMetrics(registry)
-
+	metrics.Register(registry)
 	return &MetricsHandler{
 		registry: registry,
 	}
@@ -76,73 +69,3 @@ func (h *MetricsHandler) GetGitServerHealth(c *gin.Context) {
 	})
 }
 
-// Custom Prometheus metrics.
-//
-//nolint:gochecknoglobals
-var (
-	HTTPRequestsTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "gitduppy_http_requests_total",
-			Help: "Total number of HTTP requests",
-		},
-		[]string{"method", "path", "status"},
-	)
-
-	HTTPRequestDuration = prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "gitduppy_http_request_duration_seconds",
-			Help:    "HTTP request duration in seconds",
-			Buckets: prometheus.DefBuckets,
-		},
-		[]string{"method", "path"},
-	)
-
-	CloneJobsTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "gitduppy_clone_jobs_total",
-			Help: "Total number of clone jobs",
-		},
-		[]string{"status", "trigger_type"},
-	)
-
-	CloneJobDuration = prometheus.NewHistogram(
-		prometheus.HistogramOpts{
-			Name:    "gitduppy_clone_job_duration_seconds",
-			Help:    "Clone job duration in seconds",
-			Buckets: prometheus.DefBuckets,
-		},
-	)
-
-	ActiveCloneJobs = prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "gitduppy_active_clone_jobs",
-			Help: "Number of currently active clone jobs",
-		},
-	)
-
-	RepositoriesTotal = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "gitduppy_repositories",
-			Help: "Total number of repositories by status",
-		},
-		[]string{"status"},
-	)
-
-	WebhookDeliveriesTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "gitduppy_webhook_deliveries_total",
-			Help: "Total number of webhook deliveries",
-		},
-		[]string{"status"},
-	)
-)
-
-func registerCustomMetrics(registry *prometheus.Registry) {
-	registry.MustRegister(HTTPRequestsTotal)
-	registry.MustRegister(HTTPRequestDuration)
-	registry.MustRegister(CloneJobsTotal)
-	registry.MustRegister(CloneJobDuration)
-	registry.MustRegister(ActiveCloneJobs)
-	registry.MustRegister(RepositoriesTotal)
-	registry.MustRegister(WebhookDeliveriesTotal)
-}

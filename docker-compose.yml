@@ -1,10 +1,22 @@
-version: '3.8'
+# The top-level `version` key is obsolete under the Compose Spec and is omitted.
 
 services:
   gitduppy:
-    build: .
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-dev}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     ports:
       - "7659:8080"
+    # Cap resource usage so a runaway clone/search cannot starve the host.
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2g
+        reservations:
+          memory: 512m
     environment:
       - GITMIRRORS_DATABASE_HOST=postgres
       - GITMIRRORS_DATABASE_PORT=5432

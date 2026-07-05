@@ -1,23 +1,54 @@
 package handlers
 
 import (
+	"net/http"
+	"strings"
+
 	"github.com/gin-gonic/gin"
 	"github.com/gitduppy/gitduppy/internal/middleware"
 	"github.com/gitduppy/gitduppy/internal/services"
 	"github.com/gitduppy/gitduppy/pkg/response"
 	"github.com/gitduppy/gitduppy/pkg/validator"
+	"github.com/google/uuid"
 )
+
+// requestIsHTTPS reports whether the request reached us over TLS, either
+// directly or via a terminating proxy that set X-Forwarded-Proto.
+func requestIsHTTPS(c *gin.Context) bool {
+	if c.Request.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https")
+}
+
+// setSessionCookie sets the session cookie with hardened flags: HttpOnly always,
+// SameSite=Lax to blunt CSRF, and Secure whenever the request arrived over HTTPS.
+func setSessionCookie(c *gin.Context, token string, maxAge int) {
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie("session", token, maxAge, "/", "", requestIsHTTPS(c), true)
+}
 
 // AuthHandler handles authentication requests.
 type AuthHandler struct {
-	authService *services.AuthService
+	authService  *services.AuthService
+	auditService *services.AuditService
 }
 
 // NewAuthHandler creates a new auth handler.
-func NewAuthHandler(authService *services.AuthService) *AuthHandler {
+func NewAuthHandler(authService *services.AuthService, auditService *services.AuditService) *AuthHandler {
 	return &AuthHandler{
-		authService: authService,
+		authService:  authService,
+		auditService: auditService,
 	}
+}
+
+// audit records a security-relevant action, ignoring logging errors so an audit
+// failure never blocks the primary request.
+func (h *AuthHandler) audit(c *gin.Context, userID *uuid.UUID, action string, details map[string]interface{}) {
+	if h.auditService == nil {
+		return
+	}
+	_ = h.auditService.LogAction(c, userID, nil, action, details, c)
 }
 
 // LoginRequest represents a login request.
@@ -46,12 +77,17 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		RememberMe: req.RememberMe,
 	})
 	if err != nil {
+		h.audit(c, nil, "auth.login_failed", map[string]interface{}{"username": req.Username})
 		response.Unauthorized(c, err.Error())
 		return
 	}
 
 	// Set session cookie
-	c.SetCookie("session", resp.SessionToken, 86400, "/", "", false, true)
+	setSessionCookie(c, resp.SessionToken, 86400)
+
+	if resp.User != nil {
+		h.audit(c, &resp.User.ID, "auth.login", map[string]interface{}{"username": resp.User.Username})
+	}
 
 	response.SuccessWithMessage(c, "Login successful", gin.H{
 		"user":          resp.User,
@@ -69,7 +105,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 	}
 
 	// Always clear cookie
-	c.SetCookie("session", "", -1, "/", "", false, true)
+	setSessionCookie(c, "", -1)
 
 	if logoutErr != nil {
 		response.InternalError(c, "Failed to invalidate session: "+logoutErr.Error())
@@ -140,9 +176,11 @@ func (h *AuthHandler) ChangePassword(c *gin.Context) {
 	}
 
 	if err := h.authService.ChangePassword(c, user.ID, req.OldPassword, req.NewPassword); err != nil {
+		h.audit(c, &user.ID, "auth.password_change_failed", nil)
 		response.BadRequest(c, "INVALID_PASSWORD", err.Error())
 		return
 	}
 
+	h.audit(c, &user.ID, "auth.password_changed", nil)
 	response.SuccessWithMessage(c, "Password changed successfully", nil)
 }
