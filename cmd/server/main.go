@@ -109,6 +109,7 @@ func main() {
 	workerConfig.CloneTimeout = cfg.Worker.CloneTimeout
 	workerConfig.RetryMaxAttempts = cfg.Worker.RetryMaxAttempts
 	workerConfig.RetryBaseDelay = cfg.Worker.RetryBaseDelay
+	workerConfig.DedupeEnabled = cfg.Storage.DedupeEnabled
 
 	cloneWorker := gitops.NewCloneWorker(workerConfig, gitOps, encryptionService)
 	cloneWorker.SetNotificationServices(webhookService, emailService)

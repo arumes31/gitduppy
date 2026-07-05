@@ -69,6 +69,7 @@ type WorkerConfig struct {
 	CloneTimeout     int
 	RetryMaxAttempts int
 	RetryBaseDelay   time.Duration
+	DedupeEnabled    bool
 }
 
 // DefaultWorkerConfig returns default worker configuration.
@@ -78,6 +79,7 @@ func DefaultWorkerConfig() *WorkerConfig {
 		CloneTimeout:     3600,
 		RetryMaxAttempts: 3,
 		RetryBaseDelay:   30 * time.Second,
+		DedupeEnabled:    true,
 	}
 }
 
@@ -338,6 +340,7 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 		Branch: repo.Branch,
 		Bare:   repo.IsBare,
 		LFS:    repo.LFSEnabled,
+		Dedupe: w.config.DedupeEnabled,
 	}
 
 	if creds != nil {

@@ -122,9 +122,10 @@ type LoggingConfig struct {
 
 // StorageConfig holds storage path configuration.
 type StorageConfig struct {
-	BasePath   string `mapstructure:"base_path"`
-	SSHPath    string `mapstructure:"ssh_path"`
-	BackupPath string `mapstructure:"backup_path"`
+	BasePath      string `mapstructure:"base_path"`
+	SSHPath       string `mapstructure:"ssh_path"`
+	BackupPath    string `mapstructure:"backup_path"`
+	DedupeEnabled bool   `mapstructure:"dedupe_enabled"`
 }
 
 // MonitoringConfig holds monitoring/metrics configuration.
@@ -179,6 +180,7 @@ func Load() (*Config, error) {
 	v.SetDefault("storage.base_path", "/app/storage/repos")
 	v.SetDefault("storage.ssh_path", "/app/storage/ssh")
 	v.SetDefault("storage.backup_path", "/app/storage/backups")
+	v.SetDefault("storage.dedupe_enabled", true)
 
 	v.SetDefault("monitoring.metrics_enabled", true)
 	v.SetDefault("monitoring.metrics_path", "/metrics")
