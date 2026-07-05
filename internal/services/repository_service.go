@@ -590,6 +590,16 @@ func tarGzDecompress(srcFile, destDir string) error {
 			if err := os.MkdirAll(target, 0o755); err != nil {
 				return err
 			}
+		case tar.TypeSymlink:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			if err := os.Symlink(header.Linkname, target); err != nil {
+				return err
+			}
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err

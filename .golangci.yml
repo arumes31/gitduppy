@@ -27,33 +27,14 @@ linters:
     - unconvert
     - wastedassign
     - zerologlint
-  disable:
-    - asciicheck
   settings:
-    goconst:
-      min-len: 3
-      min-occurrences: 3
-    gocyclo:
-      min-complexity: 15
     govet:
       enable:
         - nilness
         - printf
         - unusedresult
-    lll:
-      line-length: 120
-      tab-width: 4
     nakedret:
       max-func-lines: 30
-    prealloc:
-      simple: true
-      range-loops: true
-      for-loops: true
-    unparam:
-      check-exported: false
-    whitespace:
-      multi-if: true
-      multi-func: true
   exclusions:
     generated: lax
     presets:
