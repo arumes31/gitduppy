@@ -498,10 +498,22 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 		"output_log":       "Clone completed successfully",
 	})
 
+	// Post-clone housekeeping (gc, wiki mirror, GitHub metadata) gets its OWN
+	// timeout budget derived fresh from w.ctx, rather than sharing opCtx which the
+	// primary clone has already partly (or fully) consumed. Otherwise a slow but
+	// successful clone would leave no time for these follow-ups and they would
+	// silently skip.
+	postCtx := w.ctx
+	if w.config.CloneTimeout > 0 {
+		var postCancel context.CancelFunc
+		postCtx, postCancel = context.WithTimeout(w.ctx, time.Duration(w.config.CloneTimeout)*time.Second)
+		defer postCancel()
+	}
+
 	// Housekeeping: let git repack/prune loose objects when its own heuristics say
 	// it is worthwhile. "--auto" is a cheap no-op until thresholds are crossed, so
 	// this keeps long-lived mirrors compact without adding a heavy fixed cost.
-	if _, gcErr := RunGitCommand(opCtx, repoPath, "gc", "--auto"); gcErr != nil {
+	if _, gcErr := RunGitCommand(postCtx, repoPath, "gc", "--auto"); gcErr != nil {
 		logger.Debug("git gc --auto skipped", zap.String("repo", repo.Name), zap.Error(gcErr))
 	}
 
@@ -536,14 +548,14 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 		var wikiErr error
 		if w.gitOps.IsRepositoryCloned(wikiPath) {
 			logger.Info("performing wiki fetch", zap.String("repo", repo.Name))
-			wikiErr = w.gitOps.FetchRepository(opCtx, wikiOpts)
+			wikiErr = w.gitOps.FetchRepository(postCtx, wikiOpts)
 		} else {
 			// Clear any leftover incomplete wiki tree so the clone can self-heal.
 			if _, statErr := os.Stat(wikiPath); statErr == nil {
 				_ = os.RemoveAll(wikiPath)
 			}
 			logger.Info("performing wiki clone", zap.String("repo", repo.Name))
-			wikiErr = w.gitOps.CloneRepository(opCtx, wikiOpts)
+			wikiErr = w.gitOps.CloneRepository(postCtx, wikiOpts)
 		}
 		if wikiErr != nil {
 			logger.Warn("wiki clone/fetch failed", zap.Error(wikiErr))
@@ -560,7 +572,7 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 			token = creds.Password
 		}
 
-		if err := fetcher.FetchMetadata(opCtx, repo.URL, repoPath, token, repo.MirrorIssues, repo.MirrorPullRequests, repo.MirrorReleases); err != nil {
+		if err := fetcher.FetchMetadata(postCtx, repo.URL, repoPath, token, repo.MirrorIssues, repo.MirrorPullRequests, repo.MirrorReleases); err != nil {
 			logger.Warn("failed to fetch github metadata", zap.Error(err))
 		}
 	}
@@ -575,7 +587,7 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 			token = creds.Password
 		}
 
-		info, err := fetcher.FetchRepositoryInfo(w.ctx, repo.URL, token)
+		info, err := fetcher.FetchRepositoryInfo(postCtx, repo.URL, token)
 		if err != nil {
 			logger.Warn("failed to fetch github repo info", zap.Error(err))
 		} else {
@@ -808,20 +820,27 @@ func (s *Scheduler) scheduleCloneJobs() {
 		return
 	}
 
+	// Load the set of repositories that already have an unfinished job in a single
+	// query, rather than issuing one COUNT per repo each tick. Used below to avoid
+	// piling up duplicate clones into the same directory (a slow clone can span
+	// several ticks).
+	var busyIDs []uuid.UUID
+	s.db.Model(&models.CloneJob{}).
+		Where("status IN ?", []string{"pending", "running"}).
+		Distinct().
+		Pluck("repository_id", &busyIDs)
+	busy := make(map[uuid.UUID]struct{}, len(busyIDs))
+	for _, id := range busyIDs {
+		busy[id] = struct{}{}
+	}
+
 	now := time.Now()
 	for _, repo := range repos {
 		// Check if clone interval has elapsed
 		if repo.LastCloneAt == nil ||
 			now.Sub(*repo.LastCloneAt) >= time.Duration(repo.CloneIntervalMinutes)*time.Minute {
 
-			// Skip repos that already have an unfinished job to avoid piling up
-			// duplicate clones into the same directory (a slow clone can span
-			// several scheduler ticks).
-			var inflight int64
-			s.db.Model(&models.CloneJob{}).
-				Where("repository_id = ? AND status IN ?", repo.ID, []string{"pending", "running"}).
-				Count(&inflight)
-			if inflight > 0 {
+			if _, inflight := busy[repo.ID]; inflight {
 				continue
 			}
 

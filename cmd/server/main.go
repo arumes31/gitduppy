@@ -122,10 +122,21 @@ func main() {
 	scheduler.Start()
 	defer scheduler.Stop()
 
+	// Refresh repository/storage Prometheus gauges on a schedule so scrapes see
+	// current values regardless of dashboard traffic.
+	if cfg.Monitoring.MetricsEnabled {
+		stopMetrics := dashboardService.StartMetricsCollector(30 * time.Second)
+		defer stopMetrics()
+	}
+
 	// Initialize cleanup worker
 	cleanupWorker := gitops.NewCleanupWorker(gitops.DefaultCleanupConfig())
 	cleanupWorker.Start()
 	defer cleanupWorker.Stop()
+
+	// Only honor forwarded headers (X-Forwarded-Proto for the Secure cookie flag)
+	// when trusted proxies are configured; otherwise a direct client could spoof them.
+	handlers.SetTrustProxyHeaders(len(cfg.Server.TrustedProxies) > 0)
 
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(authService, auditService)

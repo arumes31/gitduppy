@@ -12,13 +12,26 @@ import (
 	"github.com/google/uuid"
 )
 
+// trustProxyHeaders controls whether forwarded headers (X-Forwarded-Proto) are
+// honored. It is only safe to trust these behind a proxy that sets them, so it
+// defaults to false and is enabled by SetTrustProxyHeaders when trusted proxies
+// are configured. Otherwise a direct client could spoof the header.
+//
+//nolint:gochecknoglobals
+var trustProxyHeaders bool
+
+// SetTrustProxyHeaders enables honoring X-Forwarded-Proto. Call at startup when
+// the server sits behind a trusted reverse proxy.
+func SetTrustProxyHeaders(v bool) { trustProxyHeaders = v }
+
 // requestIsHTTPS reports whether the request reached us over TLS, either
-// directly or via a terminating proxy that set X-Forwarded-Proto.
+// directly, or via a terminating proxy that set X-Forwarded-Proto (only trusted
+// when proxy headers are enabled).
 func requestIsHTTPS(c *gin.Context) bool {
 	if c.Request.TLS != nil {
 		return true
 	}
-	return strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https")
+	return trustProxyHeaders && strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https")
 }
 
 // setSessionCookie sets the session cookie with hardened flags: HttpOnly always,

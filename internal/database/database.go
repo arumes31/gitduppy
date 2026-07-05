@@ -125,15 +125,37 @@ func createPerformanceIndexes() {
 // pass rewrites the DB pointer and, when the on-disk tree still lives at the old
 // location, relocates it so an existing clone is not lost or re-fetched into a
 // stray directory.
+// moveIfPresent moves src to dst when src exists and dst does not yet, creating
+// dst's parent directory first. A missing src is a no-op (returns false, nil); an
+// already-populated dst is left untouched (false, nil). Returns (moved, err).
+func moveIfPresent(src, dst string) (bool, error) {
+	if _, err := os.Stat(src); err != nil {
+		return false, nil //nolint:nilerr // missing source: nothing to move
+	}
+	if _, err := os.Stat(dst); err == nil {
+		return false, nil // destination already present; leave as-is
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0750); err != nil {
+		return false, err
+	}
+	if err := os.Rename(src, dst); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func MigrateStoragePaths(basePath string) error {
 	if DB == nil {
 		return fmt.Errorf("database not connected")
 	}
 
 	var repos []models.Repository
-	// Unscoped so soft-deleted rows (whose archives live under the same tree) are
-	// normalized too.
-	if err := DB.Unscoped().Find(&repos).Error; err != nil {
+	// Unscoped so soft-deleted rows (whose paperbin archives must be relocated
+	// too) are normalized. Only id + storage_path are needed, so project just
+	// those columns rather than hydrating the whole table on every startup.
+	if err := DB.Unscoped().Select("id", "storage_path").Find(&repos).Error; err != nil {
 		return fmt.Errorf("failed to load repositories for storage-path migration: %w", err)
 	}
 
@@ -150,36 +172,39 @@ func MigrateStoragePaths(basePath string) error {
 		}
 
 		old := repo.StoragePath
-		// Relocate the working tree only when it still sits at the old path and the
-		// canonical location is free, so no existing clone is stranded. All other
-		// cases (nothing cloned yet, or already present at canonical) just need the
-		// pointer rewritten.
 		if old != "" {
-			_, oldErr := os.Stat(old)
-			_, newErr := os.Stat(canonical)
-			if oldErr == nil && os.IsNotExist(newErr) {
-				if mkErr := os.MkdirAll(filepath.Dir(canonical), 0750); mkErr != nil {
-					log.Printf("storage-path migration: cannot create parent for %s: %v (leaving %q in place)", canonical, mkErr, old)
-					continue
-				}
-				if mvErr := os.Rename(old, canonical); mvErr != nil {
-					// Cross-device or permission failure: keep the old pointer so the
-					// existing clone stays reachable rather than pointing at nothing.
-					log.Printf("storage-path migration: cannot move %q -> %q: %v (leaving pointer unchanged)", old, canonical, mvErr)
-					continue
-				}
+			oldDir, newDir := filepath.Dir(old), filepath.Dir(canonical)
 
-				// Relocate the companion wiki mirror (the clone worker stores it at
-				// StoragePath + ".wiki") alongside the main tree so its lookup keeps
-				// finding the existing clone instead of re-cloning it.
-				oldWiki, newWiki := old+".wiki", canonical+".wiki"
-				if _, wErr := os.Stat(oldWiki); wErr == nil {
-					if _, nwErr := os.Stat(newWiki); os.IsNotExist(nwErr) {
-						if mvErr := os.Rename(oldWiki, newWiki); mvErr != nil {
-							log.Printf("storage-path migration: cannot move wiki %q -> %q: %v (wiki will be re-cloned)", oldWiki, newWiki, mvErr)
-						}
-					}
+			// Relocate the working tree. If this required move fails, keep the old
+			// pointer so an existing clone stays reachable rather than dangling.
+			if _, err := moveIfPresent(old, canonical); err != nil {
+				log.Printf("storage-path migration: cannot move %q -> %q: %v (leaving pointer unchanged)", old, canonical, err)
+				continue
+			}
+
+			// Relocate the companion wiki mirror (StoragePath + ".wiki"). Non-fatal:
+			// a missing wiki is simply re-cloned on the next sync.
+			if _, err := moveIfPresent(old+".wiki", canonical+".wiki"); err != nil {
+				log.Printf("storage-path migration: cannot move wiki for %s: %v (wiki will be re-cloned)", id, err)
+			}
+
+			// Relocate the paperbin archive of a soft-deleted (or previously
+			// deleted) repo. Delete/Restore resolve it from filepath.Dir(StoragePath)
+			// + "/paperbin/<id>", so rewriting the pointer without moving the archive
+			// would orphan it and make restore silently lose the files. If this move
+			// fails, keep the old pointer so restore still finds the archive.
+			pbFail := false
+			for _, name := range []string{id + ".tar.gz", id} {
+				src := filepath.Join(oldDir, "paperbin", name)
+				dst := filepath.Join(newDir, "paperbin", name)
+				if _, err := moveIfPresent(src, dst); err != nil {
+					log.Printf("storage-path migration: cannot move paperbin %q -> %q: %v (leaving pointer unchanged)", src, dst, err)
+					pbFail = true
+					break
 				}
+			}
+			if pbFail {
+				continue
 			}
 		}
 

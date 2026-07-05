@@ -67,6 +67,13 @@ var (
 		[]string{"status"},
 	)
 
+	StorageBytes = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "gitduppy_storage_bytes",
+			Help: "Total on-disk size of mirrored repositories in bytes",
+		},
+	)
+
 	WebhookDeliveriesTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "gitduppy_webhook_deliveries_total",
@@ -89,6 +96,7 @@ func Register(registry *prometheus.Registry) {
 		ActiveCloneJobs,
 		CloneQueueDepth,
 		RepositoriesTotal,
+		StorageBytes,
 		WebhookDeliveriesTotal,
 	)
 }

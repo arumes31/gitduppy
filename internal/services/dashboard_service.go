@@ -182,11 +182,6 @@ func (s *DashboardService) GetStats(ctx context.Context) (*DashboardStats, error
 			stats.RepositoryStatusBreakdown.Failed += r.Count
 		}
 	}
-	// Surface repository status counts as a Prometheus gauge.
-	metrics.RepositoriesTotal.WithLabelValues("pending").Set(float64(stats.RepositoryStatusBreakdown.Pending))
-	metrics.RepositoriesTotal.WithLabelValues("cloning").Set(float64(stats.RepositoryStatusBreakdown.Running))
-	metrics.RepositoriesTotal.WithLabelValues("success").Set(float64(stats.RepositoryStatusBreakdown.Success))
-	metrics.RepositoriesTotal.WithLabelValues("failed").Set(float64(stats.RepositoryStatusBreakdown.Failed))
 
 	// Clone job counts + status breakdown + success/fail totals in one grouped
 	// scan instead of eight separate COUNT queries.
@@ -249,6 +244,55 @@ func (s *DashboardService) GetStats(ctx context.Context) (*DashboardStats, error
 	s.statsMu.Unlock()
 
 	return stats, nil
+}
+
+// StartMetricsCollector periodically refreshes the repository-status and storage
+// Prometheus gauges independently of request traffic, so a Prometheus scrape sees
+// current values even when nobody is viewing the dashboard. It returns a stop
+// function that halts the background goroutine. An initial refresh runs
+// synchronously so the gauges are populated before the first scrape.
+func (s *DashboardService) StartMetricsCollector(interval time.Duration) (stop func()) {
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	done := make(chan struct{})
+	s.refreshGauges(context.Background())
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				s.refreshGauges(context.Background())
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() { close(done) }
+}
+
+// refreshGauges recomputes the repository-status counts and on-disk storage total
+// and publishes them to the Prometheus gauges.
+func (s *DashboardService) refreshGauges(ctx context.Context) {
+	type repoStatusRow struct {
+		Status string
+		Count  int64
+	}
+	var rows []repoStatusRow
+	if err := s.db.WithContext(ctx).Model(&models.Repository{}).
+		Select("status, COUNT(*) as count").Group("status").Scan(&rows).Error; err == nil {
+		counts := map[string]int64{"pending": 0, "cloning": 0, "success": 0, "failed": 0}
+		for _, r := range rows {
+			if _, ok := counts[r.Status]; ok {
+				counts[r.Status] = r.Count
+			}
+		}
+		for status, n := range counts {
+			metrics.RepositoriesTotal.WithLabelValues(status).Set(float64(n))
+		}
+	}
+	metrics.StorageBytes.Set(float64(s.totalStorageBytes()))
 }
 
 // GetChartData returns data for dashboard charts.
