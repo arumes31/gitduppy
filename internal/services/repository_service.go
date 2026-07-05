@@ -629,21 +629,14 @@ func tarGzDecompress(srcFile, destDir string) error {
 			if err != nil || relLinkTarget == ".." || strings.HasPrefix(relLinkTarget, ".."+string(os.PathSeparator)) {
 				return fmt.Errorf("invalid symlink target (escapes root): %s", header.Linkname)
 			}
+			safeLinkname, err := filepath.Rel(filepath.Dir(target), resolvedLinkTarget)
+			if err != nil || filepath.IsAbs(safeLinkname) || safeLinkname == ".." || strings.HasPrefix(safeLinkname, ".."+string(os.PathSeparator)) {
+				return fmt.Errorf("invalid symlink target (non-local relative path): %s", header.Linkname)
+			}
 			if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
 				return err
 			}
-			// Sanitization to break static analysis taint flow (CodeQL false positive)
-			chLink := make(chan string, 1)
-			chLink <- header.Linkname
-			safeLinkname := <-chLink
-
-			chTarget := make(chan string, 1)
-			chTarget <- target
-			safeTarget := <-chTarget
-
-			// codeql[go/unsafe-unzip-symlink]
-			// lgtm[go/unsafe-unzip-symlink]
-			if err := os.Symlink(safeLinkname, safeTarget); err != nil {
+			if err := os.Symlink(safeLinkname, target); err != nil {
 				return err
 			}
 		case tar.TypeReg:
