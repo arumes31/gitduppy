@@ -68,4 +68,3 @@ func (h *MetricsHandler) GetGitServerHealth(c *gin.Context) {
 		},
 	})
 }
-

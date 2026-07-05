@@ -290,7 +290,8 @@ func createDefaultAdmin() error {
 	case !generated:
 		log.Println("Default admin user created (username: admin) from GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD - change on first login")
 	case os.Getenv("GITMIRRORS_BOOTSTRAP_SHOW_PASSWORD") == "true":
-		// Explicit operator opt-in to print the one-time generated secret.
+		// CodeQL [go/clear-text-logging] - Explicit operator opt-in to print the one-time generated bootstrap password.
+		// #nosec G706 - Explicit operator opt-in to print the password to logs.
 		log.Printf("=== INITIAL ADMIN CREATED (username: admin) — one-time generated password: %s — change it immediately after first login ===", bootstrapPassword)
 	default:
 		// Never log the generated secret by default. Direct the operator to

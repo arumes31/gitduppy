@@ -111,6 +111,7 @@ func (m *AuthMiddleware) validateAPIKey(key string) (*models.User, error) {
 	}
 
 	// Hash the provided key
+	// CodeQL [go/weak-sensitive-data-hashing] - SHA-256 is used here to hash API keys (which are high-entropy random secrets), not human-chosen passwords, so a slow hashing algorithm is not required or desirable.
 	hash := sha256.Sum256([]byte(key))
 	keyHash := hex.EncodeToString(hash[:])
 

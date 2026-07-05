@@ -137,7 +137,7 @@ func moveIfPresent(src, dst string) (bool, error) {
 	} else if !os.IsNotExist(err) {
 		return false, err
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
 		return false, err
 	}
 	if err := os.Rename(src, dst); err != nil {

@@ -305,6 +305,7 @@ func stringPtr(s string) *string {
 // SaveGitHubCredentials saves the GitHub OAuth client credentials in system settings.
 func (s *OAuthService) SaveGitHubCredentials(ctx context.Context, clientID, clientSecret string) error {
 	idKey := "oauth2_github_client_id"
+	// #nosec G101 - This is a settings key name string, not a hardcoded secret credential
 	secretKey := "oauth2_github_client_secret"
 
 	// Persist the client ID and secret together so a failure on either write

@@ -15,7 +15,7 @@
 
 [[rules]]
   description = "Database URL with credentials"
-  regex = "(mysql|postgres|postgresql)://[a-zA-Z0-9_.+-]+:[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" 
+  regex = '(mysql|postgres|postgresql)://[a-zA-Z0-9_.+-]+:[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' 
   tags = ["database", "credentials", "url"]
 
 [[rules]]
@@ -53,11 +53,11 @@
 
 [[allowlist]]
   description = "Allowlist for test files"
-  regex = "(test|example|mock|fixture).*\.go$"
+  regex = '(test|example|mock|fixture).*\.go$'
 
 [[allowlist]]
   description = "Allowlist for config.example.yaml"
-  regex = "config\.example\.yaml$"
+  regex = 'config\.example\.yaml$'
 
 [[allowlist]]
   description = "Allowlist for known false positives in gitduppy"

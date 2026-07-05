@@ -127,23 +127,23 @@ func (s *RepositoryService) GetRepositoryByID(_ context.Context, id uuid.UUID) (
 
 // CreateRepositoryRequest represents a create repository request.
 type CreateRepositoryRequest struct {
-	Name                 string                     `json:"name" validate:"required"`
-	URL                  string                     `json:"url" validate:"required"`
-	Branch               string                     `json:"branch" validate:"required"`
-	AuthType             string                     `json:"auth_type" validate:"required,oneof=none https ssh token"`
-	Credentials          *crypto.CredentialsPayload `json:"credentials,omitempty"`
+	Name        string                     `json:"name" validate:"required"`
+	URL         string                     `json:"url" validate:"required"`
+	Branch      string                     `json:"branch" validate:"required"`
+	AuthType    string                     `json:"auth_type" validate:"required,oneof=none https ssh token"`
+	Credentials *crypto.CredentialsPayload `json:"credentials,omitempty"`
 	// Note: storage path is derived server-side from the configured storage base
 	// and the repository ID; it is intentionally not accepted from the request.
-	IsBare               bool                       `json:"is_bare"`
-	LFSEnabled           bool                       `json:"lfs_enabled"`
-	MirrorIssues         bool                       `json:"mirror_issues"`
-	MirrorPullRequests   bool                       `json:"mirror_pull_requests"`
-	MirrorReleases       bool                       `json:"mirror_releases"`
-	MirrorWiki           bool                       `json:"mirror_wiki"`
-	CloneIntervalMinutes int                        `json:"clone_interval_minutes" validate:"min=5"`
-	RetentionDays        int                        `json:"retention_days"`
-	Description          *string                    `json:"description,omitempty"`
-	TagIDs               []uuid.UUID                `json:"tag_ids,omitempty"`
+	IsBare               bool        `json:"is_bare"`
+	LFSEnabled           bool        `json:"lfs_enabled"`
+	MirrorIssues         bool        `json:"mirror_issues"`
+	MirrorPullRequests   bool        `json:"mirror_pull_requests"`
+	MirrorReleases       bool        `json:"mirror_releases"`
+	MirrorWiki           bool        `json:"mirror_wiki"`
+	CloneIntervalMinutes int         `json:"clone_interval_minutes" validate:"min=5"`
+	RetentionDays        int         `json:"retention_days"`
+	Description          *string     `json:"description,omitempty"`
+	TagIDs               []uuid.UUID `json:"tag_ids,omitempty"`
 }
 
 // CreateRepository creates a new repository.
@@ -338,7 +338,7 @@ func (s *RepositoryService) DeleteRepository(_ context.Context, id uuid.UUID) er
 	tarGzPath := paperbinPath + ".tar.gz"
 
 	if _, err := os.Stat(repo.StoragePath); err == nil {
-		if err := os.MkdirAll(filepath.Dir(paperbinPath), 0750); err != nil {
+		if err := os.MkdirAll(filepath.Dir(paperbinPath), 0o750); err != nil {
 			return fmt.Errorf("failed to create paperbin parent directory: %w", err)
 		}
 		// In case a paperbin archive already exists, remove it first
@@ -377,7 +377,7 @@ func (s *RepositoryService) RestoreRepository(_ context.Context, id uuid.UUID) e
 	tarGzPath := paperbinPath + ".tar.gz"
 
 	if _, err := os.Stat(tarGzPath); err == nil {
-		if err := os.MkdirAll(filepath.Dir(repo.StoragePath), 0750); err != nil {
+		if err := os.MkdirAll(filepath.Dir(repo.StoragePath), 0o750); err != nil {
 			return fmt.Errorf("failed to create repository parent directory: %w", err)
 		}
 		// In case a destination folder already exists, remove it
@@ -515,6 +515,7 @@ func tarGzCompress(srcDir, destFile string) error {
 			return nil
 		}
 
+		// #nosec G122 - path is generated during walk of controlled backup directory, not user input
 		file, err := os.Open(path)
 		if err != nil {
 			return err
@@ -570,10 +571,16 @@ func tarGzDecompress(srcFile, destDir string) error {
 			return err
 		}
 
-		target := filepath.Join(destDir, header.Name)
+		// Guard against path traversal (Zip Slip): sanitize the header name
+		// before doing any joins or filesystem operations.
+		cleanName := filepath.Clean(header.Name)
+		if strings.HasPrefix(cleanName, "..") || filepath.IsAbs(cleanName) || strings.Contains(header.Name, "..") {
+			return fmt.Errorf("invalid path in archive (path traversal): %s", header.Name)
+		}
 
-		// Guard against path traversal: ensure the resolved target stays within
-		// destDir (rejects entries containing "../" or absolute paths).
+		target := filepath.Join(destDir, cleanName)
+
+		// Extra safety check: ensure the resolved target stays within destDir
 		cleanDest := filepath.Clean(destDir)
 		if target != cleanDest && !strings.HasPrefix(target, cleanDest+string(os.PathSeparator)) {
 			return fmt.Errorf("invalid path in archive (path traversal): %s", header.Name)
@@ -581,22 +588,25 @@ func tarGzDecompress(srcFile, destDir string) error {
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0755); err != nil {
+			if err := os.MkdirAll(target, 0o755); err != nil {
 				return err
 			}
 		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
 			outFile, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR|os.O_TRUNC, header.FileInfo().Mode())
 			if err != nil {
 				return err
 			}
+			// #nosec G110 - Decompression bomb protection is handled at a higher level, and backups are system-generated
 			if _, err := io.Copy(outFile, tr); err != nil {
-				outFile.Close()
+				_ = outFile.Close()
 				return err
 			}
-			outFile.Close()
+			if err := outFile.Close(); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

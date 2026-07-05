@@ -17,18 +17,18 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version-file: 'go.mod'
           cache-dependency-path: |
             go.sum
             **/go.sum
 
       - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v2.12.2
 
       - name: Run golangci-lint
         run: |
           set -o pipefail
-          golangci-lint run --config .golangci.yml --timeout 5m --out-format line-number | tee lint-report.txt
+          golangci-lint run --config .golangci.yml --timeout 5m | tee lint-report.txt
 
       - name: Upload lint results
         uses: actions/upload-artifact@v4
