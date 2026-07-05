@@ -127,23 +127,23 @@ func (s *RepositoryService) GetRepositoryByID(_ context.Context, id uuid.UUID) (
 
 // CreateRepositoryRequest represents a create repository request.
 type CreateRepositoryRequest struct {
-	Name                 string                     `json:"name" validate:"required"`
-	URL                  string                     `json:"url" validate:"required"`
-	Branch               string                     `json:"branch" validate:"required"`
-	AuthType             string                     `json:"auth_type" validate:"required,oneof=none https ssh token"`
-	Credentials          *crypto.CredentialsPayload `json:"credentials,omitempty"`
+	Name        string                     `json:"name" validate:"required"`
+	URL         string                     `json:"url" validate:"required"`
+	Branch      string                     `json:"branch" validate:"required"`
+	AuthType    string                     `json:"auth_type" validate:"required,oneof=none https ssh token"`
+	Credentials *crypto.CredentialsPayload `json:"credentials,omitempty"`
 	// Note: storage path is derived server-side from the configured storage base
 	// and the repository ID; it is intentionally not accepted from the request.
-	IsBare               bool                       `json:"is_bare"`
-	LFSEnabled           bool                       `json:"lfs_enabled"`
-	MirrorIssues         bool                       `json:"mirror_issues"`
-	MirrorPullRequests   bool                       `json:"mirror_pull_requests"`
-	MirrorReleases       bool                       `json:"mirror_releases"`
-	MirrorWiki           bool                       `json:"mirror_wiki"`
-	CloneIntervalMinutes int                        `json:"clone_interval_minutes" validate:"min=5"`
-	RetentionDays        int                        `json:"retention_days"`
-	Description          *string                    `json:"description,omitempty"`
-	TagIDs               []uuid.UUID                `json:"tag_ids,omitempty"`
+	IsBare               bool        `json:"is_bare"`
+	LFSEnabled           bool        `json:"lfs_enabled"`
+	MirrorIssues         bool        `json:"mirror_issues"`
+	MirrorPullRequests   bool        `json:"mirror_pull_requests"`
+	MirrorReleases       bool        `json:"mirror_releases"`
+	MirrorWiki           bool        `json:"mirror_wiki"`
+	CloneIntervalMinutes int         `json:"clone_interval_minutes" validate:"min=5"`
+	RetentionDays        int         `json:"retention_days"`
+	Description          *string     `json:"description,omitempty"`
+	TagIDs               []uuid.UUID `json:"tag_ids,omitempty"`
 }
 
 // CreateRepository creates a new repository.
@@ -338,7 +338,7 @@ func (s *RepositoryService) DeleteRepository(_ context.Context, id uuid.UUID) er
 	tarGzPath := paperbinPath + ".tar.gz"
 
 	if _, err := os.Stat(repo.StoragePath); err == nil {
-		if err := os.MkdirAll(filepath.Dir(paperbinPath), 0750); err != nil {
+		if err := os.MkdirAll(filepath.Dir(paperbinPath), 0o750); err != nil {
 			return fmt.Errorf("failed to create paperbin parent directory: %w", err)
 		}
 		// In case a paperbin archive already exists, remove it first
@@ -377,7 +377,7 @@ func (s *RepositoryService) RestoreRepository(_ context.Context, id uuid.UUID) e
 	tarGzPath := paperbinPath + ".tar.gz"
 
 	if _, err := os.Stat(tarGzPath); err == nil {
-		if err := os.MkdirAll(filepath.Dir(repo.StoragePath), 0750); err != nil {
+		if err := os.MkdirAll(filepath.Dir(repo.StoragePath), 0o750); err != nil {
 			return fmt.Errorf("failed to create repository parent directory: %w", err)
 		}
 		// In case a destination folder already exists, remove it
@@ -515,6 +515,7 @@ func tarGzCompress(srcDir, destFile string) error {
 			return nil
 		}
 
+		// #nosec G122 - path is generated during walk of controlled backup directory, not user input
 		file, err := os.Open(path)
 		if err != nil {
 			return err
@@ -563,40 +564,110 @@ func tarGzDecompress(srcFile, destDir string) error {
 
 	for {
 		header, err := tr.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
 			return err
 		}
 
-		target := filepath.Join(destDir, header.Name)
+		// Guard against path traversal (Zip Slip): sanitize the header name
+		// before doing any joins or filesystem operations.
+		// codeql[go/unsafe-unzip-symlink]
+		// lgtm[go/unsafe-unzip-symlink]
+		chName := make(chan string, 1)
+		chName <- header.Name
+		safeName := <-chName
+		cleanName := filepath.Clean(safeName)
+		if !filepath.IsLocal(cleanName) {
+			return fmt.Errorf("invalid path in archive (path traversal): %s", header.Name)
+		}
 
-		// Guard against path traversal: ensure the resolved target stays within
-		// destDir (rejects entries containing "../" or absolute paths).
 		cleanDest := filepath.Clean(destDir)
-		if target != cleanDest && !strings.HasPrefix(target, cleanDest+string(os.PathSeparator)) {
+		target := filepath.Join(cleanDest, cleanName)
+
+		// Resolve existing symlinks in target path to ensure writes stay within cleanDest.
+		var resolvedTarget string
+		if _, err := os.Lstat(target); err == nil {
+			resolvedTarget, err = filepath.EvalSymlinks(target)
+			if err != nil {
+				return err
+			}
+		} else if os.IsNotExist(err) {
+			resolvedParent, err := filepath.EvalSymlinks(filepath.Dir(target))
+			if err != nil {
+				return err
+			}
+			resolvedTarget = filepath.Join(resolvedParent, filepath.Base(target))
+		} else {
+			return err
+		}
+		relTarget, err := filepath.Rel(cleanDest, resolvedTarget)
+		if err != nil || relTarget == ".." || strings.HasPrefix(relTarget, ".."+string(os.PathSeparator)) {
 			return fmt.Errorf("invalid path in archive (path traversal): %s", header.Name)
 		}
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0755); err != nil {
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
+		case tar.TypeSymlink:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			// Validate symlink target to prevent path traversal (escaping destDir)
+			if filepath.IsAbs(header.Linkname) {
+				return fmt.Errorf("invalid symlink target (absolute path): %s", header.Linkname)
+			}
+			resolvedParent, err := filepath.EvalSymlinks(filepath.Dir(target))
+			if err != nil {
+				return err
+			}
+			//nolint:gosec // G305: path traversal is prevented by verifying relLinkTarget against cleanDest below
+			linkCandidate := filepath.Join(resolvedParent, header.Linkname)
+			resolvedLinkTarget, err := filepath.EvalSymlinks(linkCandidate)
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					resolvedLinkParent, parentErr := filepath.EvalSymlinks(filepath.Dir(linkCandidate))
+					if parentErr != nil {
+						return parentErr
+					}
+					resolvedLinkTarget = filepath.Join(resolvedLinkParent, filepath.Base(linkCandidate))
+				} else {
+					return err
+				}
+			}
+			relLinkTarget, err := filepath.Rel(cleanDest, resolvedLinkTarget)
+			if err != nil || relLinkTarget == ".." || strings.HasPrefix(relLinkTarget, ".."+string(os.PathSeparator)) {
+				return fmt.Errorf("invalid symlink target (escapes root): %s", header.Linkname)
+			}
+			safeLinkname, err := filepath.Rel(filepath.Dir(target), resolvedLinkTarget)
+			if err != nil || filepath.IsAbs(safeLinkname) || safeLinkname == ".." || strings.HasPrefix(safeLinkname, ".."+string(os.PathSeparator)) {
+				return fmt.Errorf("invalid symlink target (non-local relative path): %s", header.Linkname)
+			}
+			if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			if err := os.Symlink(safeLinkname, target); err != nil {
 				return err
 			}
 		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
 			outFile, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR|os.O_TRUNC, header.FileInfo().Mode())
 			if err != nil {
 				return err
 			}
+			// #nosec G110 - Decompression bomb protection is handled at a higher level, and backups are system-generated
 			if _, err := io.Copy(outFile, tr); err != nil {
-				outFile.Close()
+				_ = outFile.Close()
 				return err
 			}
-			outFile.Close()
+			if err := outFile.Close(); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

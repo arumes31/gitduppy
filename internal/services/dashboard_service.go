@@ -117,7 +117,7 @@ func scanStorage(root string) (total, paperbin int64) {
 		}
 		info, ierr := d.Info()
 		if ierr != nil {
-			return nil
+			return nil //nolint:nilerr // best-effort: skip unreadable file info
 		}
 		total += info.Size()
 		for _, part := range strings.Split(filepath.ToSlash(path), "/") {
@@ -133,7 +133,7 @@ func scanStorage(root string) (total, paperbin int64) {
 
 // dirSize returns the total size in bytes of all files under root. Missing paths
 // contribute zero rather than erroring so the stat is best-effort.
-func dirSize(root string) int64 {
+func dirSize(root string) int64 { //nolint:unused
 	total, _ := scanStorage(root)
 	return total
 }

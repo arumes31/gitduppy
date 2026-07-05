@@ -69,3 +69,12 @@ graphify-out/
 # Gemini / Agent configurations
 GEMINI.md
 .gemini/
+
+# Architecture and documentation
+architecture.md
+
+# Reports and coverage
+*report.txt
+coverage.txt
+lint-report.txt
+vulncheck-report.txt

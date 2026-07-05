@@ -40,7 +40,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version-file: 'go.mod'
           cache-dependency-path: |
             go.sum
             **/go.sum
@@ -69,11 +69,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: gitduppy-*
-          merge-multiple: true
+      - name: Download all release assets
+        run: |
+          gh release download ${{ github.event.release.tag_name }} --pattern "gitduppy-*"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate SHA256 checksums
         run: |

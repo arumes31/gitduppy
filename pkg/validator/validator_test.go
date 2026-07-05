@@ -4,13 +4,13 @@ import "testing"
 
 func TestValidateEmail(t *testing.T) {
 	cases := map[string]bool{
-		"a@b.com":            true,
-		"alice@example.org":  true,
-		"not-an-email":       false,
-		"":                   false,
-		"@no-local.com":      false,
-		"space in@mail.com":  false,
-		"tag <t@ag.com>":     true, // mail.ParseAddress accepts display-name form
+		"a@b.com":           true,
+		"alice@example.org": true,
+		"not-an-email":      false,
+		"":                  false,
+		"@no-local.com":     false,
+		"space in@mail.com": false,
+		"tag <t@ag.com>":    true, // mail.ParseAddress accepts display-name form
 	}
 	for in, want := range cases {
 		if got := ValidateEmail(in); got != want {
@@ -23,11 +23,11 @@ func TestValidateGitURL(t *testing.T) {
 	cases := map[string]bool{
 		// Allowed transports: http, https, git, ssh (plus scp-like git@ SSH).
 		"https://github.com/user/repo.git":  true,
-		"http://gitlab.com/a/b.git":          true,
-		"git@github.com:user/repo.git":       true,
-		"git://host/user/repo.git":           true,
-		"ssh://git@host/user/repo.git":       true,
-		"https://example.com/deep/path.git":  true,
+		"http://gitlab.com/a/b.git":         true,
+		"git@github.com:user/repo.git":      true,
+		"git://host/user/repo.git":          true,
+		"ssh://git@host/user/repo.git":      true,
+		"https://example.com/deep/path.git": true,
 		// Rejected: missing .git suffix / not a URL.
 		"https://github.com/user/repo": false, // no .git suffix and not matched by regex
 		"not a url":                    false,
@@ -46,13 +46,13 @@ func TestValidateGitURL(t *testing.T) {
 
 func TestValidateBranchName(t *testing.T) {
 	cases := map[string]bool{
-		"main":            true,
-		"feature-1":       true,
-		"release_2":       true,
-		"":                false,
-		"has space":       false,
-		"bad/slash":       false,
-		"semi;colon":      false,
+		"main":       true,
+		"feature-1":  true,
+		"release_2":  true,
+		"":           false,
+		"has space":  false,
+		"bad/slash":  false,
+		"semi;colon": false,
 	}
 	for in, want := range cases {
 		if got := ValidateBranchName(in); got != want {
@@ -63,11 +63,11 @@ func TestValidateBranchName(t *testing.T) {
 
 func TestValidateUsername(t *testing.T) {
 	cases := map[string]bool{
-		"bob":            true,
-		"ab":             false, // too short
-		"a_b-c123":       true,
-		"has space":      false,
-		"":               false,
+		"bob":       true,
+		"ab":        false, // too short
+		"a_b-c123":  true,
+		"has space": false,
+		"":          false,
 	}
 	for in, want := range cases {
 		if got := ValidateUsername(in); got != want {
@@ -113,13 +113,13 @@ func TestValidateTagName(t *testing.T) {
 
 func TestValidateColor(t *testing.T) {
 	cases := map[string]bool{
-		"#ffffff":  true,
-		"#000000":  true,
-		"#AbC123":  true,
-		"ffffff":   false, // missing #
-		"#fff":     false, // too short
-		"#gggggg":  false, // non-hex
-		"":         false,
+		"#ffffff": true,
+		"#000000": true,
+		"#AbC123": true,
+		"ffffff":  false, // missing #
+		"#fff":    false, // too short
+		"#gggggg": false, // non-hex
+		"":        false,
 	}
 	for in, want := range cases {
 		if got := ValidateColor(in); got != want {

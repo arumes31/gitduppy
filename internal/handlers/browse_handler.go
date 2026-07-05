@@ -562,6 +562,7 @@ func (h *BrowseHandler) DownloadRepo(c *gin.Context) {
 	c.Header("Transfer-Encoding", "chunked")
 
 	// Execute git archive and pipe directly to response
+	// #nosec G204 - ref is checked for option injection, and command is run without shell
 	cmd := exec.CommandContext(c.Request.Context(), gitops.GetGitExecutable(), "archive", "--format=zip", "--prefix="+safeName+"/", ref)
 	cmd.Dir = repo.StoragePath
 	cmd.Stdout = c.Writer

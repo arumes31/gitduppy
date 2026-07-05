@@ -64,7 +64,7 @@ func (s *Service) sendEmailSSL(to []string, auth smtp.Auth, msg string) error {
 		ServerName: s.config.SMTPHost,
 		MinVersion: tls.VersionTLS12,
 	}
-	conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", s.config.SMTPHost, s.config.SMTPPort), tlsConfig)
+	conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", s.config.SMTPHost, s.config.SMTPPort), tlsConfig) //nolint:noctx
 	if err != nil {
 		return err
 	}

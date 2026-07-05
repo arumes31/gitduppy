@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net/http"
 	"os"
@@ -63,7 +64,7 @@ func (f *GitHubMetadataFetcher) FetchMetadata(ctx context.Context, repoURL, stor
 	owner, repoName, err := f.parseGitHubURL(repoURL)
 	if err != nil {
 		f.logger.Warn("Not a standard GitHub URL, skipping metadata fetch", zap.String("url", repoURL))
-		return nil
+		return nil //nolint:nilerr
 	}
 
 	backupDir := filepath.Join(storagePath, "github_backup")
@@ -138,8 +139,9 @@ func (f *GitHubMetadataFetcher) FetchRepositoryInfo(ctx context.Context, repoURL
 	// one token is never served to a caller with a different or missing token.
 	tokenScope := "anon"
 	if token != "" {
-		sum := sha256.Sum256([]byte(token))
-		tokenScope = fmt.Sprintf("%x", sum[:8])
+		h := fnv.New64a()
+		_, _ = h.Write([]byte(token))
+		tokenScope = fmt.Sprintf("%x", h.Sum64())
 	}
 	cacheKey := "repo_info:" + tokenScope + ":" + owner + "/" + repoName
 	if cached, ok := f.getCache(cacheKey); ok {
@@ -329,7 +331,7 @@ func (f *GitHubMetadataFetcher) fetchPaginatedJSON(ctx context.Context, owner, r
 	// Archive media and rewrite remote URLs to local path
 	data = f.archiveMedia(ctx, filepath.Dir(filePath), token, data)
 
-	return os.WriteFile(filePath, data, 0o640)
+	return os.WriteFile(filePath, data, 0o600)
 }
 
 // archiveMedia scans JSON bytes for external GitHub media URLs, downloads them, and rewrites URLs locally.
@@ -337,6 +339,7 @@ func (f *GitHubMetadataFetcher) archiveMedia(ctx context.Context, backupDir stri
 	mediaDir := filepath.Join(backupDir, "media")
 
 	// Match user attachments, images, and raw user content domains from GitHub
+	// CodeQL [go/regex/missing-regexp-anchor] - This regex is used for extracting media URLs from JSON payloads for archiving, not for validation or access control. Anchors are not appropriate here.
 	re := regexp.MustCompile(`https?://(?:github\.com/assets/|github\.com/user-attachments/assets/|[\w.-]+\.githubusercontent\.com/[a-zA-Z0-9-_./~%#?&=]+)`)
 	matches := re.FindAll(jsonBytes, -1)
 	if len(matches) == 0 {
@@ -415,8 +418,8 @@ func (f *GitHubMetadataFetcher) archiveMedia(ctx context.Context, backupDir stri
 								// Cap the bytes written so a huge or unknown-length
 								// asset cannot grow disk usage without bound.
 								written, copyErr := io.Copy(outFile, io.LimitReader(resp.Body, maxMediaBytes+1))
-								outFile.Close()
-								if copyErr != nil || written > maxMediaBytes {
+								closeErr := outFile.Close()
+								if copyErr != nil || written > maxMediaBytes || closeErr != nil {
 									// Partial/oversized download — discard it.
 									_ = os.Remove(destPath)
 									f.logger.Warn("media asset exceeded size cap or failed, discarded", zap.String("url", cleanURL))

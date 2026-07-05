@@ -2,6 +2,8 @@ package gitops
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -45,6 +47,7 @@ type CloneOptions struct {
 	Username string
 	Password string
 	Token    string
+	Dedupe   bool
 }
 
 // CloneRepository clones a git repository.
@@ -52,6 +55,99 @@ func (g *GitOperations) CloneRepository(ctx context.Context, opts *CloneOptions)
 	// Create target directory
 	if err := os.MkdirAll(filepath.Dir(opts.Path), 0o750); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	// Set authentication
+	auth, err := g.buildAuth(opts)
+	if err != nil {
+		return err
+	}
+
+	if opts.Dedupe {
+		poolPath, err := g.updatePool(ctx, opts.URL, auth, opts.Progress)
+		if err == nil {
+			// Initialize repository
+			r, err := git.PlainInit(opts.Path, opts.Bare)
+			if err != nil {
+				return fmt.Errorf("failed to init repository: %w", err)
+			}
+
+			// Write alternates file
+			alternatesFile := filepath.Join(opts.Path, ".git", "objects", "info", "alternates")
+			if opts.Bare {
+				alternatesFile = filepath.Join(opts.Path, "objects", "info", "alternates")
+			}
+			if err := os.MkdirAll(filepath.Dir(alternatesFile), 0o750); err != nil {
+				return err
+			}
+			poolObjectsPath := filepath.Join(poolPath, "objects")
+			absPoolObjectsPath, err := filepath.Abs(poolObjectsPath)
+			if err != nil {
+				absPoolObjectsPath = poolObjectsPath
+			}
+			if err := os.WriteFile(alternatesFile, []byte(absPoolObjectsPath+"\n"), 0o600); err != nil {
+				return fmt.Errorf("failed to write alternates file: %w", err)
+			}
+
+			// Add remote
+			_, err = r.CreateRemote(&config.RemoteConfig{
+				Name: "origin",
+				URLs: []string{opts.URL},
+			})
+			if err != nil {
+				return fmt.Errorf("failed to create remote: %w", err)
+			}
+
+			// Fetch remote objects
+			fetchOpts := &git.FetchOptions{
+				Progress: opts.Progress,
+				Auth:     auth,
+			}
+			err = r.FetchContext(ctx, fetchOpts)
+			if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+				return fmt.Errorf("fetch failed: %w", err)
+			}
+
+			// Checkout branch if not bare
+			if !opts.Bare {
+				w, err := r.Worktree()
+				if err != nil {
+					return fmt.Errorf("failed to get worktree: %w", err)
+				}
+
+				var branchName plumbing.ReferenceName
+				if opts.Branch != "" {
+					branchName = plumbing.NewBranchReferenceName(opts.Branch)
+				} else {
+					headRef, err := r.Reference(plumbing.HEAD, true)
+					if err == nil {
+						branchName = headRef.Name()
+					}
+				}
+
+				if branchName != "" {
+					err = w.Checkout(&git.CheckoutOptions{
+						Branch: branchName,
+						Force:  true,
+					})
+					if err != nil {
+						return fmt.Errorf("checkout failed: %w", err)
+					}
+				}
+			}
+
+			// Handle LFS
+			if opts.LFS {
+				if err := g.runLFSInstall(ctx, opts.Path); err != nil {
+					return fmt.Errorf("git lfs install failed: %w", err)
+				}
+				if err := g.runLFSPull(ctx, opts.Path); err != nil {
+					return fmt.Errorf("git lfs pull failed: %w", err)
+				}
+			}
+
+			return nil
+		}
 	}
 
 	// Build clone options
@@ -65,11 +161,6 @@ func (g *GitOperations) CloneRepository(ctx context.Context, opts *CloneOptions)
 		cloneOpts.SingleBranch = true
 	}
 
-	// Set authentication
-	auth, err := g.buildAuth(opts)
-	if err != nil {
-		return err
-	}
 	if auth != nil {
 		cloneOpts.Auth = auth
 	}
@@ -95,6 +186,16 @@ func (g *GitOperations) CloneRepository(ctx context.Context, opts *CloneOptions)
 
 // FetchRepository fetches updates for a repository.
 func (g *GitOperations) FetchRepository(ctx context.Context, opts *CloneOptions) error {
+	auth, err := g.buildAuth(opts)
+	if err != nil {
+		return err
+	}
+
+	// If dedupe is enabled, update the pool first so new commits are fetched into the pool
+	if opts.Dedupe {
+		_, _ = g.updatePool(ctx, opts.URL, auth, opts.Progress)
+	}
+
 	repo, err := git.PlainOpen(opts.Path)
 	if err != nil {
 		return fmt.Errorf("failed to open repository: %w", err)
@@ -106,10 +207,6 @@ func (g *GitOperations) FetchRepository(ctx context.Context, opts *CloneOptions)
 		Prune:    true,
 	}
 
-	auth, err := g.buildAuth(opts)
-	if err != nil {
-		return err
-	}
 	if auth != nil {
 		fetchOpts.Auth = auth
 	}
@@ -400,4 +497,57 @@ func (g *GitOperations) GetReferences(ctx context.Context, path string) (map[str
 		}
 	}
 	return refs, nil
+}
+
+// getPoolPath returns the pool path for a remote repository URL.
+func (g *GitOperations) getPoolPath(url string) string {
+	h := sha256.Sum256([]byte(url))
+	hashStr := hex.EncodeToString(h[:])
+	return filepath.Join(g.BasePath, "pools", hashStr[0:2], hashStr[2:4], hashStr)
+}
+
+// updatePool populates or updates the shared object pool for the remote URL.
+func (g *GitOperations) updatePool(ctx context.Context, url string, auth transport.AuthMethod, progress sideband.Progress) (string, error) {
+	poolPath := g.getPoolPath(url)
+
+	var r *git.Repository
+	var err error
+	if _, err = os.Stat(poolPath); os.IsNotExist(err) {
+		if err := os.MkdirAll(filepath.Dir(poolPath), 0o750); err != nil {
+			return "", fmt.Errorf("failed to create pool directory: %w", err)
+		}
+		r, err = git.PlainInit(poolPath, true)
+		if err != nil {
+			return "", fmt.Errorf("failed to init pool repository: %w", err)
+		}
+		_, err = r.CreateRemote(&config.RemoteConfig{
+			Name: "origin",
+			URLs: []string{url},
+		})
+		if err != nil {
+			return "", fmt.Errorf("failed to create pool remote: %w", err)
+		}
+	} else {
+		r, err = git.PlainOpen(poolPath)
+		if err != nil {
+			return "", fmt.Errorf("failed to open pool repository: %w", err)
+		}
+	}
+
+	fetchOpts := &git.FetchOptions{
+		Progress: progress,
+		Auth:     auth,
+		RefSpecs: []config.RefSpec{
+			"refs/heads/*:refs/heads/*",
+			"refs/tags/*:refs/tags/*",
+		},
+		Force: true,
+	}
+
+	err = r.FetchContext(ctx, fetchOpts)
+	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+		return "", fmt.Errorf("pool fetch failed: %w", err)
+	}
+
+	return poolPath, nil
 }

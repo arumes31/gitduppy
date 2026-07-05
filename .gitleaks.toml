@@ -1,64 +1,76 @@
 [[rules]]
+  id = "gitduppy-api-key"
   description = "GitDuppy API Key"
   regex = '''(api|API)_KEY.*[=:]\s*["']?([a-zA-Z0-9]{32,})["']?'''
   tags = ["key", "gitduppy"]
 
 [[rules]]
+  id = "gitduppy-secret-token"
   description = "GitDuppy Secret Token"
   regex = '''(secret|SECRET)_TOKEN.*[=:]\s*["']?([a-zA-Z0-9]{32,})["']?'''
   tags = ["token", "gitduppy"]
 
 [[rules]]
+  id = "jwt-secret"
   description = "JWT Secret"
   regex = '''(jwt|JWT)_(secret|SECRET).*[=:]\s*["']?([a-zA-Z0-9_\\/+=]{32,})["']?'''
   tags = ["secret", "jwt", "token"]
 
 [[rules]]
+  id = "db-url"
   description = "Database URL with credentials"
-  regex = "(mysql|postgres|postgresql)://[a-zA-Z0-9_.+-]+:[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" 
+  regex = '(mysql|postgres|postgresql)://[a-zA-Z0-9_.+-]+:[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' 
   tags = ["database", "credentials", "url"]
 
 [[rules]]
+  id = "private-ssh-key"
   description = "Private SSH Key"
   regex = "-----BEGIN (RSA|DSA|EC|OPENSSH) PRIVATE KEY-----"
   tags = ["key", "private", "ssh"]
 
 [[rules]]
+  id = "aws-access-key-id"
   description = "AWS Access Key ID"
   regex = "AKIA[0-9A-Z]{16}"
   tags = ["key", "aws", "amazon"]
 
 [[rules]]
+  id = "aws-secret-access-key"
   description = "AWS Secret Access Key"
   regex = "[0-9a-zA-Z/+]{40}"
   keywords = ["aws_secret_access_key", "aws-secret-access-key", "aws_secret_key", "aws_secret"]
   tags = ["key", "aws", "amazon"]
 
 [[rules]]
+  id = "gcp-service-account"
   description = "Google (GCP) Service Account"
-  regex = "\"type\"\s*:\s*\"service_account\""
+  regex = '"type"\s*:\s*"service_account"'
   tags = ["google", "gcp", "service-account"]
 
 [[rules]]
+  id = "facebook-client-id"
   description = "Facebook Client ID"
   regex = "[0-9]{13,17}"
   keywords = ["facebook_client_id", "facebook-secret", "fb_app_id", "fb_secret"]
   tags = ["facebook", "client-id", "app-id", "secret"]
 
 [[rules]]
+  id = "twitter-api-key"
   description = "Twitter API Key"
   regex = "[a-zA-Z0-9]{35,44}"
   keywords = ["twitter_api_key", "twitter-secret", "twitter_bearer_token"]
   tags = ["twitter", "api-key", "bearer-token"]
 
-[[allowlist]]
-  description = "Allowlist for test files"
-  regex = "(test|example|mock|fixture).*\.go$"
-
-[[allowlist]]
-  description = "Allowlist for config.example.yaml"
-  regex = "config\.example\.yaml$"
-
-[[allowlist]]
-  description = "Allowlist for known false positives in gitduppy"
-  regex = "'dummy_value'|'placeholder'|TODO|FIXME|// INSERT_KEY_HERE"
+[allowlist]
+  description = "Global allowlist for tests and false positives"
+  paths = [
+    '(test|example|mock|fixture).*\.go$',
+    'config\.example\.yaml$'
+  ]
+  regexes = [
+    '''dummy_value''',
+    '''placeholder''',
+    '''TODO''',
+    '''FIXME''',
+    '''// INSERT_KEY_HERE'''
+  ]
