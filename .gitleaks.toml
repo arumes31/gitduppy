@@ -51,14 +51,16 @@
   keywords = ["twitter_api_key", "twitter-secret", "twitter_bearer_token"]
   tags = ["twitter", "api-key", "bearer-token"]
 
-[[allowlist]]
-  description = "Allowlist for test files"
-  regex = '(test|example|mock|fixture).*\.go$'
-
-[[allowlist]]
-  description = "Allowlist for config.example.yaml"
-  regex = 'config\.example\.yaml$'
-
-[[allowlist]]
-  description = "Allowlist for known false positives in gitduppy"
-  regex = "'dummy_value'|'placeholder'|TODO|FIXME|// INSERT_KEY_HERE"
+[allowlist]
+  description = "Global allowlist for tests and false positives"
+  paths = [
+    '(test|example|mock|fixture).*\.go$',
+    'config\.example\.yaml$'
+  ]
+  regexes = [
+    '''dummy_value''',
+    '''placeholder''',
+    '''TODO''',
+    '''FIXME''',
+    '''// INSERT_KEY_HERE'''
+  ]
