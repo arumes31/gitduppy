@@ -624,7 +624,19 @@ func tarGzDecompress(srcFile, destDir string) error {
 			if err != nil {
 				return err
 			}
-			resolvedLinkTarget := filepath.Clean(filepath.Join(resolvedParent, header.Linkname))
+			linkCandidate := filepath.Join(resolvedParent, header.Linkname)
+			resolvedLinkTarget, err := filepath.EvalSymlinks(linkCandidate)
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					resolvedLinkParent, parentErr := filepath.EvalSymlinks(filepath.Dir(linkCandidate))
+					if parentErr != nil {
+						return parentErr
+					}
+					resolvedLinkTarget = filepath.Join(resolvedLinkParent, filepath.Base(linkCandidate))
+				} else {
+					return err
+				}
+			}
 			relLinkTarget, err := filepath.Rel(cleanDest, resolvedLinkTarget)
 			if err != nil || relLinkTarget == ".." || strings.HasPrefix(relLinkTarget, ".."+string(os.PathSeparator)) {
 				return fmt.Errorf("invalid symlink target (escapes root): %s", header.Linkname)
