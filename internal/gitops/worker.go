@@ -3,7 +3,6 @@ package gitops
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -113,7 +112,7 @@ func NewCloneWorker(config *WorkerConfig, gitOps *GitOperations, encryption *cry
 		gitOps:     gitOps,
 		db:         database.GetDB(),
 		encryption: encryption,
-		jobQueue:   make(chan *models.CloneJob, config.MaxConcurrent*2),
+		jobQueue:   make(chan *models.CloneJob, 128),
 		ctx:        ctx,
 		cancel:     cancel,
 		logger:     zap.L().Named("clone-worker"),
@@ -135,23 +134,58 @@ func (w *CloneWorker) Start() {
 		w.wg.Add(1)
 		go w.worker(i)
 	}
+
+	// Requeue any jobs left pending or interrupted mid-run by a previous restart
+	// so they are not stranded. Jobs marked "running" could not have survived the
+	// process exit, so reset them to pending first.
+	w.requeueUnfinishedJobs()
 }
 
-// Stop stops the worker pool.
+// requeueUnfinishedJobs re-enqueues jobs that never completed (pending, or
+// "running" when the process stopped) so a restart or a burst does not strand them.
+func (w *CloneWorker) requeueUnfinishedJobs() {
+	if w.db == nil {
+		return
+	}
+	w.db.Model(&models.CloneJob{}).Where("status = ?", "running").Update("status", "pending")
+	var jobs []models.CloneJob
+	if err := w.db.Where("status = ?", "pending").Order("created_at asc").Find(&jobs).Error; err != nil {
+		w.logger.Error("failed to load pending jobs for requeue", zap.Error(err))
+		return
+	}
+	if len(jobs) == 0 {
+		return
+	}
+	w.logger.Info("requeuing unfinished clone jobs", zap.Int("count", len(jobs)))
+	for i := range jobs {
+		w.Enqueue(&jobs[i])
+	}
+}
+
+// Stop stops the worker pool. The job channel is intentionally NOT closed: with
+// the non-dropping Enqueue below, closing it could race a blocked send and panic.
 func (w *CloneWorker) Stop() {
 	w.logger.Info("stopping clone worker pool")
 	w.cancel()
 	w.wg.Wait()
-	close(w.jobQueue)
 }
 
-// Enqueue adds a job to the queue.
+// Enqueue adds a job to the queue. It never drops a job: if the buffered channel
+// is full it hands off to a goroutine that blocks until a worker is free (or the
+// worker is shutting down). Silently dropping jobs previously left repositories
+// stuck in "pending" during bulk syncs.
 func (w *CloneWorker) Enqueue(job *models.CloneJob) {
 	select {
 	case w.jobQueue <- job:
 		w.logger.Debug("job enqueued", zap.String("job_id", job.ID.String()))
 	default:
-		w.logger.Warn("job queue full, dropping job", zap.String("job_id", job.ID.String()))
+		go func() {
+			select {
+			case w.jobQueue <- job:
+				w.logger.Debug("job enqueued (blocked)", zap.String("job_id", job.ID.String()))
+			case <-w.ctx.Done():
+			}
+		}()
 	}
 }
 
@@ -195,8 +229,9 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 		return
 	}
 
-	// Build proper repo path: BasePath/StoragePath
-	repoPath := filepath.Join(w.gitOps.BasePath, repo.StoragePath)
+	// StoragePath is persisted as the full on-disk path (base root already
+	// joined at creation time), so it is used directly here.
+	repoPath := repo.StoragePath
 
 	// Decrypt credentials
 	var creds *crypto.CredentialsPayload
@@ -234,9 +269,14 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 	}
 	cloneOpts.Progress = progress
 
-	// Perform clone or fetch
+	// Perform clone or fetch. Decide based solely on whether a valid repository
+	// already exists on disk — not on LastCloneAt. A repo can be present on disk
+	// while LastCloneAt is still nil (duplicate queued jobs, or a prior clone
+	// whose timestamp was not persisted); gating on LastCloneAt made those cases
+	// attempt a fresh clone into a populated directory, which fails with
+	// "repository already exists" and breaks periodic re-mirroring.
 	var err error
-	isUpdate := repo.LastCloneAt != nil && w.gitOps.IsRepositoryCloned(repoPath)
+	isUpdate := w.gitOps.IsRepositoryCloned(repoPath)
 
 	if isUpdate {
 		logger.Info("performing fetch", zap.String("repo", repo.Name))

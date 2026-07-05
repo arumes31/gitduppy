@@ -11,9 +11,17 @@ import (
 	"gorm.io/gorm"
 )
 
+// JobEnqueuer hands a created clone job to the background worker pool. It is
+// satisfied by *gitops.CloneWorker; declared here as an interface to avoid an
+// import cycle.
+type JobEnqueuer interface {
+	Enqueue(job *models.CloneJob)
+}
+
 // CloneService handles clone job management.
 type CloneService struct {
-	db *gorm.DB
+	db       *gorm.DB
+	enqueuer JobEnqueuer
 }
 
 // NewCloneService creates a new clone service.
@@ -21,6 +29,12 @@ func NewCloneService() *CloneService {
 	return &CloneService{
 		db: database.GetDB(),
 	}
+}
+
+// SetEnqueuer wires the worker pool so newly created jobs are dispatched
+// immediately instead of waiting for the periodic scheduler tick.
+func (s *CloneService) SetEnqueuer(e JobEnqueuer) {
+	s.enqueuer = e
 }
 
 // CloneFilter represents filters for listing clone jobs.
@@ -102,6 +116,12 @@ func (s *CloneService) CreateCloneJob(_ context.Context, repoID uuid.UUID, trigg
 
 	if err := s.db.Create(job).Error; err != nil {
 		return nil, err
+	}
+
+	// Dispatch to the worker pool immediately so a manual/API trigger runs now
+	// rather than waiting for the next scheduler tick.
+	if s.enqueuer != nil {
+		s.enqueuer.Enqueue(job)
 	}
 
 	return job, nil

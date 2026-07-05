@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"strings"
 	"sync"
 	"time"
 
@@ -97,7 +98,7 @@ func (rl *RateLimiter) Middleware() gin.HandlerFunc {
 		key := c.ClientIP()
 
 		// Stricter limits for auth endpoints
-		if len(c.Request.URL.Path) >= 14 && c.Request.URL.Path[:14] == "/api/v1/auth" {
+		if strings.HasPrefix(c.Request.URL.Path, "/api/v1/auth") {
 			key = "auth:" + key
 		} else {
 			key = "api:" + key

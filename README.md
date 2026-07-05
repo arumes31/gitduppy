@@ -25,6 +25,20 @@ A modern, secure Git repository mirroring and management platform designed for e
 - OAuth2 authentication support
 - REST API for programmatic management
 
+## Screenshots
+
+<p align="center"><img src="docs/screenshots/01-dashboard.png" alt="GitDuppy dashboard" width="900"></p>
+
+<p align="center"><em>Dashboard — live sync timeline, aggregate stats, and recent jobs across all mirrored repositories.</em></p>
+
+| Repositories | In‑browser Git browser |
+|---|---|
+| [![Repositories](docs/screenshots/02-repos.png)](docs/screenshots/02-repos.png) | [![Repository browser](docs/screenshots/05-repo-browse.png)](docs/screenshots/05-repo-browse.png) |
+| **Commit history** | **Commit diff** |
+| [![Commit history](docs/screenshots/06-commits.png)](docs/screenshots/06-commits.png) | [![Commit diff](docs/screenshots/07-commit-diff.png)](docs/screenshots/07-commit-diff.png) |
+| **Settings** | **Sign in** |
+| [![Settings](docs/screenshots/04-config.png)](docs/screenshots/04-config.png) | [![Login](docs/screenshots/00-login.png)](docs/screenshots/00-login.png) |
+
 ## Quick Start
 
 The easiest way to get started is using Docker Compose:
@@ -67,16 +81,19 @@ All environment variables are prefixed with `GITMIRRORS_` and map to the YAML st
 
 ### Core Authentication & Security Configurations
 
-To secure your installation, you must generate three 32-byte keys for credential encryption, session signing, and CSRF protection:
+To secure your installation, you must generate three **32-character** secrets for credential encryption, session signing, and CSRF protection. Each value must be **exactly 32 characters long** (a 256-bit key):
 
-1. **Master Key** (`GITMIRRORS_SECURITY_MASTER_KEY` / `security.master_key`): A 32-byte hex-encoded AES key used to encrypt repository credentials in the database.
-2. **Session Secret** (`GITMIRRORS_SECURITY_SESSION_SECRET` / `security.session_secret`): A 32-byte hex-encoded secret used to sign session cookies.
-3. **CSRF Key** (`GITMIRRORS_SECURITY_CSRF_KEY` / `security.csrf_key`): A 32-byte hex-encoded key used for CSRF token generation.
+1. **Master Key** (`GITMIRRORS_SECURITY_MASTER_KEY` / `security.master_key`): the AES-256 key used to encrypt repository credentials in the database. Accepts either a 32-character string **or** a 64-character hex-encoded key (e.g. `openssl rand -hex 32`).
+2. **Session Secret** (`GITMIRRORS_SECURITY_SESSION_SECRET` / `security.session_secret`): a 32-character secret used to sign session cookies.
+3. **CSRF Key** (`GITMIRRORS_SECURITY_CSRF_KEY` / `security.csrf_key`): a 32-character key used for CSRF token generation.
 
 #### Generating Keys
-You can generate secure 32-byte hex keys using the following commands:
-- **Bash**: `openssl rand -hex 32`
-- **PowerShell**: `[Convert]::ToHexString((1..32 | % { Get-Random -Min 0 -Max 256 } -as [byte[]]))`
+Generate a 32-character secret (works for all three keys) with:
+- **Bash**: `openssl rand -hex 16`
+- **PowerShell**: `-join ((1..16 | % { '{0:x2}' -f (Get-Random -Min 0 -Max 256) }))`
+
+> [!WARNING]
+> `openssl rand -hex 32` produces **64** characters. That is accepted for the master key (decoded from hex), but the session and CSRF keys must be exactly 32 characters — use `openssl rand -hex 16` for those.
 
 ### OAuth2 Configurations
 

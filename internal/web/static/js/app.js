@@ -111,7 +111,7 @@ if (document.getElementById('stats-container')) {
             document.getElementById('stat-failed-clones').textContent = data.data.failed_clones || 0;
             
             // Format storage (bytes to GB)
-            const storageBytes = data.data.storage_used || 0;
+            const storageBytes = data.data.total_storage_bytes || 0;
             const storageGB = (storageBytes / (1024 * 1024 * 1024)).toFixed(2);
             document.getElementById('stat-storage-used').textContent = `${storageGB} GB`;
             
@@ -189,16 +189,22 @@ if (document.getElementById('stats-container')) {
                 const statusColor = job.status === 'success' ? 'var(--success)' : 
                                    (job.status === 'failed' ? 'var(--danger)' : 'var(--warning)');
                 
+                const repoName = escHtml(job.repository ? job.repository.name : job.repository_id);
+                let duration = '-';
+                if (job.started_at && job.completed_at) {
+                    const secs = (new Date(job.completed_at) - new Date(job.started_at)) / 1000;
+                    if (secs >= 0) duration = secs.toFixed(1) + 's';
+                }
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td>${job.repository_id}</td>
+                    <td>${repoName}</td>
                     <td>
                         <span style="color: ${statusColor}; font-weight: 500;">
                             ${job.status.charAt(0).toUpperCase() + job.status.slice(1)}
                         </span>
                     </td>
-                    <td>${new Date(job.started_at).toLocaleString()}</td>
-                    <td>${job.duration_ms ? (job.duration_ms / 1000).toFixed(1) + 's' : '-'}</td>
+                    <td>${job.started_at ? new Date(job.started_at).toLocaleString() : '-'}</td>
+                    <td>${duration}</td>
                 `;
                 tbody.appendChild(tr);
             });

@@ -15,14 +15,33 @@ import (
 
 // DashboardService handles dashboard statistics.
 type DashboardService struct {
-	db *gorm.DB
+	db       *gorm.DB
+	basePath string
 }
 
-// NewDashboardService creates a new dashboard service.
-func NewDashboardService() *DashboardService {
+// NewDashboardService creates a new dashboard service. basePath is the storage
+// root used to compute total on-disk usage.
+func NewDashboardService(basePath string) *DashboardService {
 	return &DashboardService{
-		db: database.GetDB(),
+		db:       database.GetDB(),
+		basePath: basePath,
 	}
+}
+
+// dirSize returns the total size in bytes of all files under root. Missing paths
+// contribute zero rather than erroring so the stat is best-effort.
+func dirSize(root string) int64 {
+	var total int64
+	_ = filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
+		if err != nil || info == nil {
+			return nil //nolint:nilerr // best-effort: skip unreadable entries
+		}
+		if !info.IsDir() {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
 }
 
 // DashboardStats represents dashboard statistics.
@@ -31,6 +50,8 @@ type DashboardStats struct {
 	ActiveRepositories        int64            `json:"active_repositories"`
 	FailedRepositories        int64            `json:"failed_repositories"`
 	TotalCloneJobs            int64            `json:"total_clone_jobs"`
+	SuccessfulClones          int64            `json:"successful_clones"`
+	FailedClones              int64            `json:"failed_clones"`
 	SuccessRate               float64          `json:"success_rate"`
 	AverageCloneDuration      float64          `json:"average_clone_duration_seconds"`
 	TotalStorageBytes         int64            `json:"total_storage_bytes"`
@@ -79,6 +100,14 @@ func (s *DashboardService) GetStats(ctx context.Context) (*DashboardStats, error
 	db.Model(&models.CloneJob{}).Where("status IN ?", []string{"success", "failed"}).Count(&totalCompleted)
 	if totalCompleted > 0 {
 		stats.SuccessRate = float64(totalSuccess) / float64(totalCompleted) * 100
+	}
+	// Successful / failed clone totals surfaced directly on the dashboard cards.
+	stats.SuccessfulClones = totalSuccess
+	db.Model(&models.CloneJob{}).Where("status = 'failed'").Count(&stats.FailedClones)
+
+	// Total on-disk storage used by mirrored repositories (best-effort walk).
+	if s.basePath != "" {
+		stats.TotalStorageBytes = dirSize(s.basePath)
 	}
 
 	// Average clone duration

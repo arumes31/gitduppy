@@ -68,13 +68,13 @@ func main() {
 	// Initialize services
 	authService := services.NewAuthService(cfg.Security.SessionDuration)
 	userService := services.NewUserService()
-	repoService := services.NewRepositoryService(encryptionService)
+	repoService := services.NewRepositoryService(encryptionService, cfg.Storage.BasePath)
 	cloneService := services.NewCloneService()
 	apiKeyService := services.NewAPIKeyService()
 	webhookService := services.NewWebhookService(cloneService)
 	auditService := services.NewAuditService()
 	tagService := services.NewTagService()
-	dashboardService := services.NewDashboardService()
+	dashboardService := services.NewDashboardService(cfg.Storage.BasePath)
 
 	configService := services.NewConfigService(cfg, database.GetDB(), encryptionService)
 	oauthService := services.NewOAuthService(configService)
@@ -95,6 +95,8 @@ func main() {
 
 	cloneWorker := gitops.NewCloneWorker(workerConfig, gitOps, encryptionService)
 	cloneWorker.SetNotificationServices(webhookService, emailService)
+	// Dispatch newly created clone jobs straight to the worker pool.
+	cloneService.SetEnqueuer(cloneWorker)
 	cloneWorker.Start()
 	defer cloneWorker.Stop()
 

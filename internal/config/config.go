@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -195,6 +196,14 @@ func Load() (*Config, error) {
 	v.SetEnvPrefix("GITMIRRORS")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
+	// Explicitly bind every config key to its environment variable. viper's
+	// AutomaticEnv only resolves env vars during Unmarshal for keys it already
+	// knows about (those given a default). Security keys, OAuth credentials and
+	// SMTP settings have no defaults, so without this walk their GITMIRRORS_*
+	// env vars are silently ignored — which prevents the documented Docker
+	// deployment from ever starting (empty master key => encryption init fails).
+	bindEnvs(v, Config{})
+
 	// Read config file (ignore if not found)
 	if err := v.ReadInConfig(); err != nil {
 		var configFileNotFoundError viper.ConfigFileNotFoundError
@@ -209,4 +218,24 @@ func Load() (*Config, error) {
 	}
 
 	return &config, nil
+}
+
+// bindEnvs walks a (possibly nested) struct and calls v.BindEnv for every leaf
+// field, using the dotted mapstructure path as the key. This makes AutomaticEnv
+// work with Unmarshal even for keys that have no default value set.
+func bindEnvs(v *viper.Viper, iface interface{}, parts ...string) {
+	ift := reflect.TypeOf(iface)
+	ifv := reflect.ValueOf(iface)
+	for i := 0; i < ift.NumField(); i++ {
+		tag := ift.Field(i).Tag.Get("mapstructure")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		fieldv := ifv.Field(i)
+		if fieldv.Kind() == reflect.Struct {
+			bindEnvs(v, fieldv.Interface(), append(parts, tag)...)
+			continue
+		}
+		_ = v.BindEnv(strings.Join(append(parts, tag), "."))
+	}
 }

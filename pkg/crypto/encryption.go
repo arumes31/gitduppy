@@ -5,6 +5,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -23,13 +24,23 @@ type EncryptionService struct {
 	masterKey [32]byte // 256-bit key
 }
 
-// NewEncryptionService creates a new encryption service.
+// NewEncryptionService creates a new encryption service. The master key may be
+// supplied either as a raw 32-byte string, or as a 64-character hex-encoded
+// 256-bit key (e.g. from `openssl rand -hex 32`), which is decoded to 32 bytes.
 func NewEncryptionService(masterKey string) (*EncryptionService, error) {
-	if len(masterKey) != 32 {
-		return nil, errors.New("master key must be exactly 32 bytes (256 bits)")
-	}
 	var key [32]byte
-	copy(key[:], []byte(masterKey))
+	switch {
+	case len(masterKey) == 32:
+		copy(key[:], []byte(masterKey))
+	case len(masterKey) == 64:
+		decoded, err := hex.DecodeString(masterKey)
+		if err != nil {
+			return nil, errors.New("master key must be 32 raw bytes or 64 hex characters")
+		}
+		copy(key[:], decoded)
+	default:
+		return nil, errors.New("master key must be exactly 32 bytes (256 bits), or 64 hex characters")
+	}
 	return &EncryptionService{masterKey: key}, nil
 }
 

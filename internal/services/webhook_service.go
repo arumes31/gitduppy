@@ -186,8 +186,16 @@ func (s *WebhookService) DeleteWebhook(_ context.Context, id uuid.UUID) error {
 
 // SendEvent sends a webhook event to all subscribed webhooks.
 func (s *WebhookService) SendEvent(_ context.Context, eventType string, payload map[string]interface{}) error {
+	// events is a JSONB array column, so the containment operand must be a JSON
+	// array literal (e.g. ["clone.failed"]). Passing a Go []string encodes a
+	// Postgres text[] instead, which errors with "invalid input syntax for type
+	// json" and silently drops every webhook match.
+	eventJSON, err := json.Marshal([]string{eventType})
+	if err != nil {
+		return err
+	}
 	var webhooks []models.WebhookConfig
-	if err := s.db.Where("is_active = ? AND events @> ?", true, []string{eventType}).Find(&webhooks).Error; err != nil {
+	if err := s.db.Where("is_active = ? AND events @> ?::jsonb", true, string(eventJSON)).Find(&webhooks).Error; err != nil {
 		return err
 	}
 

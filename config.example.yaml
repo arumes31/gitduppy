@@ -26,9 +26,9 @@ database:
   conn_max_lifetime: "1h"
 
 security:
-  master_key: ""  # 32-byte AES key for credential encryption (generate with: openssl rand -hex 32)
-  session_secret: ""  # 32-byte key for session signing (generate with: openssl rand -hex 32)
-  csrf_key: ""  # 32-byte key for CSRF tokens (generate with: openssl rand -hex 32)
+  master_key: ""  # 32-char AES-256 key for credential encryption (openssl rand -hex 16); also accepts a 64-char hex key
+  session_secret: ""  # exactly 32 chars for session signing (openssl rand -hex 16)
+  csrf_key: ""  # exactly 32 chars for CSRF tokens (openssl rand -hex 16)
   session_duration: "24h"
   rate_limit:
     auth_requests_per_minute: 10
