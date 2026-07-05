@@ -289,13 +289,19 @@ func (s *WebhookService) attemptDelivery(webhook models.WebhookConfig, eventType
 	req.Header.Set("X-GitMirrors-Event", eventType)
 	req.Header.Set("X-GitMirrors-Delivery-Attempt", strconv.Itoa(attempt))
 
-	// Add HMAC signature if secret is set (decrypt the at-rest secret first). If
-	// the stored secret cannot be decrypted, log and send without a signature
-	// rather than signing with the raw ciphertext (which would never verify).
-	if secret, decErr := s.decryptSecret(webhook.Secret); decErr != nil {
-		zap.L().Named("webhook-service").Error("cannot decrypt webhook secret; delivering without signature",
+	// Add HMAC signature if a secret is configured (decrypt the at-rest secret
+	// first). If the stored secret cannot be decrypted, fail safe: record a failed
+	// delivery and do NOT send. Sending unsigned would silently downgrade a
+	// signature-protected webhook to an unauthenticated one for any receiver that
+	// only verifies when a signature is present.
+	secret, decErr := s.decryptSecret(webhook.Secret)
+	if decErr != nil {
+		zap.L().Named("webhook-service").Error("cannot decrypt webhook secret; skipping delivery (not sending unsigned)",
 			zap.String("webhook_id", webhook.ID.String()), zap.Error(decErr))
-	} else if secret != "" {
+		s.recordDelivery(webhook.ID, eventType, string(payloadJSON), 0, "webhook secret could not be decrypted", false, attempt)
+		return false
+	}
+	if secret != "" {
 		signature := s.generateHMACSignature(payloadJSON, secret)
 		req.Header.Set("X-GitMirrors-Signature", signature)
 	}
