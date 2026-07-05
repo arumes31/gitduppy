@@ -26,10 +26,12 @@ func createTestUser(t *testing.T) uuid.UUID {
 	return u.ID
 }
 
-// testDBAvailable connects to a throwaway Postgres test database. The DSN is
-// taken from GITMIRRORS_TEST_DB_DSN or defaults to the local docker instance on
-// port 5433. Tests are skipped (not failed) when no database is reachable so the
-// suite still runs in environments without Postgres.
+// testDBAvailable connects to a throwaway Postgres test database. Only the host
+// is configurable, via GITMIRRORS_TEST_DB_HOST (default "localhost"); the
+// remaining settings (port 5433, database gitduppy_test, user/password
+// gitduppy) are fixed to match the local docker test instance. Tests are
+// skipped (not failed) when no database is reachable so the suite still runs in
+// environments without Postgres.
 func testDBAvailable(t *testing.T) {
 	t.Helper()
 	if database.GetDB() != nil {

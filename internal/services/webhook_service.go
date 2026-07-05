@@ -72,8 +72,15 @@ func (s *WebhookService) DecryptSecret(stored string) (string, error) {
 // tagged as encrypted that fails to decrypt returns ("", error) so callers never
 // mistake the raw ciphertext for the real secret.
 func (s *WebhookService) decryptSecret(stored string) (string, error) {
-	if s.encryption == nil || !strings.HasPrefix(stored, encSecretPrefix) {
+	if !strings.HasPrefix(stored, encSecretPrefix) {
+		// Truly legacy plaintext secret (written before encryption existed).
 		return stored, nil
+	}
+	// The value is tagged as encrypted. If encryption is not wired we cannot
+	// recover the plaintext, so fail loudly rather than hand back the raw
+	// ciphertext (which would silently be used as if it were the real secret).
+	if s.encryption == nil {
+		return "", fmt.Errorf("decrypt webhook secret: value is encrypted but encryption is disabled")
 	}
 	pt, err := s.encryption.DecryptString(strings.TrimPrefix(stored, encSecretPrefix))
 	if err != nil {

@@ -21,15 +21,21 @@ func TestValidateEmail(t *testing.T) {
 
 func TestValidateGitURL(t *testing.T) {
 	cases := map[string]bool{
+		// Allowed transports: http, https, git, ssh (plus scp-like git@ SSH).
 		"https://github.com/user/repo.git":  true,
 		"http://gitlab.com/a/b.git":          true,
 		"git@github.com:user/repo.git":       true,
 		"git://host/user/repo.git":           true,
+		"ssh://git@host/user/repo.git":       true,
 		"https://example.com/deep/path.git":  true,
-		"https://github.com/user/repo":       false, // no .git suffix and not matched by regex
-		"not a url":                          false,
-		"":                                   false,
-		"ftp://host/x.git":                   true, // parsed URL with scheme+host and .git path
+		// Rejected: missing .git suffix / not a URL.
+		"https://github.com/user/repo": false, // no .git suffix and not matched by regex
+		"not a url":                    false,
+		"":                             false,
+		// Rejected: unsafe transports, even with a .git path.
+		"ftp://host/x.git":       false,
+		"file:///etc/passwd.git": false,
+		"ext::sh -c whoami":      false,
 	}
 	for in, want := range cases {
 		if got := ValidateGitURL(in); got != want {

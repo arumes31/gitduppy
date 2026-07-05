@@ -22,6 +22,10 @@ func SecurityHeaders(cfg *config.Config) gin.HandlerFunc {
 		// asset branch can opt out of the no-store defaults below.
 		if isStaticAsset(c.Request.URL.Path) {
 			c.Header("X-Content-Type-Options", "nosniff")
+			// HSTS must be sent on every response from the origin, including
+			// cacheable static assets, so browsers pin HTTPS regardless of
+			// which path first loads.
+			c.Header("Strict-Transport-Security", "max-age="+strconv.Itoa(cfg.Security.HSTSMaxAge)+"; includeSubDomains; preload")
 			c.Header("Cache-Control", "public, max-age=86400")
 			c.Next()
 			return

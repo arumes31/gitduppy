@@ -27,6 +27,7 @@ type DashboardService struct {
 
 	storageMu         sync.Mutex
 	storageBytes      int64
+	paperbinBytes     int64
 	storageAt         time.Time
 	storageRefreshing bool
 
@@ -70,34 +71,70 @@ func (s *DashboardService) totalStorageBytes() int64 {
 	return cached
 }
 
-// refreshStorage walks the storage tree off the request path and updates the
-// cached total. Only one refresh runs at a time (guarded by storageRefreshing),
-// and storageMu is not held during the walk.
+// refreshStorage walks the storage tree once off the request path and updates
+// both the cached total and the paperbin subtotal. Only one refresh runs at a
+// time (guarded by storageRefreshing), and storageMu is not held during the walk.
 func (s *DashboardService) refreshStorage() {
-	size := dirSize(s.basePath)
+	total, paperbin := scanStorage(s.basePath)
 	s.storageMu.Lock()
-	s.storageBytes = size
+	s.storageBytes = total
+	s.paperbinBytes = paperbin
 	s.storageAt = time.Now()
 	s.storageRefreshing = false
 	s.storageMu.Unlock()
 }
 
-// dirSize returns the total size in bytes of all files under root. Missing paths
-// contribute zero rather than erroring so the stat is best-effort. Uses WalkDir
-// to avoid a stat() syscall per entry.
-func dirSize(root string) int64 {
-	var total int64
-	_ = filepath.WalkDir(root, func(_ string, d os.DirEntry, err error) error {
+// paperbinSizeBytes returns the cached on-disk size of paperbin contents without
+// blocking the request, kicking off the shared background storage refresh when
+// the cached value is stale. Like totalStorageBytes it reports 0 until the first
+// background walk lands.
+func (s *DashboardService) paperbinSizeBytes() int64 {
+	if s.basePath == "" {
+		return 0
+	}
+	s.storageMu.Lock()
+	cached := s.paperbinBytes
+	stale := s.storageAt.IsZero() || time.Since(s.storageAt) >= storageSizeTTL
+	if stale && !s.storageRefreshing {
+		s.storageRefreshing = true
+		go s.refreshStorage()
+	}
+	s.storageMu.Unlock()
+	return cached
+}
+
+// scanStorage walks root once, returning the total size in bytes of all files
+// and the subtotal of files that live under any "paperbin" subdirectory. Missing
+// or unreadable entries contribute zero rather than erroring so the stat is
+// best-effort. Uses WalkDir to avoid a stat() syscall per entry.
+func scanStorage(root string) (total, paperbin int64) {
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d == nil {
 			return nil //nolint:nilerr // best-effort: skip unreadable entries
 		}
-		if !d.IsDir() {
-			if info, ierr := d.Info(); ierr == nil {
-				total += info.Size()
+		if d.IsDir() {
+			return nil
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return nil
+		}
+		total += info.Size()
+		for _, part := range strings.Split(filepath.ToSlash(path), "/") {
+			if part == "paperbin" {
+				paperbin += info.Size()
+				break
 			}
 		}
 		return nil
 	})
+	return total, paperbin
+}
+
+// dirSize returns the total size in bytes of all files under root. Missing paths
+// contribute zero rather than erroring so the stat is best-effort.
+func dirSize(root string) int64 {
+	total, _ := scanStorage(root)
 	return total
 }
 
@@ -160,7 +197,10 @@ func (s *DashboardService) GetStats(ctx context.Context) (*DashboardStats, error
 		Count    int64
 	}
 	var repoRows []repoStatusRow
-	db.Model(&models.Repository{}).Select("is_active, status, COUNT(*) as count").Group("is_active, status").Scan(&repoRows)
+	if err := db.Model(&models.Repository{}).Select("is_active, status, COUNT(*) as count").Group("is_active, status").Scan(&repoRows).Error; err != nil {
+		// Don't cache all-zero stats from a failed aggregation; surface the error.
+		return nil, err
+	}
 	for _, r := range repoRows {
 		if r.IsActive {
 			stats.TotalRepositories += r.Count
@@ -190,7 +230,9 @@ func (s *DashboardService) GetStats(ctx context.Context) (*DashboardStats, error
 		Count  int64
 	}
 	var jobRows []jobStatusRow
-	db.Model(&models.CloneJob{}).Select("status, COUNT(*) as count").Group("status").Scan(&jobRows)
+	if err := db.Model(&models.CloneJob{}).Select("status, COUNT(*) as count").Group("status").Scan(&jobRows).Error; err != nil {
+		return nil, err
+	}
 	for _, r := range jobRows {
 		stats.TotalCloneJobs += r.Count
 		switch r.Status {
@@ -387,31 +429,8 @@ func (s *DashboardService) GetPaperbinSize(ctx context.Context) (int64, int64, e
 		}
 	}
 
-	// Walk the configured storage base (not a hard-coded "repos" dir, which was
-	// wrong whenever Storage.BasePath differed) summing files under any
-	// "paperbin" subdirectory.
-	root := s.basePath
-	if root == "" {
-		root = "repos"
-	}
-	var totalSize int64
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d == nil {
-			return nil //nolint:nilerr // best-effort
-		}
-		if d.IsDir() {
-			return nil
-		}
-		for _, part := range strings.Split(filepath.ToSlash(path), "/") {
-			if part == "paperbin" {
-				if info, ierr := d.Info(); ierr == nil {
-					totalSize += info.Size()
-				}
-				break
-			}
-		}
-		return nil
-	})
-
-	return totalSize, quotaGB, nil
+	// Paperbin size comes from the shared, memoized storage scan (see
+	// paperbinSizeBytes / refreshStorage) rather than a per-request tree walk,
+	// keeping the expensive traversal off the hot path.
+	return s.paperbinSizeBytes(), quotaGB, nil
 }

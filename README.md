@@ -81,7 +81,7 @@ All environment variables are prefixed with `GITMIRRORS_` and map to the YAML st
 
 ### Core Authentication & Security Configurations
 
-To secure your installation, you must generate three **32-character** secrets for credential encryption, session signing, and CSRF protection. Each value must be **exactly 32 characters long** (a 256-bit key):
+To secure your installation, you must generate three secrets for credential encryption, session signing, and CSRF protection — each a 256-bit key. The **Session Secret** and **CSRF Key** must be **exactly 32 characters long**; the **Master Key** must be either a 32-character string **or** a 64-character hex-encoded value (which decodes to 32 bytes):
 
 1. **Master Key** (`GITMIRRORS_SECURITY_MASTER_KEY` / `security.master_key`): the AES-256 key used to encrypt repository credentials in the database. Accepts either a 32-character string **or** a 64-character hex-encoded key (e.g. `openssl rand -hex 32`).
 2. **Session Secret** (`GITMIRRORS_SECURITY_SESSION_SECRET` / `security.session_secret`): a 32-character secret used to sign session cookies.
