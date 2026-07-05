@@ -36,7 +36,7 @@
 
 [[rules]]
   description = "Google (GCP) Service Account"
-  regex = "\"type\"\s*:\s*\"service_account\""
+  regex = '"type"\s*:\s*"service_account"'
   tags = ["google", "gcp", "service-account"]
 
 [[rules]]
