@@ -564,7 +564,7 @@ func tarGzDecompress(srcFile, destDir string) error {
 
 	for {
 		header, err := tr.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -624,6 +624,7 @@ func tarGzDecompress(srcFile, destDir string) error {
 			if err != nil {
 				return err
 			}
+			//nolint:gosec // G305: path traversal is prevented by verifying relLinkTarget against cleanDest below
 			linkCandidate := filepath.Join(resolvedParent, header.Linkname)
 			resolvedLinkTarget, err := filepath.EvalSymlinks(linkCandidate)
 			if err != nil {
