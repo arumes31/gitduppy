@@ -574,15 +574,14 @@ func tarGzDecompress(srcFile, destDir string) error {
 		// Guard against path traversal (Zip Slip): sanitize the header name
 		// before doing any joins or filesystem operations.
 		cleanName := filepath.Clean(header.Name)
-		if strings.HasPrefix(cleanName, "..") || filepath.IsAbs(cleanName) || strings.Contains(header.Name, "..") {
+		if !filepath.IsLocal(cleanName) {
 			return fmt.Errorf("invalid path in archive (path traversal): %s", header.Name)
 		}
 
 		target := filepath.Join(destDir, cleanName)
 
 		// Extra safety check: ensure the resolved target stays within destDir
-		cleanDest := filepath.Clean(destDir)
-		if target != cleanDest && !strings.HasPrefix(target, cleanDest+string(os.PathSeparator)) {
+		if !strings.HasPrefix(target, filepath.Clean(destDir)+string(os.PathSeparator)) {
 			return fmt.Errorf("invalid path in archive (path traversal): %s", header.Name)
 		}
 
