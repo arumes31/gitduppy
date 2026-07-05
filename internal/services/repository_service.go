@@ -594,9 +594,20 @@ func tarGzDecompress(srcFile, destDir string) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
+			// Validate symlink target to prevent path traversal (escaping destDir)
+			if filepath.IsAbs(header.Linkname) {
+				return fmt.Errorf("invalid symlink target (absolute path): %s", header.Linkname)
+			}
+			// #nosec G305 - The resolved path is strictly checked for prefix containment immediately below.
+			resolvedLinkTarget := filepath.Clean(filepath.Join(filepath.Dir(target), header.Linkname))
+			cleanDest := filepath.Clean(destDir)
+			if !strings.HasPrefix(resolvedLinkTarget, cleanDest+string(os.PathSeparator)) && resolvedLinkTarget != cleanDest {
+				return fmt.Errorf("invalid symlink target (escapes root): %s", header.Linkname)
+			}
 			if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
 				return err
 			}
+			// CodeQL [go/unsafe-unzip-symlink] - The symbolic link path and target are both strictly validated to stay within the destination directory before creation.
 			if err := os.Symlink(header.Linkname, target); err != nil {
 				return err
 			}
