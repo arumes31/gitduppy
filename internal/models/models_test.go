@@ -15,24 +15,30 @@ func TestUserIsAdmin(t *testing.T) {
 }
 
 func TestTableNames(t *testing.T) {
-	cases := map[string]string{
-		User{}.TableName():            "users",
-		Repository{}.TableName():      "repositories",
-		Session{}.TableName():         "sessions",
-		APIKey{}.TableName():          "api_keys",
-		AuditLog{}.TableName():        "audit_logs",
-		CloneJob{}.TableName():        "clone_jobs",
-		CloneLog{}.TableName():        "clone_logs",
-		Tag{}.TableName():             "tags",
-		RepositoryTag{}.TableName():   "repository_tags",
-		WebhookConfig{}.TableName():   "webhook_configs",
-		WebhookDelivery{}.TableName(): "webhook_deliveries",
-		HealthCheck{}.TableName():     "health_checks",
-		DeletedBranch{}.TableName():   "deleted_branches",
+	// Each entry pairs a model's actual TableName() against the expected value so
+	// a wrong name is caught. (A map keyed by TableName() cannot do this: it would
+	// silently collapse colliding/wrong names and only ever check for emptiness.)
+	cases := []struct {
+		got  string
+		want string
+	}{
+		{User{}.TableName(), "users"},
+		{Repository{}.TableName(), "repositories"},
+		{Session{}.TableName(), "sessions"},
+		{APIKey{}.TableName(), "api_keys"},
+		{AuditLog{}.TableName(), "audit_logs"},
+		{CloneJob{}.TableName(), "clone_jobs"},
+		{CloneLog{}.TableName(), "clone_logs"},
+		{Tag{}.TableName(), "tags"},
+		{RepositoryTag{}.TableName(), "repository_tags"},
+		{WebhookConfig{}.TableName(), "webhook_configs"},
+		{WebhookDelivery{}.TableName(), "webhook_deliveries"},
+		{HealthCheck{}.TableName(), "health_checks"},
+		{DeletedBranch{}.TableName(), "deleted_branches"},
 	}
-	for got, want := range cases {
-		if got == "" {
-			t.Errorf("empty table name (want %q)", want)
+	for _, c := range cases {
+		if c.got != c.want {
+			t.Errorf("TableName() = %q, want %q", c.got, c.want)
 		}
 	}
 }

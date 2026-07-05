@@ -3,6 +3,7 @@ package gitops
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -92,6 +93,12 @@ type CloneWorker struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
 	logger        *zap.Logger
+
+	// Overflow backlog drained by a single dispatcher goroutine so that a burst
+	// larger than jobQueue's buffer never spawns a goroutine per job.
+	pendingMu sync.Mutex
+	pending   []*models.CloneJob
+	notify    chan struct{}
 }
 
 // WebhookSender interface for sending webhook events.
@@ -113,6 +120,7 @@ func NewCloneWorker(config *WorkerConfig, gitOps *GitOperations, encryption *cry
 		db:         database.GetDB(),
 		encryption: encryption,
 		jobQueue:   make(chan *models.CloneJob, 128),
+		notify:     make(chan struct{}, 1),
 		ctx:        ctx,
 		cancel:     cancel,
 		logger:     zap.L().Named("clone-worker"),
@@ -135,19 +143,44 @@ func (w *CloneWorker) Start() {
 		go w.worker(i)
 	}
 
+	// Single dispatcher drains the overflow backlog into the worker queue.
+	w.wg.Add(1)
+	go w.dispatch()
+
 	// Requeue any jobs left pending or interrupted mid-run by a previous restart
-	// so they are not stranded. Jobs marked "running" could not have survived the
-	// process exit, so reset them to pending first.
+	// so they are not stranded. Only *stale* running jobs are reset (see
+	// requeueUnfinishedJobs) so a co-running instance's in-flight jobs are left
+	// alone under a multi-replica deployment.
 	w.requeueUnfinishedJobs()
 }
 
 // requeueUnfinishedJobs re-enqueues jobs that never completed (pending, or
-// "running" when the process stopped) so a restart or a burst does not strand them.
+// "running" long enough that no live worker could still hold them) so a restart
+// or a burst does not strand them.
+//
+// A "running" job is only reset when its started_at is older than a stale
+// threshold derived from the clone timeout. This avoids clobbering jobs that
+// another replica started moments ago — resetting those would let two instances
+// clone into the same directory concurrently.
 func (w *CloneWorker) requeueUnfinishedJobs() {
 	if w.db == nil {
 		return
 	}
-	w.db.Model(&models.CloneJob{}).Where("status = ?", "running").Update("status", "pending")
+
+	// Stale = older than the clone timeout plus a margin; a running job past this
+	// point cannot still be owned by a live worker (which would have timed out).
+	timeout := time.Duration(w.config.CloneTimeout) * time.Second
+	if timeout <= 0 {
+		timeout = time.Duration(DefaultWorkerConfig().CloneTimeout) * time.Second
+	}
+	staleBefore := time.Now().Add(-timeout - time.Minute)
+
+	// Rows whose started_at is NULL are also treated as stale: they were marked
+	// running but never recorded a start, so no worker is holding them.
+	w.db.Model(&models.CloneJob{}).
+		Where("status = ? AND (started_at IS NULL OR started_at < ?)", "running", staleBefore).
+		Update("status", "pending")
+
 	var jobs []models.CloneJob
 	if err := w.db.Where("status = ?", "pending").Order("created_at asc").Find(&jobs).Error; err != nil {
 		w.logger.Error("failed to load pending jobs for requeue", zap.Error(err))
@@ -170,22 +203,56 @@ func (w *CloneWorker) Stop() {
 	w.wg.Wait()
 }
 
-// Enqueue adds a job to the queue. It never drops a job: if the buffered channel
-// is full it hands off to a goroutine that blocks until a worker is free (or the
-// worker is shutting down). Silently dropping jobs previously left repositories
-// stuck in "pending" during bulk syncs.
+// Enqueue adds a job to the queue. It never blocks and never drops a job: the job
+// is appended to an in-memory backlog that a single dispatcher goroutine drains
+// into the worker queue. This bounds overflow handling to one goroutine no matter
+// how large a burst is (a goroutine-per-job fallback could otherwise spawn
+// thousands under a bulk sync). Silently dropping jobs previously left
+// repositories stuck in "pending".
 func (w *CloneWorker) Enqueue(job *models.CloneJob) {
+	w.pendingMu.Lock()
+	w.pending = append(w.pending, job)
+	w.pendingMu.Unlock()
+
+	// Wake the dispatcher; the buffered notify channel coalesces bursts so we
+	// never block here.
 	select {
-	case w.jobQueue <- job:
-		w.logger.Debug("job enqueued", zap.String("job_id", job.ID.String()))
+	case w.notify <- struct{}{}:
 	default:
-		go func() {
+	}
+	w.logger.Debug("job enqueued", zap.String("job_id", job.ID.String()))
+}
+
+// dispatch drains the overflow backlog into jobQueue, blocking on a full queue
+// until a worker frees a slot (or the worker shuts down). Running as a single
+// goroutine, it replaces the previous unbounded goroutine-per-job fallback.
+func (w *CloneWorker) dispatch() {
+	defer w.wg.Done()
+	for {
+		w.pendingMu.Lock()
+		if len(w.pending) == 0 {
+			w.pendingMu.Unlock()
 			select {
-			case w.jobQueue <- job:
-				w.logger.Debug("job enqueued (blocked)", zap.String("job_id", job.ID.String()))
+			case <-w.notify:
+				continue
 			case <-w.ctx.Done():
+				return
 			}
-		}()
+		}
+		job := w.pending[0]
+		w.pending = w.pending[1:]
+		// Release the backing array once fully drained so a past burst does not
+		// pin a large slice for the process lifetime.
+		if len(w.pending) == 0 {
+			w.pending = nil
+		}
+		w.pendingMu.Unlock()
+
+		select {
+		case w.jobQueue <- job:
+		case <-w.ctx.Done():
+			return
+		}
 	}
 }
 
@@ -343,6 +410,17 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 			}
 		}
 	} else {
+		// The path is not a valid repository but may still hold a leftover from a
+		// previously interrupted clone (a non-.git directory, or a half-written
+		// tree). git clone refuses a non-empty destination, so that debris would
+		// make every future attempt fail permanently. Clear it first so the clone
+		// can self-heal.
+		if _, statErr := os.Stat(repoPath); statErr == nil {
+			logger.Warn("removing leftover incomplete clone directory before re-clone", zap.String("path", repoPath))
+			if rmErr := os.RemoveAll(repoPath); rmErr != nil {
+				logger.Error("failed to remove leftover clone directory", zap.String("path", repoPath), zap.Error(rmErr))
+			}
+		}
 		logger.Info("performing clone", zap.String("repo", repo.Name))
 		err = w.gitOps.CloneRepository(w.ctx, cloneOpts)
 	}

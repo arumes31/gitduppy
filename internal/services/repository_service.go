@@ -124,7 +124,8 @@ type CreateRepositoryRequest struct {
 	Branch               string                     `json:"branch" validate:"required"`
 	AuthType             string                     `json:"auth_type" validate:"required,oneof=none https ssh token"`
 	Credentials          *crypto.CredentialsPayload `json:"credentials,omitempty"`
-	StoragePath          string                     `json:"storage_path" validate:"required"`
+	// Note: storage path is derived server-side from the configured storage base
+	// and the repository ID; it is intentionally not accepted from the request.
 	IsBare               bool                       `json:"is_bare"`
 	LFSEnabled           bool                       `json:"lfs_enabled"`
 	MirrorIssues         bool                       `json:"mirror_issues"`

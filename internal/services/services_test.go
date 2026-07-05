@@ -73,7 +73,7 @@ func TestRepositoryCRUDAndStoragePath(t *testing.T) {
 	name := "svc-test-" + uuid.NewString()[:8]
 	repo, err := svc.CreateRepository(ctx, &CreateRepositoryRequest{
 		Name: name, URL: "https://github.com/octocat/Hello-World.git",
-		Branch: "master", AuthType: "none", StoragePath: name,
+		Branch: "master", AuthType: "none",
 		CloneIntervalMinutes: 60, RetentionDays: 30,
 	}, userID)
 	if err != nil {

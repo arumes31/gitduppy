@@ -54,6 +54,12 @@ func main() {
 		log.Fatalf("Failed to run migrations: %v", err)
 	}
 
+	// Normalize legacy repository storage paths to the current canonical form so
+	// upgrades from builds that stored base-relative paths keep resolving on disk.
+	if err := database.MigrateStoragePaths(cfg.Storage.BasePath); err != nil {
+		log.Fatalf("Failed to migrate repository storage paths: %v", err)
+	}
+
 	// Create default admin user if none exists
 	if err := createDefaultAdmin(); err != nil {
 		log.Fatalf("Failed to create default admin user: %v", err)

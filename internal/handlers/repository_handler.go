@@ -133,7 +133,6 @@ func (h *RepositoryHandler) CreateRepository(c *gin.Context) {
 		Branch               string                     `json:"branch" validate:"required"`
 		AuthType             string                     `json:"auth_type" validate:"required,oneof=none https ssh token"`
 		Credentials          *crypto.CredentialsPayload `json:"credentials,omitempty"`
-		StoragePath          string                     `json:"storage_path" validate:"required"`
 		IsBare               bool                       `json:"is_bare"`
 		LFSEnabled           bool                       `json:"lfs_enabled"`
 		MirrorIssues         bool                       `json:"mirror_issues"`
@@ -167,7 +166,6 @@ func (h *RepositoryHandler) CreateRepository(c *gin.Context) {
 		Branch:               req.Branch,
 		AuthType:             req.AuthType,
 		Credentials:          req.Credentials,
-		StoragePath:          req.StoragePath,
 		IsBare:               req.IsBare,
 		LFSEnabled:           req.LFSEnabled,
 		MirrorIssues:         req.MirrorIssues,

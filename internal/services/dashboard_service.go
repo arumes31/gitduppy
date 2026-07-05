@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gitduppy/gitduppy/internal/database"
@@ -13,10 +14,19 @@ import (
 	"gorm.io/gorm"
 )
 
+// storageSizeTTL is how long a computed on-disk storage total is reused before
+// the tree is walked again. Dashboard stats are polled frequently, and walking a
+// large mirror on every request is expensive, so the value is memoized.
+const storageSizeTTL = 60 * time.Second
+
 // DashboardService handles dashboard statistics.
 type DashboardService struct {
 	db       *gorm.DB
 	basePath string
+
+	storageMu    sync.Mutex
+	storageBytes int64
+	storageAt    time.Time
 }
 
 // NewDashboardService creates a new dashboard service. basePath is the storage
@@ -26,6 +36,23 @@ func NewDashboardService(basePath string) *DashboardService {
 		db:       database.GetDB(),
 		basePath: basePath,
 	}
+}
+
+// totalStorageBytes returns the on-disk size of the storage tree, walking it at
+// most once per storageSizeTTL and serving a cached value in between so repeated
+// dashboard polls do not each pay for a full filesystem walk.
+func (s *DashboardService) totalStorageBytes() int64 {
+	if s.basePath == "" {
+		return 0
+	}
+	s.storageMu.Lock()
+	defer s.storageMu.Unlock()
+	if !s.storageAt.IsZero() && time.Since(s.storageAt) < storageSizeTTL {
+		return s.storageBytes
+	}
+	s.storageBytes = dirSize(s.basePath)
+	s.storageAt = time.Now()
+	return s.storageBytes
 }
 
 // dirSize returns the total size in bytes of all files under root. Missing paths
@@ -105,10 +132,9 @@ func (s *DashboardService) GetStats(ctx context.Context) (*DashboardStats, error
 	stats.SuccessfulClones = totalSuccess
 	db.Model(&models.CloneJob{}).Where("status = 'failed'").Count(&stats.FailedClones)
 
-	// Total on-disk storage used by mirrored repositories (best-effort walk).
-	if s.basePath != "" {
-		stats.TotalStorageBytes = dirSize(s.basePath)
-	}
+	// Total on-disk storage used by mirrored repositories (best-effort, cached
+	// walk — see totalStorageBytes).
+	stats.TotalStorageBytes = s.totalStorageBytes()
 
 	// Average clone duration
 	type DurationResult struct {
