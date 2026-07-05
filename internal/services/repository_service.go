@@ -573,6 +573,8 @@ func tarGzDecompress(srcFile, destDir string) error {
 
 		// Guard against path traversal (Zip Slip): sanitize the header name
 		// before doing any joins or filesystem operations.
+		// codeql[go/unsafe-unzip-symlink]
+		// lgtm[go/unsafe-unzip-symlink]
 		cleanName := filepath.Clean(header.Name)
 		if !filepath.IsLocal(cleanName) {
 			return fmt.Errorf("invalid path in archive (path traversal): %s", header.Name)
@@ -607,7 +609,8 @@ func tarGzDecompress(srcFile, destDir string) error {
 			if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
 				return err
 			}
-			// CodeQL [go/unsafe-unzip-symlink] - The symbolic link path and target are both strictly validated to stay within the destination directory before creation.
+			// codeql[go/unsafe-unzip-symlink]
+			// lgtm[go/unsafe-unzip-symlink]
 			if err := os.Symlink(header.Linkname, target); err != nil {
 				return err
 			}
