@@ -12,9 +12,38 @@ import (
 
 func init() { gin.SetMode(gin.TestMode) }
 
-func TestCORSAllowedOrigin(t *testing.T) {
+func TestCORSWildcardDoesNotReflectWithCredentials(t *testing.T) {
+	// With the wildcard default config, an arbitrary origin must NOT be echoed
+	// back together with credentials (that would expose authenticated responses
+	// to any site). It gets "*" and no credentials instead.
 	r := gin.New()
 	r.Use(CORS(DefaultCORSConfig()))
+	r.GET("/", func(c *gin.Context) { c.Status(200) })
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Origin", "https://app.example")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("allow-origin = %q, want *", got)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+		t.Errorf("allow-credentials = %q, want empty for wildcard match", got)
+	}
+}
+
+func TestCORSExplicitOriginGetsCredentials(t *testing.T) {
+	// An explicitly allow-listed origin may be echoed back with credentials.
+	cfg := &CORSConfig{
+		AllowOrigins:     []string{"https://app.example"},
+		AllowMethods:     []string{"GET"},
+		AllowHeaders:     []string{"Content-Type"},
+		AllowCredentials: true,
+		MaxAge:           600,
+	}
+	r := gin.New()
+	r.Use(CORS(cfg))
 	r.GET("/", func(c *gin.Context) { c.Status(200) })
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -26,7 +55,7 @@ func TestCORSAllowedOrigin(t *testing.T) {
 		t.Errorf("allow-origin = %q", got)
 	}
 	if w.Header().Get("Access-Control-Allow-Credentials") != "true" {
-		t.Error("missing allow-credentials")
+		t.Error("missing allow-credentials for explicit origin")
 	}
 }
 

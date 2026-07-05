@@ -10,6 +10,7 @@ import (
 
 // rateLimiter is a simple rate limiter using token bucket algorithm.
 type rateLimiter struct {
+	mu         sync.Mutex
 	tokens     float64
 	maxTokens  float64 // maximum tokens in bucket
 	refillRate float64 // tokens per second
@@ -26,6 +27,8 @@ func newRateLimiter(rps float64, burst int) *rateLimiter {
 }
 
 func (rl *rateLimiter) allow() bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
 	now := time.Now()
 	elapsed := now.Sub(rl.lastRefill).Seconds()
 	rl.tokens += elapsed * rl.refillRate
@@ -68,8 +71,12 @@ func (rl *RateLimiter) cleanupWorker(interval time.Duration) {
 		<-ticker.C
 		rl.limiters.Range(func(key, value interface{}) bool {
 			limiter := value.(*rateLimiter)
+			// Read lastRefill under the limiter's lock to avoid racing allow().
+			limiter.mu.Lock()
+			idle := time.Since(limiter.lastRefill)
+			limiter.mu.Unlock()
 			// Remove limiters that haven't been used in the last 10 minutes
-			if time.Since(limiter.lastRefill) > 10*time.Minute {
+			if idle > 10*time.Minute {
 				rl.limiters.Delete(key)
 			}
 			return true

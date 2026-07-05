@@ -36,12 +36,19 @@ async function apiCall(endpoint, options = {}) {
             }
         });
         
-        const data = await response.json();
-        
-        if (!response.ok) {
-            throw new Error(data.message || 'Something went wrong');
+        // Parse defensively: an error response from a proxy/middleware may be
+        // HTML or empty, in which case response.json() would throw a cryptic
+        // SyntaxError before the !response.ok branch runs.
+        const text = await response.text();
+        let data = {};
+        if (text) {
+            try { data = JSON.parse(text); } catch (_) { data = {}; }
         }
-        
+
+        if (!response.ok) {
+            throw new Error(data.message || `Request failed (${response.status})`);
+        }
+
         return data;
     } catch (error) {
         showToast(error.message, 'error');
@@ -948,7 +955,7 @@ if (repoBrowser) {
 
             renderFileTable(entries, path);
         } catch (e) {
-            document.getElementById('file-tree-loading').innerHTML = `<span class="text-muted">⚠ ${e.message || 'Could not load repository — has it been cloned yet?'}</span>`;
+            document.getElementById('file-tree-loading').innerHTML = `<span class="text-muted">⚠ ${escHtml(e.message || 'Could not load repository — has it been cloned yet?')}</span>`;
         }
     }
 

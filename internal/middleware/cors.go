@@ -37,12 +37,19 @@ func CORS(config *CORSConfig) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		origin := c.GetHeader("Origin")
 
-		// Check if origin is allowed
+		// Check if origin is allowed. Track whether it matched an explicit
+		// allow-list entry (vs. a "*" wildcard): credentials may only be
+		// combined with a specific, echoed Origin — never with a wildcard.
 		allowed := false
+		explicit := false
 		for _, o := range config.AllowOrigins {
-			if o == "*" || o == origin {
+			if o == origin {
 				allowed = true
+				explicit = true
 				break
+			}
+			if o == "*" {
+				allowed = true
 			}
 		}
 
@@ -51,15 +58,22 @@ func CORS(config *CORSConfig) gin.HandlerFunc {
 			return
 		}
 
-		// Set CORS headers
-		c.Header("Access-Control-Allow-Origin", origin)
-		if origin == "" && contains(config.AllowOrigins, "*") {
+		// Set CORS headers. Reflecting the caller's Origin together with
+		// Access-Control-Allow-Credentials: true would expose authenticated
+		// responses to any site. So credentials are only granted for an
+		// explicit origin match; a wildcard match emits "*" without credentials
+		// (as the CORS spec forbids "*" + credentials).
+		if explicit && origin != "" {
+			c.Header("Access-Control-Allow-Origin", origin)
+			if config.AllowCredentials {
+				c.Header("Access-Control-Allow-Credentials", "true")
+			}
+		} else {
 			c.Header("Access-Control-Allow-Origin", "*")
 		}
 
 		c.Header("Access-Control-Allow-Methods", strings.Join(config.AllowMethods, ", "))
 		c.Header("Access-Control-Allow-Headers", strings.Join(config.AllowHeaders, ", "))
-		c.Header("Access-Control-Allow-Credentials", "true")
 		c.Header("Access-Control-Max-Age", strconv.Itoa(config.MaxAge))
 
 		// Handle preflight requests
@@ -70,14 +84,4 @@ func CORS(config *CORSConfig) gin.HandlerFunc {
 
 		c.Next()
 	}
-}
-
-// contains checks if a string slice contains a specific string.
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
 }

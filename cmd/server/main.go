@@ -160,8 +160,10 @@ func main() {
 	// Initialize middleware
 	authMiddleware := middleware.NewAuthMiddleware()
 	corsConfig := middleware.DefaultCORSConfig()
+	// NewRateLimiter takes a refill rate in requests-per-SECOND, so convert the
+	// configured per-minute budget; burst stays at one minute's worth of tokens.
 	rateLimiter := middleware.NewRateLimiter(
-		float64(cfg.Security.RateLimit.APIRequestsPerMinute),
+		float64(cfg.Security.RateLimit.APIRequestsPerMinute)/60.0,
 		cfg.Security.RateLimit.APIRequestsPerMinute,
 	)
 	loggerConfig := middleware.DefaultLoggerConfig()

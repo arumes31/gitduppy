@@ -618,10 +618,14 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 				}
 				for _, topic := range info.Topics {
 					var tag models.Tag
-					if err := w.db.Where("name = ?", topic).FirstOrCreate(&tag, models.Tag{
-						Name:  topic,
-						Color: "#000000", // Default color for auto-generated tags
-					}).Error; err == nil {
+					// Use Attrs for the default color so it is applied ONLY on
+					// insert. Passing it as a create struct would fold color into
+					// the lookup WHERE, so a topic matching an existing tag with a
+					// different color would miss, attempt a duplicate-name insert,
+					// and drop the topic.
+					if err := w.db.Where(models.Tag{Name: topic}).
+						Attrs(models.Tag{Color: "#000000"}).
+						FirstOrCreate(&tag).Error; err == nil {
 						tagSet[tag.ID] = tag
 					}
 				}

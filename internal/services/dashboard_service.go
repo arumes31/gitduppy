@@ -264,7 +264,7 @@ func (s *DashboardService) GetStats(ctx context.Context) (*DashboardStats, error
 	}
 	var durationResult DurationResult
 	db.Model(&models.CloneJob{}).
-		Select("EXTRACT(EPOCH FROM (completed_at - started_at)) as avg_duration").
+		Select("AVG(EXTRACT(EPOCH FROM (completed_at - started_at))) as avg_duration").
 		Where("status = 'success' AND started_at IS NOT NULL AND completed_at IS NOT NULL").
 		Scan(&durationResult)
 	stats.AverageCloneDuration = durationResult.AvgDuration

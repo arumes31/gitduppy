@@ -136,10 +136,16 @@ func (s *TagService) DeleteTag(ctx context.Context, id uuid.UUID) error {
 
 // AddTagToRepository adds a tag to a repository.
 func (s *TagService) AddTagToRepository(ctx context.Context, repoID, tagID uuid.UUID) error {
-	// Check if association already exists
+	// Check if association already exists. Only ErrRecordNotFound means "safe to
+	// create"; any other error must propagate rather than fall through to an
+	// insert that could duplicate the association or mask the real failure.
 	var existing models.RepositoryTag
-	if err := s.db.WithContext(ctx).Where("repository_id = ? AND tag_id = ?", repoID, tagID).First(&existing).Error; err == nil {
+	err := s.db.WithContext(ctx).Where("repository_id = ? AND tag_id = ?", repoID, tagID).First(&existing).Error
+	if err == nil {
 		return errors.New("tag already assigned to repository")
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
 	}
 
 	repoTag := &models.RepositoryTag{

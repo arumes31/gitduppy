@@ -42,6 +42,14 @@ func isSafeRedirect(target string) bool {
 	if strings.HasPrefix(target, "//") || strings.HasPrefix(target, "/\\") {
 		return false
 	}
+	// Reject control characters (and backslashes) anywhere: browsers strip e.g.
+	// a tab in "/\t/evil.com" and re-parse it as a protocol-relative
+	// "//evil.com", turning it back into an open redirect.
+	for _, r := range target {
+		if r < 0x20 || r == 0x7f || r == '\\' {
+			return false
+		}
+	}
 	return true
 }
 
@@ -148,8 +156,14 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 		return
 	}
 
-	// Set session cookie (HttpOnly, SameSite=Lax, Secure over HTTPS)
-	setSessionCookie(c, sessionToken, 86400)
+	// Set session cookie (HttpOnly, SameSite=Lax, Secure over HTTPS). Match the
+	// cookie lifetime to the server-side session expiry instead of a hardcoded
+	// 24h, so the two cannot diverge when SessionDuration() is not 24h.
+	maxAge := int(time.Until(expiresAt).Seconds())
+	if maxAge < 0 {
+		maxAge = 0
+	}
+	setSessionCookie(c, sessionToken, maxAge)
 
 	// Redirect to frontend or return success. A redirect target may come from the
 	// query string or from the oauth_redirect cookie set at login time.

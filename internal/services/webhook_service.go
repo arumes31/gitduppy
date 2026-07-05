@@ -271,7 +271,14 @@ func (s *WebhookService) deliverWebhook(webhook models.WebhookConfig, eventType 
 		return
 	}
 
-	for attempt := 1; attempt <= webhook.RetryCount; attempt++ {
+	// Floor the retry count so a webhook stored/updated with 0 (or a negative
+	// value — UpdateWebhook applies no lower bound) still delivers at least once
+	// instead of silently dropping the event.
+	retries := webhook.RetryCount
+	if retries < 1 {
+		retries = 3
+	}
+	for attempt := 1; attempt <= retries; attempt++ {
 		success := s.attemptDelivery(webhook, eventType, payloadJSON, attempt)
 		if success {
 			break
@@ -282,8 +289,14 @@ func (s *WebhookService) deliverWebhook(webhook models.WebhookConfig, eventType 
 
 // attemptDelivery attempts a single webhook delivery.
 func (s *WebhookService) attemptDelivery(webhook models.WebhookConfig, eventType string, payloadJSON []byte, attempt int) bool {
-	// Create request.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(webhook.TimeoutSeconds)*time.Second)
+	// Create request. Floor the timeout: a stored 0 (or negative) would make
+	// context.WithTimeout an already-expired deadline, failing every delivery
+	// instantly, so fall back to the default 30s.
+	timeoutSeconds := webhook.TimeoutSeconds
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = 30
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "POST", webhook.URL, bytes.NewBuffer(payloadJSON))
