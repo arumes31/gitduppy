@@ -583,10 +583,27 @@ func tarGzDecompress(srcFile, destDir string) error {
 			return fmt.Errorf("invalid path in archive (path traversal): %s", header.Name)
 		}
 
-		target := filepath.Join(destDir, cleanName)
+		cleanDest := filepath.Clean(destDir)
+		target := filepath.Join(cleanDest, cleanName)
 
-		// Extra safety check: ensure the resolved target stays within destDir
-		if !strings.HasPrefix(target, filepath.Clean(destDir)+string(os.PathSeparator)) {
+		// Resolve existing symlinks in target path to ensure writes stay within cleanDest.
+		var resolvedTarget string
+		if _, err := os.Lstat(target); err == nil {
+			resolvedTarget, err = filepath.EvalSymlinks(target)
+			if err != nil {
+				return err
+			}
+		} else if os.IsNotExist(err) {
+			resolvedParent, err := filepath.EvalSymlinks(filepath.Dir(target))
+			if err != nil {
+				return err
+			}
+			resolvedTarget = filepath.Join(resolvedParent, filepath.Base(target))
+		} else {
+			return err
+		}
+		relTarget, err := filepath.Rel(cleanDest, resolvedTarget)
+		if err != nil || relTarget == ".." || strings.HasPrefix(relTarget, ".."+string(os.PathSeparator)) {
 			return fmt.Errorf("invalid path in archive (path traversal): %s", header.Name)
 		}
 
@@ -603,10 +620,13 @@ func tarGzDecompress(srcFile, destDir string) error {
 			if filepath.IsAbs(header.Linkname) {
 				return fmt.Errorf("invalid symlink target (absolute path): %s", header.Linkname)
 			}
-			// #nosec G305 - The resolved path is strictly checked for prefix containment immediately below.
-			resolvedLinkTarget := filepath.Clean(filepath.Join(filepath.Dir(target), header.Linkname))
-			cleanDest := filepath.Clean(destDir)
-			if !strings.HasPrefix(resolvedLinkTarget, cleanDest+string(os.PathSeparator)) && resolvedLinkTarget != cleanDest {
+			resolvedParent, err := filepath.EvalSymlinks(filepath.Dir(target))
+			if err != nil {
+				return err
+			}
+			resolvedLinkTarget := filepath.Clean(filepath.Join(resolvedParent, header.Linkname))
+			relLinkTarget, err := filepath.Rel(cleanDest, resolvedLinkTarget)
+			if err != nil || relLinkTarget == ".." || strings.HasPrefix(relLinkTarget, ".."+string(os.PathSeparator)) {
 				return fmt.Errorf("invalid symlink target (escapes root): %s", header.Linkname)
 			}
 			if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
