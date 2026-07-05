@@ -59,8 +59,20 @@ func (h *HealthHandler) GetHealth(c *gin.Context) {
 		gitStatus = "available"
 	}
 
+	// Aggregate status reflects the component checks: a down database is critical
+	// (nothing works), while a missing git binary degrades mirroring but leaves
+	// the API usable. Readiness (/health/ready) remains the gate for traffic; this
+	// informational endpoint reports the composite health.
+	status := "healthy"
+	switch {
+	case dbStatus != "connected":
+		status = "unhealthy"
+	case gitStatus != "available":
+		status = "degraded"
+	}
+
 	body := gin.H{
-		"status":         "healthy",
+		"status":         status,
 		"version":        h.version,
 		"build_time":     h.buildTime,
 		"uptime_seconds": int(time.Since(h.startTime).Seconds()),

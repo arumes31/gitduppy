@@ -23,8 +23,23 @@ func TestWebhookSecretEncryptRoundTrip(t *testing.T) {
 	if !strings.HasPrefix(stored, encSecretPrefix) {
 		t.Fatalf("stored secret should carry the %q prefix, got %q", encSecretPrefix, stored)
 	}
-	if got := s.decryptSecret(stored); got != secret {
+	got, err := s.decryptSecret(stored)
+	if err != nil {
+		t.Fatalf("decryptSecret: %v", err)
+	}
+	if got != secret {
 		t.Errorf("decryptSecret round-trip = %q, want %q", got, secret)
+	}
+}
+
+func TestWebhookSecretUndecryptableFails(t *testing.T) {
+	enc, _ := crypto.NewEncryptionService(strings.Repeat("k", 32))
+	s := &WebhookService{encryption: enc}
+
+	// A prefixed value that is not valid ciphertext must error rather than return
+	// the raw ciphertext as if it were the secret.
+	if got, err := s.decryptSecret(encSecretPrefix + "not-real-ciphertext"); err == nil {
+		t.Errorf("expected error for undecryptable secret, got %q", got)
 	}
 }
 
@@ -34,7 +49,11 @@ func TestWebhookSecretLegacyPlaintext(t *testing.T) {
 
 	// A legacy value without the prefix must be returned unchanged.
 	const legacy = "legacy-plaintext-secret"
-	if got := s.decryptSecret(legacy); got != legacy {
+	got, err := s.decryptSecret(legacy)
+	if err != nil {
+		t.Fatalf("legacy plaintext should not error: %v", err)
+	}
+	if got != legacy {
 		t.Errorf("legacy plaintext should pass through, got %q", got)
 	}
 }

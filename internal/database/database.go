@@ -175,24 +175,12 @@ func MigrateStoragePaths(basePath string) error {
 		if old != "" {
 			oldDir, newDir := filepath.Dir(old), filepath.Dir(canonical)
 
-			// Relocate the working tree. If this required move fails, keep the old
-			// pointer so an existing clone stays reachable rather than dangling.
-			if _, err := moveIfPresent(old, canonical); err != nil {
-				log.Printf("storage-path migration: cannot move %q -> %q: %v (leaving pointer unchanged)", old, canonical, err)
-				continue
-			}
-
-			// Relocate the companion wiki mirror (StoragePath + ".wiki"). Non-fatal:
-			// a missing wiki is simply re-cloned on the next sync.
-			if _, err := moveIfPresent(old+".wiki", canonical+".wiki"); err != nil {
-				log.Printf("storage-path migration: cannot move wiki for %s: %v (wiki will be re-cloned)", id, err)
-			}
-
-			// Relocate the paperbin archive of a soft-deleted (or previously
-			// deleted) repo. Delete/Restore resolve it from filepath.Dir(StoragePath)
-			// + "/paperbin/<id>", so rewriting the pointer without moving the archive
-			// would orphan it and make restore silently lose the files. If this move
-			// fails, keep the old pointer so restore still finds the archive.
+			// Relocate the paperbin archive FIRST, before touching the live
+			// working-tree path. Delete/Restore resolve it from
+			// filepath.Dir(StoragePath)/paperbin/<id>, so if this move fails we must
+			// abort while the pointer and the working tree are both still at the old
+			// location — leaving everything consistent — rather than after the live
+			// repo path has already changed.
 			pbFail := false
 			for _, name := range []string{id + ".tar.gz", id} {
 				src := filepath.Join(oldDir, "paperbin", name)
@@ -204,6 +192,20 @@ func MigrateStoragePaths(basePath string) error {
 				}
 			}
 			if pbFail {
+				continue
+			}
+
+			// Relocate the companion wiki mirror (StoragePath + ".wiki"). Non-fatal:
+			// a missing wiki is simply re-cloned on the next sync.
+			if _, err := moveIfPresent(old+".wiki", canonical+".wiki"); err != nil {
+				log.Printf("storage-path migration: cannot move wiki for %s: %v (wiki will be re-cloned)", id, err)
+			}
+
+			// Relocate the live working tree LAST, immediately before repointing.
+			// If this fails, keep the old pointer so the existing clone stays
+			// reachable rather than dangling.
+			if _, err := moveIfPresent(old, canonical); err != nil {
+				log.Printf("storage-path migration: cannot move %q -> %q: %v (leaving pointer unchanged)", old, canonical, err)
 				continue
 			}
 		}

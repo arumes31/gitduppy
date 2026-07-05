@@ -215,7 +215,14 @@ func (h *WebhookHandler) ReceiveWebhook(c *gin.Context) {
 	}
 
 	// Verify HMAC signature if webhook has a secret (decrypt the at-rest value).
-	if secret := h.webhookService.DecryptSecret(webhook.Secret); secret != "" {
+	// Fail closed: if a stored secret cannot be decrypted, reject rather than
+	// skipping verification (which would accept unauthenticated payloads).
+	secret, decErr := h.webhookService.DecryptSecret(webhook.Secret)
+	if decErr != nil {
+		response.Unauthorized(c, "Webhook secret misconfigured")
+		return
+	}
+	if secret != "" {
 		if !h.verifySignature(c, secret, body, provider) {
 			response.Unauthorized(c, "Invalid signature")
 			return

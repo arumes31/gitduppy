@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gitduppy/gitduppy/internal/middleware"
@@ -95,8 +96,14 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	// Set session cookie
-	setSessionCookie(c, resp.SessionToken, 86400)
+	// Set the cookie lifetime to match the server-side session expiry (which
+	// honors RememberMe), clamped to zero so a past expiry becomes a session
+	// cookie rather than a negative max-age.
+	maxAge := int(time.Until(resp.ExpiresAt).Seconds())
+	if maxAge < 0 {
+		maxAge = 0
+	}
+	setSessionCookie(c, resp.SessionToken, maxAge)
 
 	if resp.User != nil {
 		h.audit(c, &resp.User.ID, "auth.login", map[string]interface{}{"username": resp.User.Username})

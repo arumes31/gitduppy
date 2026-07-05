@@ -33,8 +33,11 @@ services:
       - SMTP_PORT=${SMTP_PORT:-587}
       - SMTP_USERNAME=${SMTP_USERNAME:-user@example.com}
       - SMTP_PASSWORD=${SMTP_PASSWORD:-password}
-      - GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD=Admin12345!
-      - GITMIRRORS_BOOTSTRAP_SHOW_PASSWORD=true
+      # Supply your own admin password via the environment; no fixed value is
+      # committed. If left unset, a random password is generated and (unless you
+      # opt in below) never printed — see the README bootstrap section.
+      - GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD=${BOOTSTRAP_ADMIN_PASSWORD:-}
+      - GITMIRRORS_BOOTSTRAP_SHOW_PASSWORD=${BOOTSTRAP_SHOW_PASSWORD:-false}
     volumes:
       - ./data/gitduppy/repos:/app/repos
       - ./data/gitduppy/keys:/app/keys

@@ -19,6 +19,7 @@ import (
 	"github.com/gitduppy/gitduppy/internal/models"
 	"github.com/gitduppy/gitduppy/pkg/crypto"
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -44,35 +45,41 @@ func NewWebhookService(cloneService *CloneService, encryption *crypto.Encryption
 }
 
 // encryptSecret returns the at-rest representation of a webhook secret. Empty
-// secrets stay empty; otherwise the value is AES-encrypted and prefix-tagged.
+// secrets stay empty; otherwise the value is AES-encrypted and prefix-tagged. If
+// encryption fails it falls back to storing plaintext (so the secret is not lost)
+// but logs an error so operators can tell it was persisted unencrypted.
 func (s *WebhookService) encryptSecret(secret string) string {
 	if secret == "" || s.encryption == nil {
 		return secret
 	}
 	ct, err := s.encryption.EncryptString(secret)
 	if err != nil {
-		return secret // fall back to plaintext rather than losing the secret
+		zap.L().Named("webhook-service").Error("failed to encrypt webhook secret; storing it UNENCRYPTED (plaintext) as a fallback", zap.Error(err))
+		return secret
 	}
 	return encSecretPrefix + ct
 }
 
 // DecryptSecret exposes the at-rest secret in usable plaintext for callers
-// outside this package (e.g. the incoming-webhook signature verifier).
-func (s *WebhookService) DecryptSecret(stored string) string {
+// outside this package (e.g. the incoming-webhook signature verifier). A prefixed
+// value that cannot be decrypted returns an error rather than a bogus secret.
+func (s *WebhookService) DecryptSecret(stored string) (string, error) {
 	return s.decryptSecret(stored)
 }
 
 // decryptSecret returns the usable secret from its at-rest representation,
-// transparently handling legacy plaintext values that lack the prefix.
-func (s *WebhookService) decryptSecret(stored string) string {
+// transparently handling legacy plaintext values that lack the prefix. A value
+// tagged as encrypted that fails to decrypt returns ("", error) so callers never
+// mistake the raw ciphertext for the real secret.
+func (s *WebhookService) decryptSecret(stored string) (string, error) {
 	if s.encryption == nil || !strings.HasPrefix(stored, encSecretPrefix) {
-		return stored
+		return stored, nil
 	}
 	pt, err := s.encryption.DecryptString(strings.TrimPrefix(stored, encSecretPrefix))
 	if err != nil {
-		return stored
+		return "", fmt.Errorf("decrypt webhook secret: %w", err)
 	}
-	return pt
+	return pt, nil
 }
 
 // WebhookFilter represents filters for listing webhooks.
@@ -282,8 +289,13 @@ func (s *WebhookService) attemptDelivery(webhook models.WebhookConfig, eventType
 	req.Header.Set("X-GitMirrors-Event", eventType)
 	req.Header.Set("X-GitMirrors-Delivery-Attempt", strconv.Itoa(attempt))
 
-	// Add HMAC signature if secret is set (decrypt the at-rest secret first).
-	if secret := s.decryptSecret(webhook.Secret); secret != "" {
+	// Add HMAC signature if secret is set (decrypt the at-rest secret first). If
+	// the stored secret cannot be decrypted, log and send without a signature
+	// rather than signing with the raw ciphertext (which would never verify).
+	if secret, decErr := s.decryptSecret(webhook.Secret); decErr != nil {
+		zap.L().Named("webhook-service").Error("cannot decrypt webhook secret; delivering without signature",
+			zap.String("webhook_id", webhook.ID.String()), zap.Error(decErr))
+	} else if secret != "" {
 		signature := s.generateHMACSignature(payloadJSON, secret)
 		req.Header.Set("X-GitMirrors-Signature", signature)
 	}
