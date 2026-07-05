@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// APIKey represents an API key for programmatic access
+// APIKey represents an API key for programmatic access.
 type APIKey struct {
 	ID         uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`
 	UserID     uuid.UUID  `gorm:"type:uuid;not null;index" json:"user_id"`
@@ -22,7 +22,7 @@ type APIKey struct {
 	User *User `gorm:"foreignKey:UserID" json:"user,omitempty"`
 }
 
-// TableName specifies the table name for the APIKey model
+// TableName specifies the table name for the APIKey model.
 func (APIKey) TableName() string {
 	return "api_keys"
 }

@@ -11,15 +11,15 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+//nolint:gochecknoglobals
 var DB *gorm.DB
 
-// Connect establishes a connection to the PostgreSQL database
+// Connect establishes a connection to the PostgreSQL database.
 func Connect(cfg *config.DatabaseConfig) error {
 	dsn := cfg.DSN()
 
-	var ormLogger logger.Interface
-	// Configure GORM logger (can be made configurable later)
-	ormLogger = logger.Default
+	// Configure GORM logger (can be made configurable later).
+	ormLogger := logger.Default
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		Logger: ormLogger,
@@ -43,7 +43,7 @@ func Connect(cfg *config.DatabaseConfig) error {
 	return nil
 }
 
-// AutoMigrate runs automatic migrations for all models
+// AutoMigrate runs automatic migrations for all models.
 func AutoMigrate() error {
 	if DB == nil {
 		return fmt.Errorf("database not connected")
@@ -52,6 +52,7 @@ func AutoMigrate() error {
 	err := DB.AutoMigrate(
 		&models.User{},
 		&models.Repository{},
+		&models.DeletedBranch{},
 		&models.CloneJob{},
 		&models.CloneLog{},
 		&models.APIKey{},
@@ -62,6 +63,7 @@ func AutoMigrate() error {
 		&models.RepositoryTag{},
 		&models.Session{},
 		&models.HealthCheck{},
+		&models.SystemSetting{},
 	)
 	if err != nil {
 		return fmt.Errorf("migration failed: %w", err)
@@ -71,12 +73,12 @@ func AutoMigrate() error {
 	return nil
 }
 
-// GetDB returns the database instance
+// GetDB returns the database instance.
 func GetDB() *gorm.DB {
 	return DB
 }
 
-// Close closes the database connection
+// Close closes the database connection.
 func Close() error {
 	if DB == nil {
 		return nil

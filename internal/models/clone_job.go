@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// CloneJob represents a single clone/fetch operation for a repository
+// CloneJob represents a single clone/fetch operation for a repository.
 type CloneJob struct {
 	ID              uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`
 	RepositoryID    uuid.UUID  `gorm:"type:uuid;not null;index" json:"repository_id"`
@@ -24,7 +24,7 @@ type CloneJob struct {
 	CloneLogs  []CloneLog  `gorm:"foreignKey:CloneJobID" json:"logs,omitempty"`
 }
 
-// TableName specifies the table name for the CloneJob model
+// TableName specifies the table name for the CloneJob model.
 func (CloneJob) TableName() string {
 	return "clone_jobs"
 }

@@ -1,0 +1,35 @@
+{{template "base" .}}
+
+{{define "content"}}
+<div id="commit-page" data-repo-id="{{.repoID}}" data-sha="{{.sha}}">
+
+    <div class="page-header">
+        <div>
+            <a href="/repos/{{.repoID}}" class="breadcrumb-back text-muted"><i data-lucide="arrow-left"></i> Back to repository</a>
+            <h1 class="page-title mt-4">Commit <span class="commit-sha-heading" id="commit-sha-label">{{.sha}}</span></h1>
+        </div>
+    </div>
+
+    <div class="commit-detail-card glass-panel" id="commit-meta-card">
+        <div class="commit-detail-header">
+            <p class="commit-full-message" id="commit-full-message"><span class="skeleton-text" style="width:60%"></span></p>
+            <div class="commit-detail-meta">
+                <span><i data-lucide="user"></i> <span id="commit-author"></span></span>
+                <span><i data-lucide="calendar"></i> <span id="commit-date"></span></span>
+                <span><i data-lucide="hash"></i> <code id="commit-sha-full"></code></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- File stats summary -->
+    <div class="file-stats-bar glass-panel mt-4" id="file-stats-bar" style="display:none">
+        <span class="text-muted" id="stats-summary"></span>
+    </div>
+
+    <!-- Diff viewer -->
+    <div class="diff-container mt-4" id="diff-container">
+        <div class="text-muted text-center py-4"><i data-lucide="loader" class="spin"></i> Loading diff...</div>
+    </div>
+
+</div>
+{{end}}

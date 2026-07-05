@@ -2,6 +2,9 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -15,13 +18,13 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// OAuthHandler handles OAuth2/OIDC requests
+// OAuthHandler handles OAuth2/OIDC requests.
 type OAuthHandler struct {
 	oauthService *services.OAuthService
 	authService  *services.AuthService
 }
 
-// NewOAuthHandler creates a new OAuth handler
+// NewOAuthHandler creates a new OAuth handler.
 func NewOAuthHandler(oauthService *services.OAuthService, authService *services.AuthService) *OAuthHandler {
 	return &OAuthHandler{
 		oauthService: oauthService,
@@ -29,12 +32,25 @@ func NewOAuthHandler(oauthService *services.OAuthService, authService *services.
 	}
 }
 
-// LoginWithProvider handles GET /api/v1/oauth/:provider/login
+// isSafeRedirect reports whether target is an app-local relative path that is
+// safe to redirect to. It rejects absolute URLs and protocol-relative ("//")
+// or backslash-prefixed values to prevent open redirects.
+func isSafeRedirect(target string) bool {
+	if target == "" || !strings.HasPrefix(target, "/") {
+		return false
+	}
+	if strings.HasPrefix(target, "//") || strings.HasPrefix(target, "/\\") {
+		return false
+	}
+	return true
+}
+
+// LoginWithProvider handles GET /api/v1/oauth/:provider/login.
 func (h *OAuthHandler) LoginWithProvider(c *gin.Context) {
 	provider := c.Param("provider")
 	oauthProvider := services.OAuthProvider(provider)
 
-	oauthConfig, err := h.oauthService.GetOAuthConfig(oauthProvider)
+	oauthConfig, err := h.oauthService.GetOAuthConfig(c, oauthProvider)
 	if err != nil {
 		response.BadRequest(c, "OAUTH_NOT_CONFIGURED", err.Error())
 		return
@@ -44,11 +60,22 @@ func (h *OAuthHandler) LoginWithProvider(c *gin.Context) {
 	state := uuid.New().String()
 	c.SetCookie("oauth_state", state, 3600, "/", "", false, true)
 
+	// Remember where to send the browser after a successful login. This makes
+	// browser-initiated logins (including the automated App-setup flow) land on a
+	// real page instead of a raw JSON response.
+	redirectTarget := c.Query("redirect")
+	if redirectTarget == "" && c.Query("setup") != "" {
+		redirectTarget = "/dashboard?success=github_setup"
+	}
+	if isSafeRedirect(redirectTarget) {
+		c.SetCookie("oauth_redirect", redirectTarget, 600, "/", "", false, true)
+	}
+
 	url := oauthConfig.AuthCodeURL(state, oauth2.AccessTypeOffline)
 	c.Redirect(http.StatusFound, url)
 }
 
-// Callback handles GET /api/v1/oauth/:provider/callback
+// Callback handles GET /api/v1/oauth/:provider/callback.
 func (h *OAuthHandler) Callback(c *gin.Context) {
 	provider := c.Param("provider")
 	oauthProvider := services.OAuthProvider(provider)
@@ -68,7 +95,7 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 	}
 
 	// Get OAuth config
-	oauthConfig, err := h.oauthService.GetOAuthConfig(oauthProvider)
+	oauthConfig, err := h.oauthService.GetOAuthConfig(c, oauthProvider)
 	if err != nil {
 		response.BadRequest(c, "OAUTH_NOT_CONFIGURED", err.Error())
 		return
@@ -103,7 +130,11 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 	}
 
 	// Create session
-	sessionToken := h.authService.GenerateSessionToken()
+	sessionToken, err := h.authService.GenerateSessionToken()
+	if err != nil {
+		response.InternalError(c, "Failed to generate session token: "+err.Error())
+		return
+	}
 	expiresAt := time.Now().Add(h.authService.SessionDuration())
 
 	session := &models.Session{
@@ -120,9 +151,18 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 	// Set session cookie
 	c.SetCookie("session", sessionToken, 86400, "/", "", false, true)
 
-	// Redirect to frontend or return success
-	if c.Query("redirect") != "" {
-		c.Redirect(http.StatusFound, c.Query("redirect"))
+	// Redirect to frontend or return success. A redirect target may come from the
+	// query string or from the oauth_redirect cookie set at login time.
+	redirectTarget := c.Query("redirect")
+	if redirectTarget == "" {
+		if cookie, cErr := c.Cookie("oauth_redirect"); cErr == nil && cookie != "" {
+			redirectTarget = cookie
+		}
+	}
+	c.SetCookie("oauth_redirect", "", -1, "/", "", false, true)
+
+	if isSafeRedirect(redirectTarget) {
+		c.Redirect(http.StatusFound, redirectTarget)
 	} else {
 		response.SuccessWithMessage(c, "Login successful", gin.H{
 			"user":          user,
@@ -132,7 +172,7 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 	}
 }
 
-// LinkAccount handles POST /api/v1/oauth/:provider/link
+// LinkAccount handles POST /api/v1/oauth/:provider/link.
 func (h *OAuthHandler) LinkAccount(c *gin.Context) {
 	_, ok := middleware.GetCurrentUser(c)
 	if !ok {
@@ -143,7 +183,7 @@ func (h *OAuthHandler) LinkAccount(c *gin.Context) {
 	provider := c.Param("provider")
 	oauthProvider := services.OAuthProvider(provider)
 
-	oauthConfig, err := h.oauthService.GetOAuthConfig(oauthProvider)
+	oauthConfig, err := h.oauthService.GetOAuthConfig(c, oauthProvider)
 	if err != nil {
 		response.BadRequest(c, "OAUTH_NOT_CONFIGURED", err.Error())
 		return
@@ -157,7 +197,7 @@ func (h *OAuthHandler) LinkAccount(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"auth_url": url})
 }
 
-// LinkCallback handles GET /api/v1/oauth/:provider/link/callback
+// LinkCallback handles GET /api/v1/oauth/:provider/link/callback.
 func (h *OAuthHandler) LinkCallback(c *gin.Context) {
 	user, ok := middleware.GetCurrentUser(c)
 	if !ok {
@@ -182,7 +222,7 @@ func (h *OAuthHandler) LinkCallback(c *gin.Context) {
 		return
 	}
 
-	oauthConfig, err := h.oauthService.GetOAuthConfig(oauthProvider)
+	oauthConfig, err := h.oauthService.GetOAuthConfig(c, oauthProvider)
 	if err != nil {
 		response.BadRequest(c, "OAUTH_NOT_CONFIGURED", err.Error())
 		return
@@ -204,7 +244,7 @@ func (h *OAuthHandler) LinkCallback(c *gin.Context) {
 	response.SuccessWithMessage(c, "OAuth account linked successfully", nil)
 }
 
-// UnlinkAccount handles POST /api/v1/oauth/:provider/unlink
+// UnlinkAccount handles POST /api/v1/oauth/:provider/unlink.
 func (h *OAuthHandler) UnlinkAccount(c *gin.Context) {
 	user, ok := middleware.GetCurrentUser(c)
 	if !ok {
@@ -229,4 +269,116 @@ func (h *OAuthHandler) UnlinkAccount(c *gin.Context) {
 	}
 
 	response.SuccessWithMessage(c, "OAuth account unlinked successfully", nil)
+}
+
+// ManifestSetup handles POST /api/v1/oauth/github/manifest-setup (admin only).
+// It issues a one-time setup nonce, stored in an httpOnly cookie, that the
+// browser passes to GitHub as the manifest "state". ManifestCallback validates
+// it so an attacker cannot drive an authenticated admin through the callback
+// with an attacker-controlled manifest code.
+func (h *OAuthHandler) ManifestSetup(c *gin.Context) {
+	user, ok := middleware.GetCurrentUser(c)
+	if !ok || !user.IsAdmin() {
+		response.Unauthorized(c, "Admin access required")
+		return
+	}
+
+	nonce := uuid.New().String()
+	c.SetCookie("github_setup_state", nonce, 600, "/", "", false, true)
+	response.Success(c, gin.H{"state": nonce})
+}
+
+// ManifestCallback handles GET /api/v1/oauth/github/manifest-callback.
+// GitHub redirects here with a ?code=CODE parameter after manifest creation.
+func (h *OAuthHandler) ManifestCallback(c *gin.Context) {
+	// This callback persists GitHub App credentials, so it must only be usable
+	// by an authenticated admin who initiated the setup. The setup is started
+	// from the admin-only /config page, and the admin's session cookie is sent
+	// on this top-level redirect back from GitHub.
+	sessionCookie, cookieErr := c.Cookie("session")
+	if cookieErr != nil || sessionCookie == "" {
+		c.Redirect(http.StatusFound, "/config?error=unauthorized_setup")
+		return
+	}
+	user, sessErr := h.authService.ValidateSession(c.Request.Context(), sessionCookie)
+	if sessErr != nil || user == nil || !user.IsAdmin() {
+		c.Redirect(http.StatusFound, "/config?error=unauthorized_setup")
+		return
+	}
+
+	// Validate the one-time setup nonce issued by ManifestSetup when the admin
+	// started the flow, then consume it. This blocks CSRF-driven callbacks that
+	// would otherwise persist attacker-supplied GitHub App credentials.
+	stateCookie, stateErr := c.Cookie("github_setup_state")
+	c.SetCookie("github_setup_state", "", -1, "/", "", false, true)
+	state := c.Query("state")
+	if stateErr != nil || stateCookie == "" || state == "" || state != stateCookie {
+		c.Redirect(http.StatusFound, "/config?error=invalid_setup_state")
+		return
+	}
+
+	code := c.Query("code")
+	if code == "" {
+		response.BadRequest(c, "INVALID_REQUEST", "Missing code parameter")
+		return
+	}
+
+	// 1. Exchange manifest code for credentials. Bound the exchange with an
+	// explicit timeout so a slow/hung GitHub response cannot block the request.
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	apiURL := fmt.Sprintf("https://api.github.com/app-manifests/%s/conversions", code)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, nil)
+	if err != nil {
+		c.Redirect(http.StatusFound, "/config?error=failed_to_create_exchange_request")
+		return
+	}
+
+	// GitHub requires User-Agent header for all API calls
+	req.Header.Set("User-Agent", "GitDuppy")
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		c.Redirect(http.StatusFound, "/config?error=failed_to_contact_github")
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		c.Redirect(http.StatusFound, fmt.Sprintf("/config?error=github_returned_status_%d", resp.StatusCode))
+		return
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.Redirect(http.StatusFound, "/config?error=failed_to_read_response")
+		return
+	}
+
+	// Decode credentials response
+	var data struct {
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
+	}
+	if err := json.Unmarshal(body, &data); err != nil {
+		c.Redirect(http.StatusFound, "/config?error=failed_to_decode_credentials")
+		return
+	}
+
+	if data.ClientID == "" {
+		c.Redirect(http.StatusFound, "/config?error=received_empty_client_id")
+		return
+	}
+
+	// 2. Save credentials in database
+	if err := h.oauthService.SaveGitHubCredentials(c.Request.Context(), data.ClientID, data.ClientSecret); err != nil {
+		c.Redirect(http.StatusFound, "/config?error=failed_to_save_settings")
+		return
+	}
+
+	// 3. Credentials are stored; immediately start the GitHub OAuth login flow so
+	// the user is authenticated right after registering the App (single click flow).
+	c.Redirect(http.StatusFound, "/api/v1/oauth/github/login?setup=1")
 }

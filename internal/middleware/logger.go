@@ -9,19 +9,19 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// LoggerConfig holds logger configuration
+// LoggerConfig holds logger configuration.
 type LoggerConfig struct {
 	Output io.Writer
 }
 
-// DefaultLoggerConfig returns a default logger configuration
+// DefaultLoggerConfig returns a default logger configuration.
 func DefaultLoggerConfig() *LoggerConfig {
 	return &LoggerConfig{
 		Output: os.Stdout,
 	}
 }
 
-// Logger returns a request logging middleware
+// Logger returns a request logging middleware.
 func Logger(config *LoggerConfig) gin.HandlerFunc {
 	if config == nil {
 		config = DefaultLoggerConfig()
@@ -73,7 +73,7 @@ func Logger(config *LoggerConfig) gin.HandlerFunc {
 	}
 }
 
-// GinLogger is a compatibility wrapper for gin's default logger
+// GinLogger is a compatibility wrapper for gin's default logger.
 func GinLogger() gin.HandlerFunc {
 	return gin.Logger()
 }

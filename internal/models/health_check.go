@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// HealthCheck represents a health check result for external services
+// HealthCheck represents a health check result for external services.
 type HealthCheck struct {
 	ID             uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`
 	TargetURL      string    `gorm:"size:2048;not null" json:"target_url"`
@@ -16,7 +16,7 @@ type HealthCheck struct {
 	CheckedAt      time.Time `json:"checked_at"`
 }
 
-// TableName specifies the table name for the HealthCheck model
+// TableName specifies the table name for the HealthCheck model.
 func (HealthCheck) TableName() string {
 	return "health_checks"
 }

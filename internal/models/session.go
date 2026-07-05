@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Session represents a user session for authentication
+// Session represents a user session for authentication.
 type Session struct {
 	Token  string    `gorm:"size:43;primaryKey" json:"token"`
 	UserID uuid.UUID `gorm:"type:uuid;not null;index" json:"user_id"`
@@ -17,7 +17,7 @@ type Session struct {
 	User *User `gorm:"foreignKey:UserID" json:"user,omitempty"`
 }
 
-// TableName specifies the table name for the Session model
+// TableName specifies the table name for the Session model.
 func (Session) TableName() string {
 	return "sessions"
 }

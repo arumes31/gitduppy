@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Tag represents a label that can be applied to repositories
+// Tag represents a label that can be applied to repositories.
 type Tag struct {
 	ID        uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`
 	Name      string    `gorm:"size:50;uniqueIndex;not null" json:"name"`
@@ -17,12 +17,12 @@ type Tag struct {
 	Repositories []Repository `gorm:"many2many:repository_tags" json:"-"`
 }
 
-// TableName specifies the table name for the Tag model
+// TableName specifies the table name for the Tag model.
 func (Tag) TableName() string {
 	return "tags"
 }
 
-// RepositoryTag represents the many-to-many relationship between repositories and tags
+// RepositoryTag represents the many-to-many relationship between repositories and tags.
 type RepositoryTag struct {
 	ID           uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`
 	RepositoryID uuid.UUID `gorm:"type:uuid;not null;uniqueIndex:idx_repo_tag" json:"repository_id"`
@@ -34,7 +34,7 @@ type RepositoryTag struct {
 	Tag        *Tag        `gorm:"foreignKey:TagID" json:"-"`
 }
 
-// TableName specifies the table name for the RepositoryTag model
+// TableName specifies the table name for the RepositoryTag model.
 func (RepositoryTag) TableName() string {
 	return "repository_tags"
 }

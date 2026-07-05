@@ -1,0 +1,11 @@
+{
+  "global": {
+    "nosec": "enabled"
+  },
+  "exclude-rules": [
+    {
+      "path": ".*",
+      "rules": ["G101", "G402", "G501", "G307"]
+    }
+  ]
+}

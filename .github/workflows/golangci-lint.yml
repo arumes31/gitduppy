@@ -22,20 +22,13 @@ jobs:
             go.sum
             **/go.sum
 
-      - name: Cache golangci-lint
-        uses: actions/cache@v4
-        with:
-          path: ~/golangci-bin
-          key: ${{ runner.os }}-golangci-${{ hashFiles('.golangci.yml') }}
-          restore-keys: |
-            ${{ runner.os }}-golangci-
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          args: --config .golangci.yml --timeout 5m
-          only-new-issues: false
+        run: |
+          set -o pipefail
+          golangci-lint run --config .golangci.yml --timeout 5m --out-format line-number | tee lint-report.txt
 
       - name: Upload lint results
         uses: actions/upload-artifact@v4

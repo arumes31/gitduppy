@@ -12,13 +12,13 @@ import (
 	"gorm.io/gorm"
 )
 
-// UserService handles user CRUD operations
+// UserService handles user CRUD operations.
 type UserService struct {
 	db              *gorm.DB
 	passwordService *crypto.PasswordService
 }
 
-// NewUserService creates a new user service
+// NewUserService creates a new user service.
 func NewUserService() *UserService {
 	return &UserService{
 		db:              database.GetDB(),
@@ -26,7 +26,7 @@ func NewUserService() *UserService {
 	}
 }
 
-// UserFilter represents filters for listing users
+// UserFilter represents filters for listing users.
 type UserFilter struct {
 	Role     *string
 	IsActive *bool
@@ -35,7 +35,7 @@ type UserFilter struct {
 	PerPage  int
 }
 
-// ListUsers returns a paginated list of users
+// ListUsers returns a paginated list of users.
 func (s *UserService) ListUsers(ctx context.Context, filter *UserFilter) ([]models.User, int64, error) {
 	if filter == nil {
 		filter = &UserFilter{Page: 1, PerPage: 20}
@@ -47,7 +47,7 @@ func (s *UserService) ListUsers(ctx context.Context, filter *UserFilter) ([]mode
 		filter.PerPage = 20
 	}
 
-	query := s.db.Model(&models.User{})
+	query := s.db.WithContext(ctx).Model(&models.User{})
 
 	// Apply filters
 	if filter.Role != nil && *filter.Role != "" {
@@ -73,10 +73,10 @@ func (s *UserService) ListUsers(ctx context.Context, filter *UserFilter) ([]mode
 	return users, total, err
 }
 
-// GetUserByID retrieves a user by ID
+// GetUserByID retrieves a user by ID.
 func (s *UserService) GetUserByID(ctx context.Context, id uuid.UUID) (*models.User, error) {
 	var user models.User
-	if err := s.db.First(&user, id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&user, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errors.New("user not found")
 		}
@@ -85,10 +85,10 @@ func (s *UserService) GetUserByID(ctx context.Context, id uuid.UUID) (*models.Us
 	return &user, nil
 }
 
-// GetUserByUsername retrieves a user by username
+// GetUserByUsername retrieves a user by username.
 func (s *UserService) GetUserByUsername(ctx context.Context, username string) (*models.User, error) {
 	var user models.User
-	if err := s.db.Where("username = ?", username).First(&user).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("username = ?", username).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errors.New("user not found")
 		}
@@ -97,7 +97,7 @@ func (s *UserService) GetUserByUsername(ctx context.Context, username string) (*
 	return &user, nil
 }
 
-// CreateUserRequest represents a create user request
+// CreateUserRequest represents a create user request.
 type CreateUserRequest struct {
 	Username string `json:"username" validate:"required"`
 	Email    string `json:"email" validate:"required,email"`
@@ -105,11 +105,15 @@ type CreateUserRequest struct {
 	Role     string `json:"role" validate:"required,oneof=admin user"`
 }
 
-// CreateUser creates a new user
+// CreateUser creates a new user.
 func (s *UserService) CreateUser(ctx context.Context, req *CreateUserRequest) (*models.User, error) {
 	// Check if username exists
 	var existing models.User
-	if err := s.db.Where("username = ? OR email = ?", req.Username, req.Email).First(&existing).Error; err == nil {
+	if err := s.db.WithContext(ctx).Where("username = ? OR email = ?", req.Username, req.Email).First(&existing).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+	} else {
 		return nil, errors.New("username or email already exists")
 	}
 
@@ -128,14 +132,14 @@ func (s *UserService) CreateUser(ctx context.Context, req *CreateUserRequest) (*
 		IsActive:     true,
 	}
 
-	if err := s.db.Create(user).Error; err != nil {
+	if err := s.db.WithContext(ctx).Create(user).Error; err != nil {
 		return nil, err
 	}
 
 	return user, nil
 }
 
-// UpdateUserRequest represents an update user request
+// UpdateUserRequest represents an update user request.
 type UpdateUserRequest struct {
 	Username *string `json:"username,omitempty"`
 	Email    *string `json:"email,omitempty"`
@@ -143,7 +147,7 @@ type UpdateUserRequest struct {
 	IsActive *bool   `json:"is_active,omitempty"`
 }
 
-// UpdateUser updates a user
+// UpdateUser updates a user.
 func (s *UserService) UpdateUser(ctx context.Context, id uuid.UUID, req *UpdateUserRequest) (*models.User, error) {
 	user, err := s.GetUserByID(ctx, id)
 	if err != nil {
@@ -182,9 +186,9 @@ func (s *UserService) UpdateUser(ctx context.Context, id uuid.UUID, req *UpdateU
 	return user, nil
 }
 
-// DeleteUser deletes a user
+// DeleteUser deletes a user.
 func (s *UserService) DeleteUser(ctx context.Context, id uuid.UUID) error {
-	result := s.db.Delete(&models.User{}, id)
+	result := s.db.WithContext(ctx).Delete(&models.User{}, id)
 	if result.Error != nil {
 		return result.Error
 	}
@@ -194,7 +198,7 @@ func (s *UserService) DeleteUser(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-// SetUserStatus enables or disables a user
+// SetUserStatus enables or disables a user.
 func (s *UserService) SetUserStatus(ctx context.Context, id uuid.UUID, isActive bool) error {
-	return s.db.Model(&models.User{}).Where("id = ?", id).Update("is_active", isActive).Error
+	return s.db.WithContext(ctx).Model(&models.User{}).Where("id = ?", id).Update("is_active", isActive).Error
 }

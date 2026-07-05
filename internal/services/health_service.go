@@ -11,19 +11,19 @@ import (
 	"gorm.io/gorm"
 )
 
-// HealthService handles health monitoring
+// HealthService handles health monitoring.
 type HealthService struct {
 	db *gorm.DB
 }
 
-// NewHealthService creates a new health service
+// NewHealthService creates a new health service.
 func NewHealthService() *HealthService {
 	return &HealthService{
 		db: database.GetDB(),
 	}
 }
 
-// CheckGitServerHealth checks the health of a git server
+// CheckGitServerHealth checks the health of a git server.
 func (s *HealthService) CheckGitServerHealth(ctx context.Context, url string) (*models.HealthCheck, error) {
 	startTime := time.Now()
 
@@ -32,15 +32,26 @@ func (s *HealthService) CheckGitServerHealth(ctx context.Context, url string) (*
 		Timeout: 10 * time.Second,
 	}
 
-	resp, err := client.Get(url)
+	req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+
+	var resp *http.Response
+	var doErr error
+
+	if reqErr == nil {
+		resp, doErr = client.Do(req)
+	}
+
 	endTime := time.Now()
 
 	var status string
 	var errorMessage string
 
-	if err != nil {
+	if reqErr != nil {
 		status = "failed"
-		errorMessage = err.Error()
+		errorMessage = reqErr.Error()
+	} else if doErr != nil {
+		status = "failed"
+		errorMessage = doErr.Error()
 	} else {
 		defer resp.Body.Close()
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -69,13 +80,13 @@ func (s *HealthService) CheckGitServerHealth(ctx context.Context, url string) (*
 	return healthCheck, nil
 }
 
-// DB returns the database connection
+// DB returns the database connection.
 func (s *HealthService) DB() *gorm.DB {
 	return s.db
 }
 
-// GetLatestHealthChecks returns the latest health checks for all URLs
-func (s *HealthService) GetLatestHealthChecks(ctx context.Context) ([]models.HealthCheck, error) {
+// GetLatestHealthChecks returns the latest health checks for all URLs.
+func (s *HealthService) GetLatestHealthChecks(_ context.Context) ([]models.HealthCheck, error) {
 	var healthChecks []models.HealthCheck
 
 	// Get distinct URLs and their latest health check
@@ -90,8 +101,8 @@ func (s *HealthService) GetLatestHealthChecks(ctx context.Context) ([]models.Hea
 	return healthChecks, err
 }
 
-// CleanupOldHealthChecks removes health checks older than the specified duration
-func (s *HealthService) CleanupOldHealthChecks(ctx context.Context, olderThan time.Duration) error {
+// CleanupOldHealthChecks removes health checks older than the specified duration.
+func (s *HealthService) CleanupOldHealthChecks(_ context.Context, olderThan time.Duration) error {
 	cutoffTime := time.Now().Add(-olderThan)
 	return s.db.Where("checked_at < ?", cutoffTime).Delete(&models.HealthCheck{}).Error
 }

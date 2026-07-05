@@ -1,0 +1,42 @@
+{{template "base" .}}
+
+{{define "content"}}
+<div class="auth-wrapper">
+    <div class="auth-card glass-panel">
+        <div class="auth-header">
+            <div class="logo-container auth-logo">
+                <img src="/static/images/logo.png" alt="GitDuppy Logo" class="logo-img">
+            </div>
+            <h2>Welcome Back</h2>
+            <p class="text-muted">Sign in to manage GitDuppy</p>
+        </div>
+        
+        <form id="login-form" class="auth-form">
+            <div class="form-group">
+                <label for="email">Email</label>
+                <div class="input-icon-wrapper">
+                    <i data-lucide="mail"></i>
+                    <input type="email" id="email" name="email" class="form-control" placeholder="admin@example.com" required>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label for="password">Password</label>
+                <div class="input-icon-wrapper">
+                    <i data-lucide="lock"></i>
+                    <input type="password" id="password" name="password" class="form-control" placeholder="••••••••" required>
+                </div>
+            </div>
+            
+            <button type="submit" class="btn btn-primary btn-block btn-glow mt-4">
+                <span>Sign In</span>
+                <i data-lucide="arrow-right"></i>
+            </button>
+        </form>
+    </div>
+    
+    <!-- Background decorations -->
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+</div>
+{{end}}

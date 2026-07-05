@@ -9,19 +9,21 @@ import (
 	"github.com/gitduppy/gitduppy/pkg/response"
 )
 
-// BackupHandler handles backup and export requests
+const formatJSON = "json"
+
+// BackupHandler handles backup and export requests.
 type BackupHandler struct {
 	backupService *services.BackupService
 }
 
-// NewBackupHandler creates a new backup handler
+// NewBackupHandler creates a new backup handler.
 func NewBackupHandler(backupService *services.BackupService) *BackupHandler {
 	return &BackupHandler{
 		backupService: backupService,
 	}
 }
 
-// Export handles GET /api/v1/backup/export
+// Export handles GET /api/v1/backup/export.
 func (h *BackupHandler) Export(c *gin.Context) {
 	user, ok := middleware.GetCurrentUser(c)
 	if !ok || !user.IsAdmin() {
@@ -31,12 +33,12 @@ func (h *BackupHandler) Export(c *gin.Context) {
 
 	format := c.Query("format")
 	if format == "" {
-		format = "json"
+		format = formatJSON
 	}
 
 	var exportFormat services.ExportFormat
 	switch format {
-	case "json":
+	case formatJSON:
 		exportFormat = services.JSONFormat
 	case "yaml", "yml":
 		exportFormat = services.YAMLFormat
@@ -64,7 +66,7 @@ func (h *BackupHandler) Export(c *gin.Context) {
 	c.Data(http.StatusOK, "application/octet-stream", data)
 }
 
-// Import handles POST /api/v1/backup/import
+// Import handles POST /api/v1/backup/import.
 func (h *BackupHandler) Import(c *gin.Context) {
 	user, ok := middleware.GetCurrentUser(c)
 	if !ok || !user.IsAdmin() {
@@ -80,11 +82,15 @@ func (h *BackupHandler) Import(c *gin.Context) {
 
 	// Determine format from file extension
 	var importFormat services.ExportFormat
-	if file.Filename[len(file.Filename)-4:] == "json" {
+	filename := file.Filename
+	switch {
+	case len(filename) > 4 && filename[len(filename)-5:] == ".json":
 		importFormat = services.JSONFormat
-	} else if file.Filename[len(file.Filename)-4:] == "yaml" || file.Filename[len(file.Filename)-3:] == "yml" {
+	case len(filename) > 4 && filename[len(filename)-5:] == ".yaml":
 		importFormat = services.YAMLFormat
-	} else {
+	case len(filename) > 3 && filename[len(filename)-4:] == ".yml":
+		importFormat = services.YAMLFormat
+	default:
 		response.BadRequest(c, "INVALID_FORMAT", "File must be .json or .yaml/.yml")
 		return
 	}
@@ -112,7 +118,7 @@ func (h *BackupHandler) Import(c *gin.Context) {
 	response.SuccessWithMessage(c, "Data imported successfully", nil)
 }
 
-// DatabaseBackup handles POST /api/v1/backup/database
+// DatabaseBackup handles POST /api/v1/backup/database.
 func (h *BackupHandler) DatabaseBackup(c *gin.Context) {
 	user, ok := middleware.GetCurrentUser(c)
 	if !ok || !user.IsAdmin() {

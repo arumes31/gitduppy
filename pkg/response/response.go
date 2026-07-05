@@ -6,23 +6,23 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Response represents the standard API response envelope
+// Response represents the standard API response envelope.
 type Response struct {
-	Success bool            `json:"success"`
-	Message string          `json:"message,omitempty"`
-	Data    interface{}     `json:"data,omitempty"`
-	Errors  []ResponseError `json:"errors,omitempty"`
-	Meta    *Meta           `json:"meta,omitempty"`
+	Success bool        `json:"success"`
+	Message string      `json:"message,omitempty"`
+	Data    interface{} `json:"data,omitempty"`
+	Errors  []Error     `json:"errors,omitempty"`
+	Meta    *Meta       `json:"meta,omitempty"`
 }
 
-// ResponseError represents an API error
-type ResponseError struct {
+// Error represents an API error.
+type Error struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 	Field   string `json:"field,omitempty"`
 }
 
-// Meta represents pagination metadata
+// Meta represents pagination metadata.
 type Meta struct {
 	Page       int `json:"page,omitempty"`
 	PerPage    int `json:"per_page,omitempty"`
@@ -30,7 +30,7 @@ type Meta struct {
 	TotalPages int `json:"total_pages,omitempty"`
 }
 
-// Success sends a success response
+// Success sends a success response.
 func Success(c *gin.Context, data interface{}) {
 	c.JSON(http.StatusOK, Response{
 		Success: true,
@@ -38,7 +38,7 @@ func Success(c *gin.Context, data interface{}) {
 	})
 }
 
-// SuccessWithMessage sends a success response with a message
+// SuccessWithMessage sends a success response with a message.
 func SuccessWithMessage(c *gin.Context, message string, data interface{}) {
 	c.JSON(http.StatusOK, Response{
 		Success: true,
@@ -47,7 +47,7 @@ func SuccessWithMessage(c *gin.Context, message string, data interface{}) {
 	})
 }
 
-// SuccessWithMeta sends a success response with pagination metadata
+// SuccessWithMeta sends a success response with pagination metadata.
 func SuccessWithMeta(c *gin.Context, data interface{}, meta *Meta) {
 	c.JSON(http.StatusOK, Response{
 		Success: true,
@@ -56,7 +56,7 @@ func SuccessWithMeta(c *gin.Context, data interface{}, meta *Meta) {
 	})
 }
 
-// Created sends a 201 Created response
+// Created sends a 201 Created response.
 func Created(c *gin.Context, data interface{}) {
 	c.JSON(http.StatusCreated, Response{
 		Success: true,
@@ -64,7 +64,7 @@ func Created(c *gin.Context, data interface{}) {
 	})
 }
 
-// Accepted sends a 202 Accepted response
+// Accepted sends a 202 Accepted response.
 func Accepted(c *gin.Context, data interface{}) {
 	c.JSON(http.StatusAccepted, Response{
 		Success: true,
@@ -72,35 +72,35 @@ func Accepted(c *gin.Context, data interface{}) {
 	})
 }
 
-// ErrorResponse sends an error response
+// ErrorResponse sends an error response.
 func ErrorResponse(c *gin.Context, statusCode int, code string, message string) {
 	c.JSON(statusCode, Response{
 		Success: false,
-		Errors: []ResponseError{
+		Errors: []Error{
 			{Code: code, Message: message},
 		},
 	})
 }
 
-// ErrorWithField sends an error response with a field reference
+// ErrorWithField sends an error response with a field reference.
 func ErrorWithField(c *gin.Context, statusCode int, code string, message string, field string) {
 	c.JSON(statusCode, Response{
 		Success: false,
-		Errors: []ResponseError{
+		Errors: []Error{
 			{Code: code, Message: message, Field: field},
 		},
 	})
 }
 
-// ErrorWithMultipleErrors sends an error response with multiple errors
-func ErrorWithMultipleErrors(c *gin.Context, statusCode int, errors []ResponseError) {
+// ErrorWithMultipleErrors sends an error response with multiple errors.
+func ErrorWithMultipleErrors(c *gin.Context, statusCode int, errors []Error) {
 	c.JSON(statusCode, Response{
 		Success: false,
 		Errors:  errors,
 	})
 }
 
-// NotFound sends a 404 Not Found response
+// NotFound sends a 404 Not Found response.
 func NotFound(c *gin.Context, message string) {
 	if message == "" {
 		message = "Resource not found"
@@ -108,12 +108,12 @@ func NotFound(c *gin.Context, message string) {
 	ErrorResponse(c, http.StatusNotFound, "NOT_FOUND", message)
 }
 
-// BadRequest sends a 400 Bad Request response
+// BadRequest sends a 400 Bad Request response.
 func BadRequest(c *gin.Context, code string, message string) {
 	ErrorResponse(c, http.StatusBadRequest, code, message)
 }
 
-// Unauthorized sends a 401 Unauthorized response
+// Unauthorized sends a 401 Unauthorized response.
 func Unauthorized(c *gin.Context, message string) {
 	if message == "" {
 		message = "Unauthorized"
@@ -121,7 +121,7 @@ func Unauthorized(c *gin.Context, message string) {
 	ErrorResponse(c, http.StatusUnauthorized, "UNAUTHORIZED", message)
 }
 
-// Forbidden sends a 403 Forbidden response
+// Forbidden sends a 403 Forbidden response.
 func Forbidden(c *gin.Context, message string) {
 	if message == "" {
 		message = "Forbidden"
@@ -129,7 +129,7 @@ func Forbidden(c *gin.Context, message string) {
 	ErrorResponse(c, http.StatusForbidden, "FORBIDDEN", message)
 }
 
-// InternalError sends a 500 Internal Server Error response
+// InternalError sends a 500 Internal Server Error response.
 func InternalError(c *gin.Context, message string) {
 	if message == "" {
 		message = "Internal server error"
@@ -137,7 +137,7 @@ func InternalError(c *gin.Context, message string) {
 	ErrorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", message)
 }
 
-// Conflict sends a 409 Conflict response
+// Conflict sends a 409 Conflict response.
 func Conflict(c *gin.Context, message string) {
 	ErrorResponse(c, http.StatusConflict, "CONFLICT", message)
 }

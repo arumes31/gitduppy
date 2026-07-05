@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
 	"fmt"
+	"html/template"
 	"log"
 	"net/http"
 	"os"
@@ -11,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/render"
 	"github.com/gitduppy/gitduppy/internal/config"
 	"github.com/gitduppy/gitduppy/internal/database"
 	"github.com/gitduppy/gitduppy/internal/gitops"
@@ -21,6 +26,7 @@ import (
 	"github.com/gitduppy/gitduppy/pkg/crypto"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 var (
@@ -69,11 +75,13 @@ func main() {
 	auditService := services.NewAuditService()
 	tagService := services.NewTagService()
 	dashboardService := services.NewDashboardService()
-	oauthService := services.NewOAuthService(cfg)
+
+	configService := services.NewConfigService(cfg, database.GetDB(), encryptionService)
+	oauthService := services.NewOAuthService(configService)
+
 	backupService := services.NewBackupService(cfg)
 	emailService := services.NewEmailService(cfg)
 	healthService := services.NewHealthService()
-	configService := services.NewConfigService(cfg)
 
 	// Initialize git operations
 	gitOps := gitops.NewGitOperations(cfg.Storage.BasePath)
@@ -115,6 +123,8 @@ func main() {
 	configHandler := handlers.NewConfigHandler(configService)
 	gitHealthHandler := handlers.NewGitHealthHandler(healthService)
 	metricsHandler := handlers.NewMetricsHandler()
+	webHandler := handlers.NewWebHandler()
+	browseHandler := handlers.NewBrowseHandler(repoService)
 
 	// Initialize middleware
 	authMiddleware := middleware.NewAuthMiddleware()
@@ -148,6 +158,8 @@ func main() {
 		configHandler,
 		gitHealthHandler,
 		metricsHandler,
+		webHandler,
+		browseHandler,
 	)
 
 	// Create HTTP server
@@ -191,6 +203,15 @@ func main() {
 	log.Println("Server exited properly")
 }
 
+// generateBootstrapPassword returns a cryptographically random URL-safe password.
+func generateBootstrapPassword(nBytes int) (string, error) {
+	b := make([]byte, nBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
 // createDefaultAdmin creates a default admin user if no users exist
 func createDefaultAdmin() error {
 	db := database.GetDB()
@@ -202,7 +223,21 @@ func createDefaultAdmin() error {
 		log.Println("Users already exist, skipping default admin creation")
 		return nil
 	}
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
+	// Determine the initial admin password. Prefer an operator-supplied secret;
+	// otherwise generate a strong random one (which is not logged by default).
+	// This avoids baking a universal default password into every deployment.
+	bootstrapPassword := os.Getenv("GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD")
+	generated := false
+	if bootstrapPassword == "" {
+		pw, genErr := generateBootstrapPassword(24)
+		if genErr != nil {
+			return fmt.Errorf("failed to generate bootstrap admin password: %w", genErr)
+		}
+		bootstrapPassword = pw
+		generated = true
+	}
+
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(bootstrapPassword), bcrypt.DefaultCost)
 	if err != nil {
 		return fmt.Errorf("failed to hash password: %w", err)
 	}
@@ -218,7 +253,19 @@ func createDefaultAdmin() error {
 	if err := db.Create(admin).Error; err != nil {
 		return fmt.Errorf("failed to create admin user: %w", err)
 	}
-	log.Println("Default admin user created (username: admin, password: admin123 - change on first login)")
+	switch {
+	case !generated:
+		log.Println("Default admin user created (username: admin) from GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD - change on first login")
+	case os.Getenv("GITMIRRORS_BOOTSTRAP_SHOW_PASSWORD") == "true":
+		// Explicit operator opt-in to print the one-time generated secret.
+		log.Printf("=== INITIAL ADMIN CREATED (username: admin) — one-time generated password: %s — change it immediately after first login ===", bootstrapPassword)
+	default:
+		// Never log the generated secret by default. Direct the operator to
+		// provide a password or opt in to a one-time display.
+		log.Println("Initial admin user 'admin' created with a random password that was NOT logged. " +
+			"Set GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD before first start to choose it, " +
+			"or set GITMIRRORS_BOOTSTRAP_SHOW_PASSWORD=true to print the generated one once at startup.")
+	}
 	defaultTags := []models.Tag{
 		{Name: "production", Color: "#ef4444"},
 		{Name: "staging", Color: "#f59e0b"},
@@ -226,8 +273,16 @@ func createDefaultAdmin() error {
 		{Name: "archived", Color: "#6b7280"},
 	}
 	for _, tag := range defaultTags {
-		if err := db.FirstOrCreate(&tag, models.Tag{Name: tag.Name}).Error; err != nil {
-			log.Printf("Warning: failed to create default tag %s: %v", tag.Name, err)
+		var existing models.Tag
+		if err := db.Where("name = ?", tag.Name).First(&existing).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				tag.ID = uuid.New()
+				if err := db.Create(&tag).Error; err != nil {
+					return fmt.Errorf("failed to create default tag %s: %w", tag.Name, err)
+				}
+			} else {
+				return fmt.Errorf("failed to query default tag %s: %w", tag.Name, err)
+			}
 		}
 	}
 	log.Println("Default tags created")
@@ -256,23 +311,42 @@ func setupRouter(
 	configHandler *handlers.ConfigHandler,
 	gitHealthHandler *handlers.GitHealthHandler,
 	metricsHandler *handlers.MetricsHandler,
+	webHandler *handlers.WebHandler,
+	browseHandler *handlers.BrowseHandler,
 ) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 
-	// Static file serving for logo and favicon
+	// Static file serving and HTML Templates
 	router.Static("/static", "./static")
+	router.Static("/assets", "./internal/web/static")
+	router.HTMLRender = loadTemplates()
 
 	// Middleware - add panic recovery
 	router.Use(gin.Recovery())
 	router.Use(middleware.GinLogger())
 	router.Use(middleware.CORS(corsConfig))
 	router.Use(rateLimiter.Middleware())
-	router.Use(middleware.SecurityHeaders())
+	router.Use(middleware.SecurityHeaders(cfg))
 
 	// Prometheus metrics endpoint (no auth required)
 	if cfg.Monitoring.MetricsEnabled {
 		router.GET(cfg.Monitoring.MetricsPath, metricsHandler.GetMetrics)
+	}
+
+	// Web UI Routes
+	router.GET("/login", webHandler.Login)
+	router.GET("/", webHandler.Index)
+
+	webGroup := router.Group("/")
+	webGroup.Use(authMiddleware.WebMiddleware())
+	{
+		webGroup.GET("/dashboard", webHandler.Dashboard)
+		webGroup.GET("/config", webHandler.Config)
+		webGroup.GET("/repos", webHandler.RepoList)
+		webGroup.GET("/repos/:id", webHandler.RepoDetail)
+		webGroup.GET("/repos/:id/commit/:sha", webHandler.RepoCommit)
+		webGroup.GET("/search", webHandler.Search)
 	}
 
 	// Health check endpoints (no auth required)
@@ -284,6 +358,17 @@ func setupRouter(
 	// API v1 group
 	v1 := router.Group("/api/v1")
 	{
+		// Browse routes (authenticated)
+		browseGroup := v1.Group("/repos")
+		browseGroup.Use(authMiddleware.Middleware())
+		{
+			browseGroup.GET("/:id/refs", browseHandler.GetRefs)
+			browseGroup.GET("/:id/tree", browseHandler.GetTree)
+			browseGroup.GET("/:id/blob", browseHandler.GetBlob)
+			browseGroup.GET("/:id/commits", browseHandler.GetCommits)
+			browseGroup.GET("/:id/commit/:sha", browseHandler.GetCommit)
+			browseGroup.GET("/:id/download", browseHandler.DownloadRepo)
+		}
 		// Auth routes
 		auth := v1.Group("/auth")
 		{
@@ -297,6 +382,8 @@ func setupRouter(
 		// OAuth routes
 		oauth := v1.Group("/oauth")
 		{
+			oauth.POST("/github/manifest-setup", authMiddleware.Middleware(), middleware.RequireAdmin(), oauthHandler.ManifestSetup)
+			oauth.GET("/github/manifest-callback", oauthHandler.ManifestCallback)
 			oauth.GET("/:provider/login", oauthHandler.LoginWithProvider)
 			oauth.GET("/:provider/callback", oauthHandler.Callback)
 			oauth.POST("/:provider/link", authMiddleware.Middleware(), oauthHandler.LinkAccount)
@@ -317,18 +404,27 @@ func setupRouter(
 			users.PATCH("/:id/status", middleware.RequireAdmin(), userHandler.SetUserStatus)
 		}
 
+		// Global search route
+		v1.GET("/search", authMiddleware.Middleware(), repoHandler.GlobalSearch)
+
 		// Repository routes
 		repos := v1.Group("/repositories")
 		repos.Use(authMiddleware.Middleware())
 		{
 			repos.GET("", repoHandler.ListRepositories)
 			repos.POST("", repoHandler.CreateRepository)
+			repos.GET("/paperbin", repoHandler.GetPaperbin)
 			repos.GET("/:id", repoHandler.GetRepository)
 			repos.PUT("/:id", repoHandler.UpdateRepository)
 			repos.DELETE("/:id", repoHandler.DeleteRepository)
+			repos.POST("/:id/restore", repoHandler.RestoreRepository)
+			repos.DELETE("/:id/force", repoHandler.PermanentDeleteRepository)
+			repos.POST("/:id/paperbin/branches/:branchId/restore", repoHandler.RestoreBranch)
+			repos.DELETE("/:id/paperbin/branches/:branchId", repoHandler.PermanentDeleteBranch)
 			repos.PATCH("/:id/status", repoHandler.SetRepositoryStatus)
 			repos.POST("/:id/clone", repoHandler.TriggerClone)
 			repos.GET("/:id/logs", repoHandler.GetRepositoryLogs)
+			repos.GET("/:id/logs/stream", repoHandler.StreamRepositoryLogs)
 			repos.GET("/:id/jobs", cloneHandler.ListRepositoryJobs)
 		}
 
@@ -394,6 +490,8 @@ func setupRouter(
 			dashboard.GET("/chart-data", dashboardHandler.GetChartData)
 			dashboard.GET("/top-repositories", dashboardHandler.GetTopRepositories)
 			dashboard.GET("/recent-jobs", dashboardHandler.GetRecentJobs)
+			dashboard.GET("/timeline", dashboardHandler.GetTimeline)
+			dashboard.GET("/paperbin-quota", dashboardHandler.GetPaperbinQuota)
 		}
 
 		// Backup routes
@@ -410,6 +508,11 @@ func setupRouter(
 		{
 			configRoutes.GET("", configHandler.GetConfig)
 			configRoutes.PUT("", middleware.RequireAdmin(), configHandler.UpdateConfig)
+			configRoutes.PUT("/oauth", middleware.RequireAdmin(), configHandler.UpdateOAuthSettings)
+			configRoutes.GET("/maintenance", configHandler.GetMaintenanceMode)
+			configRoutes.PUT("/maintenance", middleware.RequireAdmin(), configHandler.UpdateMaintenanceMode)
+			configRoutes.GET("/quota", configHandler.GetQuota)
+			configRoutes.PUT("/quota", middleware.RequireAdmin(), configHandler.UpdateQuota)
 		}
 
 		// Incoming webhook receiver (no auth required, uses HMAC signature)
@@ -417,4 +520,27 @@ func setupRouter(
 	}
 
 	return router
+}
+
+// CustomHTMLRenderer is a custom HTML renderer for Gin that prevents template block collisions.
+type CustomHTMLRenderer map[string]*template.Template
+
+func (r CustomHTMLRenderer) Instance(name string, data interface{}) render.Render {
+	return render.HTML{
+		Template: r[name],
+		Name:     name,
+		Data:     data,
+	}
+}
+
+func loadTemplates() CustomHTMLRenderer {
+	r := make(CustomHTMLRenderer)
+	r["login.html"] = template.Must(template.ParseFiles("internal/web/templates/base.html", "internal/web/templates/login.html"))
+	r["dashboard.html"] = template.Must(template.ParseFiles("internal/web/templates/base.html", "internal/web/templates/dashboard.html"))
+	r["config.html"] = template.Must(template.ParseFiles("internal/web/templates/base.html", "internal/web/templates/config.html"))
+	r["repos.html"] = template.Must(template.ParseFiles("internal/web/templates/base.html", "internal/web/templates/repos.html"))
+	r["repo_detail.html"] = template.Must(template.ParseFiles("internal/web/templates/base.html", "internal/web/templates/repo_detail.html"))
+	r["repo_commit.html"] = template.Must(template.ParseFiles("internal/web/templates/base.html", "internal/web/templates/repo_commit.html"))
+	r["search.html"] = template.Must(template.ParseFiles("internal/web/templates/base.html", "internal/web/templates/search.html"))
+	return r
 }

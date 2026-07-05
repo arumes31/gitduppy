@@ -1,16 +1,31 @@
 package handlers
 
 import (
+	"context"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
 	"github.com/gin-gonic/gin"
+	"github.com/gitduppy/gitduppy/internal/database"
+	"github.com/gitduppy/gitduppy/internal/gitops"
 	"github.com/gitduppy/gitduppy/internal/middleware"
+	"github.com/gitduppy/gitduppy/internal/models"
 	"github.com/gitduppy/gitduppy/internal/services"
 	"github.com/gitduppy/gitduppy/pkg/crypto"
 	"github.com/gitduppy/gitduppy/pkg/response"
 	"github.com/gitduppy/gitduppy/pkg/validator"
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 )
 
-// RepositoryHandler handles repository management requests
+const stringTrue = "true"
+
+// RepositoryHandler handles repository management requests.
 type RepositoryHandler struct {
 	repoService  *services.RepositoryService
 	cloneService *services.CloneService
@@ -18,13 +33,13 @@ type RepositoryHandler struct {
 	auditService *services.AuditService
 }
 
-// NewRepositoryHandler creates a new repository handler
+// NewRepositoryHandler creates a new repository handler.
 func NewRepositoryHandler(
 	repoService *services.RepositoryService,
 	cloneService *services.CloneService,
 	tagService *services.TagService,
 	auditService *services.AuditService,
-) *RepositoryHandler {
+) *RepositoryHandler { //nolint:whitespace
 	return &RepositoryHandler{
 		repoService:  repoService,
 		cloneService: cloneService,
@@ -33,7 +48,7 @@ func NewRepositoryHandler(
 	}
 }
 
-// ListRepositories handles GET /api/v1/repositories
+// ListRepositories handles GET /api/v1/repositories.
 func (h *RepositoryHandler) ListRepositories(c *gin.Context) {
 	filter := &services.RepositoryFilter{
 		Page:    1,
@@ -64,7 +79,7 @@ func (h *RepositoryHandler) ListRepositories(c *gin.Context) {
 
 	isActive := c.Query("is_active")
 	if isActive != "" {
-		active := isActive == "true"
+		active := isActive == stringTrue
 		filter.IsActive = &active
 	}
 
@@ -87,7 +102,7 @@ func (h *RepositoryHandler) ListRepositories(c *gin.Context) {
 	})
 }
 
-// GetRepository handles GET /api/v1/repositories/:id
+// GetRepository handles GET /api/v1/repositories/:id.
 func (h *RepositoryHandler) GetRepository(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -104,7 +119,7 @@ func (h *RepositoryHandler) GetRepository(c *gin.Context) {
 	response.Success(c, repo)
 }
 
-// CreateRepository handles POST /api/v1/repositories
+// CreateRepository handles POST /api/v1/repositories.
 func (h *RepositoryHandler) CreateRepository(c *gin.Context) {
 	user, ok := middleware.GetCurrentUser(c)
 	if !ok {
@@ -121,7 +136,12 @@ func (h *RepositoryHandler) CreateRepository(c *gin.Context) {
 		StoragePath          string                     `json:"storage_path" validate:"required"`
 		IsBare               bool                       `json:"is_bare"`
 		LFSEnabled           bool                       `json:"lfs_enabled"`
+		MirrorIssues         bool                       `json:"mirror_issues"`
+		MirrorPullRequests   bool                       `json:"mirror_pull_requests"`
+		MirrorReleases       bool                       `json:"mirror_releases"`
+		MirrorWiki           bool                       `json:"mirror_wiki"`
 		CloneIntervalMinutes int                        `json:"clone_interval_minutes" validate:"min=5"`
+		RetentionDays        int                        `json:"retention_days"`
 		Description          *string                    `json:"description,omitempty"`
 		TagIDs               []uuid.UUID                `json:"tag_ids,omitempty"`
 	}
@@ -150,7 +170,12 @@ func (h *RepositoryHandler) CreateRepository(c *gin.Context) {
 		StoragePath:          req.StoragePath,
 		IsBare:               req.IsBare,
 		LFSEnabled:           req.LFSEnabled,
+		MirrorIssues:         req.MirrorIssues,
+		MirrorPullRequests:   req.MirrorPullRequests,
+		MirrorReleases:       req.MirrorReleases,
+		MirrorWiki:           req.MirrorWiki,
 		CloneIntervalMinutes: req.CloneIntervalMinutes,
+		RetentionDays:        req.RetentionDays,
 		Description:          req.Description,
 		TagIDs:               req.TagIDs,
 	}, user.ID)
@@ -159,13 +184,15 @@ func (h *RepositoryHandler) CreateRepository(c *gin.Context) {
 		return
 	}
 
-	// Log the action
-	h.auditService.Log(c, &user.ID, &repo.ID, "repository.create", gin.H{"name": repo.Name}, c.ClientIP(), c.Request.UserAgent())
+	// Log the action.
+	if err := h.auditService.Log(c, &user.ID, &repo.ID, "repository.create", gin.H{"name": repo.Name}, c.ClientIP(), c.Request.UserAgent()); err != nil {
+		log.Printf("WARNING: audit log failed for repository.create repo=%s: %v", repo.ID, err)
+	}
 
 	response.Created(c, repo)
 }
 
-// UpdateRepository handles PUT /api/v1/repositories/:id
+// UpdateRepository handles PUT /api/v1/repositories/:id.
 func (h *RepositoryHandler) UpdateRepository(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -174,8 +201,8 @@ func (h *RepositoryHandler) UpdateRepository(c *gin.Context) {
 	}
 
 	var req services.UpdateRepositoryRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "INVALID_REQUEST", err.Error())
+	if bindErr := c.ShouldBindJSON(&req); bindErr != nil {
+		response.BadRequest(c, "INVALID_REQUEST", bindErr.Error())
 		return
 	}
 
@@ -187,13 +214,15 @@ func (h *RepositoryHandler) UpdateRepository(c *gin.Context) {
 
 	user, _ := middleware.GetCurrentUser(c)
 	if user != nil {
-		h.auditService.Log(c, &user.ID, &repo.ID, "repository.update", gin.H{"name": repo.Name}, c.ClientIP(), c.Request.UserAgent())
+		if err := h.auditService.Log(c, &user.ID, &repo.ID, "repository.update", gin.H{"name": repo.Name}, c.ClientIP(), c.Request.UserAgent()); err != nil {
+			log.Printf("WARNING: audit log failed for repository.update repo=%s: %v", repo.ID, err)
+		}
 	}
 
 	response.Success(c, repo)
 }
 
-// DeleteRepository handles DELETE /api/v1/repositories/:id
+// DeleteRepository handles DELETE /api/v1/repositories/:id.
 func (h *RepositoryHandler) DeleteRepository(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -203,20 +232,22 @@ func (h *RepositoryHandler) DeleteRepository(c *gin.Context) {
 
 	repo, _ := h.repoService.GetRepositoryByID(c, id)
 
-	if err := h.repoService.DeleteRepository(c, id); err != nil {
-		response.BadRequest(c, "DELETE_ERROR", err.Error())
+	if deleteErr := h.repoService.DeleteRepository(c, id); deleteErr != nil {
+		response.BadRequest(c, "DELETE_ERROR", deleteErr.Error())
 		return
 	}
 
 	user, _ := middleware.GetCurrentUser(c)
 	if user != nil && repo != nil {
-		h.auditService.Log(c, &user.ID, &repo.ID, "repository.delete", gin.H{"name": repo.Name}, c.ClientIP(), c.Request.UserAgent())
+		if err := h.auditService.Log(c, &user.ID, &repo.ID, "repository.delete", gin.H{"name": repo.Name}, c.ClientIP(), c.Request.UserAgent()); err != nil {
+			log.Printf("WARNING: audit log failed for repository.delete repo=%s: %v", repo.ID, err)
+		}
 	}
 
 	response.SuccessWithMessage(c, "Repository deleted successfully", nil)
 }
 
-// SetRepositoryStatus handles PATCH /api/v1/repositories/:id/status
+// SetRepositoryStatus handles PATCH /api/v1/repositories/:id/status.
 func (h *RepositoryHandler) SetRepositoryStatus(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -227,20 +258,20 @@ func (h *RepositoryHandler) SetRepositoryStatus(c *gin.Context) {
 	var req struct {
 		IsActive bool `json:"is_active"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "INVALID_REQUEST", err.Error())
+	if bindErr := c.ShouldBindJSON(&req); bindErr != nil {
+		response.BadRequest(c, "INVALID_REQUEST", bindErr.Error())
 		return
 	}
 
-	if err := h.repoService.SetRepositoryStatus(c, id, req.IsActive); err != nil {
-		response.BadRequest(c, "UPDATE_ERROR", err.Error())
+	if statusErr := h.repoService.SetRepositoryStatus(c, id, req.IsActive); statusErr != nil {
+		response.BadRequest(c, "UPDATE_ERROR", statusErr.Error())
 		return
 	}
 
 	response.SuccessWithMessage(c, "Repository status updated", nil)
 }
 
-// TriggerClone handles POST /api/v1/repositories/:id/clone
+// TriggerClone handles POST /api/v1/repositories/:id/clone.
 func (h *RepositoryHandler) TriggerClone(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -261,7 +292,7 @@ func (h *RepositoryHandler) TriggerClone(c *gin.Context) {
 	})
 }
 
-// GetRepositoryLogs handles GET /api/v1/repositories/:id/logs
+// GetRepositoryLogs handles GET /api/v1/repositories/:id/logs.
 func (h *RepositoryHandler) GetRepositoryLogs(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -277,4 +308,354 @@ func (h *RepositoryHandler) GetRepositoryLogs(c *gin.Context) {
 	}
 
 	response.Success(c, logs)
+}
+
+// GetPaperbin handles GET /api/v1/repositories/paperbin.
+func (h *RepositoryHandler) GetPaperbin(c *gin.Context) {
+	db := database.GetDB()
+
+	// 1. Fetch soft-deleted repositories
+	var repos []models.Repository
+	if err := db.Unscoped().Where("deleted_at IS NOT NULL").Find(&repos).Error; err != nil {
+		response.InternalError(c, "Failed to fetch deleted repositories: "+err.Error())
+		return
+	}
+
+	// 2. Fetch deleted branches
+	var branches []models.DeletedBranch
+	if err := db.Unscoped().Preload("Repository").Find(&branches).Error; err != nil {
+		response.InternalError(c, "Failed to fetch deleted branches: "+err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{
+		"repositories": repos,
+		"branches":     branches,
+	})
+}
+
+// RestoreRepository handles POST /api/v1/repositories/:id/restore.
+func (h *RepositoryHandler) RestoreRepository(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+		return
+	}
+
+	if err := h.repoService.RestoreRepository(c, id); err != nil {
+		response.BadRequest(c, "RESTORE_ERROR", err.Error())
+		return
+	}
+
+	// Fetch restored repo to log and return
+	repo, _ := h.repoService.GetRepositoryByID(c, id)
+
+	user, _ := middleware.GetCurrentUser(c)
+	if user != nil && repo != nil {
+		if err := h.auditService.Log(c, &user.ID, &repo.ID, "repository.restore", gin.H{"name": repo.Name}, c.ClientIP(), c.Request.UserAgent()); err != nil {
+			log.Printf("WARNING: audit log failed for repository.restore repo=%s: %v", repo.ID, err)
+		}
+	}
+
+	response.SuccessWithMessage(c, "Repository restored successfully", repo)
+}
+
+// PermanentDeleteRepository handles DELETE /api/v1/repositories/:id/force.
+func (h *RepositoryHandler) PermanentDeleteRepository(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+		return
+	}
+
+	db := database.GetDB()
+	var repo models.Repository
+	if err := db.Unscoped().First(&repo, id).Error; err != nil {
+		response.NotFound(c, "Repository not found")
+		return
+	}
+
+	if err := h.repoService.PermanentDeleteRepository(c, id); err != nil {
+		response.BadRequest(c, "DELETE_ERROR", err.Error())
+		return
+	}
+
+	user, _ := middleware.GetCurrentUser(c)
+	if user != nil {
+		if err := h.auditService.Log(c, &user.ID, nil, "repository.permanent_delete", gin.H{"id": id, "name": repo.Name}, c.ClientIP(), c.Request.UserAgent()); err != nil {
+			log.Printf("WARNING: audit log failed for repository.permanent_delete: %v", err)
+		}
+	}
+
+	response.SuccessWithMessage(c, "Repository permanently deleted", nil)
+}
+
+// RestoreBranch handles POST /api/v1/repositories/:id/paperbin/branches/:branchId/restore.
+func (h *RepositoryHandler) RestoreBranch(c *gin.Context) {
+	repoID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+		return
+	}
+
+	branchID, err := uuid.Parse(c.Param("branchId"))
+	if err != nil {
+		response.BadRequest(c, "INVALID_ID", "Invalid branch ID format")
+		return
+	}
+
+	db := database.GetDB()
+
+	var delBranch models.DeletedBranch
+	if err := db.First(&delBranch, branchID).Error; err != nil {
+		response.NotFound(c, "Deleted branch record not found")
+		return
+	}
+
+	if delBranch.RepositoryID != repoID {
+		response.BadRequest(c, "MISMATCH", "Branch does not belong to this repository")
+		return
+	}
+
+	repo, err := h.repoService.GetRepositoryByID(c, repoID)
+	if err != nil {
+		response.NotFound(c, "Active repository not found")
+		return
+	}
+
+	paperbinRef := "refs/paperbin/heads/" + delBranch.BranchName
+
+	// Recreate branch
+	_, gitErr := gitops.RunGitCommand(c, repo.StoragePath, "branch", delBranch.BranchName, delBranch.CommitSHA)
+	if gitErr != nil {
+		_, gitErr = gitops.RunGitCommand(c, repo.StoragePath, "branch", "-f", delBranch.BranchName, delBranch.CommitSHA)
+	}
+
+	if gitErr != nil {
+		response.InternalError(c, "Failed to recreate git branch: "+gitErr.Error())
+		return
+	}
+
+	// Delete the paperbin ref
+	_, _ = gitops.RunGitCommand(c, repo.StoragePath, "update-ref", "-d", paperbinRef)
+
+	// Delete DeletedBranch record
+	if err := db.Delete(&delBranch).Error; err != nil {
+		response.InternalError(c, "Failed to delete paperbin DB record: "+err.Error())
+		return
+	}
+
+	user, _ := middleware.GetCurrentUser(c)
+	if user != nil {
+		if err := h.auditService.Log(c, &user.ID, &repo.ID, "branch.restore", gin.H{"branch": delBranch.BranchName}, c.ClientIP(), c.Request.UserAgent()); err != nil {
+			log.Printf("WARNING: audit log failed for branch.restore: %v", err)
+		}
+	}
+
+	response.SuccessWithMessage(c, "Branch restored successfully", nil)
+}
+
+// PermanentDeleteBranch handles DELETE /api/v1/repositories/:id/paperbin/branches/:branchId.
+func (h *RepositoryHandler) PermanentDeleteBranch(c *gin.Context) {
+	repoID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+		return
+	}
+
+	branchID, err := uuid.Parse(c.Param("branchId"))
+	if err != nil {
+		response.BadRequest(c, "INVALID_ID", "Invalid branch ID format")
+		return
+	}
+
+	db := database.GetDB()
+
+	var delBranch models.DeletedBranch
+	if err := db.First(&delBranch, branchID).Error; err != nil {
+		response.NotFound(c, "Deleted branch record not found")
+		return
+	}
+
+	if delBranch.RepositoryID != repoID {
+		response.BadRequest(c, "MISMATCH", "Branch does not belong to this repository")
+		return
+	}
+
+	repo, err := h.repoService.GetRepositoryByID(c, repoID)
+	if err == nil {
+		paperbinRef := "refs/paperbin/heads/" + delBranch.BranchName
+		_, _ = gitops.RunGitCommand(c, repo.StoragePath, "update-ref", "-d", paperbinRef)
+	}
+
+	if err := db.Delete(&delBranch).Error; err != nil {
+		response.InternalError(c, "Failed to delete paperbin DB record: "+err.Error())
+		return
+	}
+
+	user, _ := middleware.GetCurrentUser(c)
+	if user != nil {
+		if err := h.auditService.Log(c, &user.ID, &repoID, "branch.permanent_delete", gin.H{"branch": delBranch.BranchName}, c.ClientIP(), c.Request.UserAgent()); err != nil {
+			log.Printf("WARNING: audit log failed for branch.permanent_delete: %v", err)
+		}
+	}
+
+	response.SuccessWithMessage(c, "Pruned branch deleted permanently from paperbin", nil)
+}
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		// Restrict authenticated log streaming to same-origin requests so other
+		// websites cannot open a socket against a victim's session.
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			// Non-browser clients (no Origin header) are allowed.
+			return true
+		}
+		u, err := url.Parse(origin)
+		if err != nil {
+			return false
+		}
+		return strings.EqualFold(u.Host, r.Host)
+	},
+}
+
+// StreamRepositoryLogs upgrades request to websocket and streams live progress logs.
+func (h *RepositoryHandler) StreamRepositoryLogs(c *gin.Context) {
+	repoID := c.Param("id")
+
+	ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		log.Printf("WebSocket upgrade failed: %v", err)
+		return
+	}
+	defer ws.Close()
+
+	logChan := gitops.GlobalLogHub.Subscribe(repoID)
+	defer gitops.GlobalLogHub.Unsubscribe(repoID, logChan)
+
+	// Both the keep-alive goroutine and the log-streaming loop write to the same
+	// websocket connection, so serialize all writes through a single mutex —
+	// concurrent gorilla/websocket writes are not safe.
+	var writeMu sync.Mutex
+	writeMessage := func(messageType int, data []byte) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return ws.WriteMessage(messageType, data)
+	}
+
+	// Keep alive ticker
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := writeMessage(websocket.PingMessage, []byte{}); err != nil {
+					return
+				}
+			case <-c.Request.Context().Done():
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case msg, ok := <-logChan:
+			if !ok {
+				return
+			}
+			if err := writeMessage(websocket.TextMessage, []byte(msg)); err != nil {
+				return
+			}
+		case <-c.Request.Context().Done():
+			return
+		}
+	}
+}
+
+// CodeSearchResult represents a single search match in a repository.
+type CodeSearchResult struct {
+	RepoID     string `json:"repo_id"`
+	RepoName   string `json:"repo_name"`
+	File       string `json:"file"`
+	LineNumber string `json:"line_number"`
+	Content    string `json:"content"`
+}
+
+// GlobalSearch handles GET /api/v1/search.
+func (h *RepositoryHandler) GlobalSearch(c *gin.Context) {
+	query := c.Query("q")
+	if query == "" {
+		response.BadRequest(c, "MISSING_QUERY", "Search query is required")
+		return
+	}
+
+	// Reject overly broad queries before scanning every active repository.
+	if len(strings.TrimSpace(query)) < 3 {
+		response.BadRequest(c, "QUERY_TOO_SHORT", "Search query must be at least 3 characters")
+		return
+	}
+
+	db := database.GetDB()
+	var repos []models.Repository
+	if err := db.Where("is_active = ?", true).Find(&repos).Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	var results []CodeSearchResult
+	limit := 100 // Cap results to prevent long run times or huge payloads
+
+	for _, repo := range repos {
+		if len(results) >= limit {
+			break
+		}
+		// If repo not cloned yet or deleted on disk, skip
+		if _, err := os.Stat(repo.StoragePath); err != nil {
+			continue
+		}
+
+		// Run git grep on HEAD with a per-repo timeout so one large repository
+		// cannot make the whole search hang.
+		args := []string{"grep", "-nI", "--no-color", "-e", query, "HEAD"}
+		repoCtx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+		output, err := gitops.RunGitCommand(repoCtx, repo.StoragePath, args...)
+		cancel()
+		if err != nil {
+			// git grep exits with 1 if no matches are found, which is normal
+			continue
+		}
+
+		lines := strings.Split(output, "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+
+			// Format: HEAD:path/to/file:line_number:matching content line
+			parts := strings.SplitN(line, ":", 4)
+			if len(parts) >= 4 {
+				filePath := strings.TrimPrefix(parts[0]+":"+parts[1], "HEAD:")
+				lineNumber := parts[2]
+				content := parts[3]
+
+				results = append(results, CodeSearchResult{
+					RepoID:     repo.ID.String(),
+					RepoName:   repo.Name,
+					File:       filePath,
+					LineNumber: lineNumber,
+					Content:    content,
+				})
+
+				if len(results) >= limit {
+					break
+				}
+			}
+		}
+	}
+
+	response.Success(c, results)
 }

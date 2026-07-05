@@ -9,19 +9,19 @@ import (
 	"github.com/google/uuid"
 )
 
-// APIKeyHandler handles API key requests
+// APIKeyHandler handles API key requests.
 type APIKeyHandler struct {
 	apiKeyService *services.APIKeyService
 }
 
-// NewAPIKeyHandler creates a new API key handler
+// NewAPIKeyHandler creates a new API key handler.
 func NewAPIKeyHandler(apiKeyService *services.APIKeyService) *APIKeyHandler {
 	return &APIKeyHandler{
 		apiKeyService: apiKeyService,
 	}
 }
 
-// ListAPIKeys handles GET /api/v1/api-keys
+// ListAPIKeys handles GET /api/v1/api-keys.
 func (h *APIKeyHandler) ListAPIKeys(c *gin.Context) {
 	user, ok := middleware.GetCurrentUser(c)
 	if !ok {
@@ -38,7 +38,7 @@ func (h *APIKeyHandler) ListAPIKeys(c *gin.Context) {
 	response.Success(c, keys)
 }
 
-// CreateAPIKey handles POST /api/v1/api-keys
+// CreateAPIKey handles POST /api/v1/api-keys.
 func (h *APIKeyHandler) CreateAPIKey(c *gin.Context) {
 	user, ok := middleware.GetCurrentUser(c)
 	if !ok {
@@ -73,7 +73,7 @@ func (h *APIKeyHandler) CreateAPIKey(c *gin.Context) {
 	})
 }
 
-// DeleteAPIKey handles DELETE /api/v1/api-keys/:id
+// DeleteAPIKey handles DELETE /api/v1/api-keys/:id.
 func (h *APIKeyHandler) DeleteAPIKey(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -89,7 +89,7 @@ func (h *APIKeyHandler) DeleteAPIKey(c *gin.Context) {
 	response.SuccessWithMessage(c, "API key revoked", nil)
 }
 
-// RevokeAPIKey handles POST /api/v1/api-keys/:id/revoke
+// RevokeAPIKey handles POST /api/v1/api-keys/:id/revoke.
 func (h *APIKeyHandler) RevokeAPIKey(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {

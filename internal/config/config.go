@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -8,7 +9,7 @@ import (
 	"github.com/spf13/viper"
 )
 
-// Config holds all application configuration
+// Config holds all application configuration.
 type Config struct {
 	Server     ServerConfig     `mapstructure:"server"`
 	Database   DatabaseConfig   `mapstructure:"database"`
@@ -21,7 +22,7 @@ type Config struct {
 	Monitoring MonitoringConfig `mapstructure:"monitoring"`
 }
 
-// ServerConfig holds HTTP server configuration
+// ServerConfig holds HTTP server configuration.
 type ServerConfig struct {
 	Port           int           `mapstructure:"port"`
 	Host           string        `mapstructure:"host"`
@@ -33,14 +34,14 @@ type ServerConfig struct {
 	BaseURL        string        `mapstructure:"base_url"`
 }
 
-// TLSConfig holds TLS/SSL configuration
+// TLSConfig holds TLS/SSL configuration.
 type TLSConfig struct {
 	Enabled bool   `mapstructure:"enabled"`
 	Cert    string `mapstructure:"cert"`
 	Key     string `mapstructure:"key"`
 }
 
-// DatabaseConfig holds PostgreSQL connection configuration
+// DatabaseConfig holds PostgreSQL connection configuration.
 type DatabaseConfig struct {
 	Host            string        `mapstructure:"host"`
 	Port            int           `mapstructure:"port"`
@@ -53,7 +54,7 @@ type DatabaseConfig struct {
 	ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"`
 }
 
-// DSN returns the PostgreSQL connection string
+// DSN returns the PostgreSQL connection string.
 func (c *DatabaseConfig) DSN() string {
 	return fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
@@ -61,30 +62,30 @@ func (c *DatabaseConfig) DSN() string {
 	)
 }
 
-// SecurityConfig holds security-related configuration
+// SecurityConfig holds security-related configuration.
 type SecurityConfig struct {
 	MasterKey       string          `mapstructure:"master_key"`
 	SessionSecret   string          `mapstructure:"session_secret"`
 	CSRFKey         string          `mapstructure:"csrf_key"`
 	SessionDuration time.Duration   `mapstructure:"session_duration"`
 	RateLimit       RateLimitConfig `mapstructure:"rate_limit"`
-	HSTSMaxAge      int             `mapstructure:"hsts_max_age"` // HSTS max age in seconds
+	HSTSMaxAge      int             `mapstructure:"hsts_max_age"` // HSTS max age in seconds.
 }
 
-// RateLimitConfig holds rate limiting configuration
+// RateLimitConfig holds rate limiting configuration.
 type RateLimitConfig struct {
 	AuthRequestsPerMinute int `mapstructure:"auth_requests_per_minute"`
 	APIRequestsPerMinute  int `mapstructure:"api_requests_per_minute"`
 }
 
-// OAuthConfig holds OAuth2/OIDC provider configuration
+// OAuthConfig holds OAuth2/OIDC provider configuration.
 type OAuthConfig struct {
 	GitHub OAuthProviderConfig `mapstructure:"github"`
 	GitLab OAuthProviderConfig `mapstructure:"gitlab"`
 	Google OAuthProviderConfig `mapstructure:"google"`
 }
 
-// OAuthProviderConfig holds a single OAuth provider configuration
+// OAuthProviderConfig holds a single OAuth provider configuration.
 type OAuthProviderConfig struct {
 	ClientID     string   `mapstructure:"client_id"`
 	ClientSecret string   `mapstructure:"client_secret"`
@@ -92,7 +93,7 @@ type OAuthProviderConfig struct {
 	Scopes       []string `mapstructure:"scopes"`
 }
 
-// EmailConfig holds SMTP/email notification configuration
+// EmailConfig holds SMTP/email notification configuration.
 type EmailConfig struct {
 	SMTPHost     string `mapstructure:"smtp_host"`
 	SMTPPort     int    `mapstructure:"smtp_port"`
@@ -102,7 +103,7 @@ type EmailConfig struct {
 	Enabled      bool   `mapstructure:"enabled"`
 }
 
-// WorkerConfig holds background worker configuration
+// WorkerConfig holds background worker configuration.
 type WorkerConfig struct {
 	MaxConcurrent    int           `mapstructure:"max_concurrent"`
 	CloneTimeout     int           `mapstructure:"clone_timeout"`
@@ -110,7 +111,7 @@ type WorkerConfig struct {
 	RetryBaseDelay   time.Duration `mapstructure:"retry_base_delay"`
 }
 
-// LoggingConfig holds logging configuration
+// LoggingConfig holds logging configuration.
 type LoggingConfig struct {
 	Level    string `mapstructure:"level"`
 	Format   string `mapstructure:"format"`
@@ -118,21 +119,21 @@ type LoggingConfig struct {
 	FilePath string `mapstructure:"file_path"`
 }
 
-// StorageConfig holds storage path configuration
+// StorageConfig holds storage path configuration.
 type StorageConfig struct {
 	BasePath   string `mapstructure:"base_path"`
 	SSHPath    string `mapstructure:"ssh_path"`
 	BackupPath string `mapstructure:"backup_path"`
 }
 
-// MonitoringConfig holds monitoring/metrics configuration
+// MonitoringConfig holds monitoring/metrics configuration.
 type MonitoringConfig struct {
 	MetricsEnabled      bool          `mapstructure:"metrics_enabled"`
 	MetricsPath         string        `mapstructure:"metrics_path"`
 	HealthCheckInterval time.Duration `mapstructure:"health_check_interval"`
 }
 
-// Load reads configuration from file and environment variables
+// Load reads configuration from file and environment variables.
 func Load() (*Config, error) {
 	v := viper.New()
 
@@ -196,7 +197,8 @@ func Load() (*Config, error) {
 
 	// Read config file (ignore if not found)
 	if err := v.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+		var configFileNotFoundError viper.ConfigFileNotFoundError
+		if !errors.As(err, &configFileNotFoundError) {
 			return nil, fmt.Errorf("error reading config file: %w", err)
 		}
 	}

@@ -8,19 +8,19 @@ import (
 	"github.com/google/uuid"
 )
 
-// TagHandler handles tag requests
+// TagHandler handles tag requests.
 type TagHandler struct {
 	tagService *services.TagService
 }
 
-// NewTagHandler creates a new tag handler
+// NewTagHandler creates a new tag handler.
 func NewTagHandler(tagService *services.TagService) *TagHandler {
 	return &TagHandler{
 		tagService: tagService,
 	}
 }
 
-// ListTags handles GET /api/v1/tags
+// ListTags handles GET /api/v1/tags.
 func (h *TagHandler) ListTags(c *gin.Context) {
 	tags, err := h.tagService.ListTags(c)
 	if err != nil {
@@ -31,7 +31,7 @@ func (h *TagHandler) ListTags(c *gin.Context) {
 	response.Success(c, tags)
 }
 
-// GetTag handles GET /api/v1/tags/:id
+// GetTag handles GET /api/v1/tags/:id.
 func (h *TagHandler) GetTag(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -48,7 +48,7 @@ func (h *TagHandler) GetTag(c *gin.Context) {
 	response.Success(c, tag)
 }
 
-// CreateTag handles POST /api/v1/tags
+// CreateTag handles POST /api/v1/tags.
 func (h *TagHandler) CreateTag(c *gin.Context) {
 	var req services.CreateTagRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -75,7 +75,7 @@ func (h *TagHandler) CreateTag(c *gin.Context) {
 	response.Created(c, tag)
 }
 
-// UpdateTag handles PUT /api/v1/tags/:id
+// UpdateTag handles PUT /api/v1/tags/:id.
 func (h *TagHandler) UpdateTag(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -84,8 +84,8 @@ func (h *TagHandler) UpdateTag(c *gin.Context) {
 	}
 
 	var req services.UpdateTagRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "INVALID_REQUEST", err.Error())
+	if bindErr := c.ShouldBindJSON(&req); bindErr != nil {
+		response.BadRequest(c, "INVALID_REQUEST", bindErr.Error())
 		return
 	}
 
@@ -98,7 +98,7 @@ func (h *TagHandler) UpdateTag(c *gin.Context) {
 	response.Success(c, tag)
 }
 
-// DeleteTag handles DELETE /api/v1/tags/:id
+// DeleteTag handles DELETE /api/v1/tags/:id.
 func (h *TagHandler) DeleteTag(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -114,7 +114,7 @@ func (h *TagHandler) DeleteTag(c *gin.Context) {
 	response.SuccessWithMessage(c, "Tag deleted", nil)
 }
 
-// GetRepositoryTags handles GET /api/v1/repositories/:id/tags
+// GetRepositoryTags handles GET /api/v1/repositories/:id/tags.
 func (h *TagHandler) GetRepositoryTags(c *gin.Context) {
 	repoID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -131,7 +131,7 @@ func (h *TagHandler) GetRepositoryTags(c *gin.Context) {
 	response.Success(c, tags)
 }
 
-// AddTagToRepository handles POST /api/v1/repositories/:id/tags
+// AddTagToRepository handles POST /api/v1/repositories/:id/tags.
 func (h *TagHandler) AddTagToRepository(c *gin.Context) {
 	repoID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -155,7 +155,7 @@ func (h *TagHandler) AddTagToRepository(c *gin.Context) {
 	response.SuccessWithMessage(c, "Tag added to repository", nil)
 }
 
-// RemoveTagFromRepository handles DELETE /api/v1/repositories/:id/tags/:tagId
+// RemoveTagFromRepository handles DELETE /api/v1/repositories/:id/tags/:tagId.
 func (h *TagHandler) RemoveTagFromRepository(c *gin.Context) {
 	repoID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -177,7 +177,7 @@ func (h *TagHandler) RemoveTagFromRepository(c *gin.Context) {
 	response.SuccessWithMessage(c, "Tag removed from repository", nil)
 }
 
-// SetRepositoryTags handles PUT /api/v1/repositories/:id/tags
+// SetRepositoryTags handles PUT /api/v1/repositories/:id/tags.
 func (h *TagHandler) SetRepositoryTags(c *gin.Context) {
 	repoID, err := uuid.Parse(c.Param("id"))
 	if err != nil {

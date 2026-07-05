@@ -7,7 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// rateLimiter is a simple rate limiter using token bucket algorithm
+// rateLimiter is a simple rate limiter using token bucket algorithm.
 type rateLimiter struct {
 	tokens     float64
 	maxTokens  float64 // maximum tokens in bucket
@@ -41,14 +41,14 @@ func (rl *rateLimiter) allow() bool {
 	return false
 }
 
-// RateLimiter handles rate limiting per client
+// RateLimiter handles rate limiting per client.
 type RateLimiter struct {
 	limiters sync.Map // map[string]*rateLimiter
 	rps      float64
 	burst    int
 }
 
-// NewRateLimiter creates a new rate limiter
+// NewRateLimiter creates a new rate limiter.
 func NewRateLimiter(requestsPerSecond float64, burstSize int) *RateLimiter {
 	rl := &RateLimiter{
 		rps:   requestsPerSecond,
@@ -60,7 +60,7 @@ func NewRateLimiter(requestsPerSecond float64, burstSize int) *RateLimiter {
 	return rl
 }
 
-// cleanupWorker removes inactive limiters periodically
+// cleanupWorker removes inactive limiters periodically.
 func (rl *RateLimiter) cleanupWorker(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	for {
@@ -76,7 +76,7 @@ func (rl *RateLimiter) cleanupWorker(interval time.Duration) {
 	}
 }
 
-// getLimiter returns or creates a rate limiter for a key
+// getLimiter returns or creates a rate limiter for a key.
 func (rl *RateLimiter) getLimiter(key string) *rateLimiter {
 	value, ok := rl.limiters.Load(key)
 	if ok {
@@ -90,7 +90,7 @@ func (rl *RateLimiter) getLimiter(key string) *rateLimiter {
 	return value.(*rateLimiter)
 }
 
-// Middleware returns a rate limiting middleware function
+// Middleware returns a rate limiting middleware function.
 func (rl *RateLimiter) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Use client IP as the key

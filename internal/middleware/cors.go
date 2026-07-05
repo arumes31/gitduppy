@@ -8,7 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// CORSConfig holds CORS configuration
+// CORSConfig holds CORS configuration.
 type CORSConfig struct {
 	AllowOrigins     []string
 	AllowMethods     []string
@@ -17,7 +17,7 @@ type CORSConfig struct {
 	MaxAge           int
 }
 
-// DefaultCORSConfig returns a default CORS configuration
+// DefaultCORSConfig returns a default CORS configuration.
 func DefaultCORSConfig() *CORSConfig {
 	return &CORSConfig{
 		AllowOrigins:     []string{"*"},
@@ -28,7 +28,7 @@ func DefaultCORSConfig() *CORSConfig {
 	}
 }
 
-// CORS returns a CORS middleware function
+// CORS returns a CORS middleware function.
 func CORS(config *CORSConfig) gin.HandlerFunc {
 	if config == nil {
 		config = DefaultCORSConfig()
@@ -72,7 +72,7 @@ func CORS(config *CORSConfig) gin.HandlerFunc {
 	}
 }
 
-// contains checks if a string slice contains a specific string
+// contains checks if a string slice contains a specific string.
 func contains(slice []string, item string) bool {
 	for _, s := range slice {
 		if s == item {

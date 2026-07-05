@@ -3,8 +3,8 @@ run:
   tests: false
   skip-dirs-use-default: true
   skip-files:
-    - ".*\.pb\.go$"
-    - ".*\.mock\.go$"
+    - '.*\.pb\.go$'
+    - '.*\.mock\.go$'
     - "cmd/server/main.go" # Main entry point, minimal logic
 
 output:
@@ -15,8 +15,11 @@ output:
 linters-settings:
   govet:
     check-shadowing: true
-    settings:
-      printf: true
+    enable:
+      - nilness
+      - printf
+      - shadow
+      - unusedresult
   gocyclo:
     min-complexity: 15
   golint:
@@ -83,20 +86,14 @@ linters:
     - govet
     - ineffassign
     - staticcheck
-    - structcheck
     - typecheck
     - unused
-    - varcheck
     - bodyclose
-    - deadcode
-    - depguard
     - dogsled
     - dupl
     - errchkjson
     - errname
     - errorlint
-    - execinquery
-    - exportloopref
     - forbidigo
     - gochecknoinits
     - gochecknoglobals
@@ -112,11 +109,8 @@ linters:
     - goprintffuncname
     - gosec
     - gosmopolitan
-    - gotypex
     - grouper
-    - ifshort
     - importas
-    - ineffassign
     - makezero
     - mirror
     - misspell
@@ -126,7 +120,6 @@ linters:
     - nilnil
     - noctx
     - nolintlint
-    - nosnakecase
     - nosprintfhostport
     - paralleltest
     - prealloc
@@ -146,11 +139,5 @@ linters:
     - whitespace
     - zerologlint
   disable:
-    - maligned
     - asciicheck
-    - exhaustivestruct
-    - interfacer
-    - scopelint
-    - gocmt
-    - exhaustivestruct
   fast: false

@@ -1,0 +1,112 @@
+{{template "base" .}}
+
+{{define "content"}}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Dashboard</h1>
+        <p class="text-muted">Overview of your GitDuppy instances and mirroring operations.</p>
+    </div>
+    <div class="header-actions">
+        <div class="maintenance-toggle glass-panel" title="Pause all scheduled mirroring">
+            <i data-lucide="wrench"></i>
+            <span class="maintenance-label" id="maintenance-label">Maintenance Mode</span>
+            <label class="switch">
+                <input type="checkbox" id="maintenance-switch" aria-labelledby="maintenance-label" onchange="toggleMaintenanceMode(this.checked)">
+                <span class="slider"></span>
+            </label>
+        </div>
+        <button class="btn btn-secondary" onclick="fetchStats()">
+            <i data-lucide="refresh-cw"></i>
+            <span>Refresh</span>
+        </button>
+    </div>
+</div>
+
+<!-- Quota exceeded warning banner -->
+<div id="quota-warning-banner" class="quota-banner" role="alert" aria-live="assertive" style="display:none; margin-bottom: 24px;">
+    <i data-lucide="alert-triangle"></i>
+    <span><strong>Paperbin Quota Warning:</strong> Your total soft-deleted storage usage has exceeded the configured limit! Please purge some repositories to free up space.</span>
+</div>
+
+<div class="stats-grid" id="stats-container">
+    <div class="stat-card glass-panel">
+        <div class="stat-icon-wrapper primary">
+            <i data-lucide="book-marked"></i>
+        </div>
+        <div class="stat-content">
+            <h3 class="stat-label">Total Repositories</h3>
+            <p class="stat-value skeleton-text" id="stat-total-repos">-</p>
+        </div>
+    </div>
+    <div class="stat-card glass-panel">
+        <div class="stat-icon-wrapper success">
+            <i data-lucide="check-circle"></i>
+        </div>
+        <div class="stat-content">
+            <h3 class="stat-label">Successful Clones</h3>
+            <p class="stat-value skeleton-text" id="stat-success-clones">-</p>
+        </div>
+    </div>
+    <div class="stat-card glass-panel">
+        <div class="stat-icon-wrapper danger">
+            <i data-lucide="x-circle"></i>
+        </div>
+        <div class="stat-content">
+            <h3 class="stat-label">Failed Clones</h3>
+            <p class="stat-value skeleton-text" id="stat-failed-clones">-</p>
+        </div>
+    </div>
+    <div class="stat-card glass-panel">
+        <div class="stat-icon-wrapper warning">
+            <i data-lucide="clock"></i>
+        </div>
+        <div class="stat-content">
+            <h3 class="stat-label">Storage Used</h3>
+            <p class="stat-value skeleton-text" id="stat-storage-used">-</p>
+        </div>
+    </div>
+</div>
+
+<!-- Interactive Sync Timeline -->
+<div class="card glass-panel timeline-card mb-6">
+    <div class="card-header">
+        <h3 class="card-title" style="display:flex; align-items:center; gap:8px;"><i data-lucide="activity"></i> Interactive Sync Timeline (Last 50 Jobs)</h3>
+    </div>
+    <div class="card-body">
+        <div id="timeline-chart-container" class="timeline-chart">
+            <p class="text-muted text-center py-4">Loading timeline data...</p>
+        </div>
+    </div>
+</div>
+
+<div class="dashboard-grid">
+    <div class="card glass-panel col-span-2">
+        <div class="card-header">
+            <h3 class="card-title">Recent Jobs</h3>
+            <button class="btn btn-icon btn-ghost" title="View all">
+                <i data-lucide="external-link"></i>
+            </button>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table" id="jobs-table">
+                    <thead>
+                        <tr>
+                            <th>Repository</th>
+                            <th>Status</th>
+                            <th>Started</th>
+                            <th>Duration</th>
+                        </tr>
+                    </thead>
+                    <tbody id="jobs-body">
+                        <!-- Skeleton loader rows -->
+                        <tr class="skeleton-row"><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td></tr>
+                        <tr class="skeleton-row"><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td></tr>
+                        <tr class="skeleton-row"><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{{end}}

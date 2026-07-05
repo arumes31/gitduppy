@@ -12,44 +12,44 @@ import (
 	"gorm.io/gorm"
 )
 
-// EmailService handles email notifications
+// EmailService handles email notifications.
 type EmailService struct {
 	db     *gorm.DB
-	email  *email.EmailService
+	email  *email.Service
 	config *config.Config
 }
 
-// NewEmailService creates a new email service
+// NewEmailService creates a new email service.
 func NewEmailService(cfg *config.Config) *EmailService {
 	return &EmailService{
 		db:     database.GetDB(),
-		email:  email.NewEmailService(&cfg.Email),
+		email:  email.NewService(&cfg.Email),
 		config: cfg,
 	}
 }
 
-// IsEnabled returns true if email notifications are enabled
+// IsEnabled returns true if email notifications are enabled.
 func (s *EmailService) IsEnabled() bool {
 	return s.email.IsEnabled()
 }
 
-// SendCloneFailureNotification sends a notification for clone failure
-func (s *EmailService) SendCloneFailureNotification(ctx context.Context, repo *models.Repository, job *models.CloneJob, err error) error {
+// SendCloneFailureNotification sends a notification for clone failure.
+func (s *EmailService) SendCloneFailureNotification(ctx context.Context, repo *models.Repository, job *models.CloneJob, cloneErr error) error {
 	if !s.IsEnabled() {
 		return nil
 	}
 
-	// Get admin users to notify
+	// Get admin users to notify.
 	adminUsers, err := s.getAdminUsers(ctx)
 	if err != nil {
 		return err
 	}
 
 	if len(adminUsers) == 0 {
-		return nil // No admins to notify
+		return nil // No admins to notify.
 	}
 
-	// Prepare recipient list
+	// Prepare recipient list.
 	var recipients []string
 	for _, user := range adminUsers {
 		if user.Email != "" {
@@ -58,15 +58,15 @@ func (s *EmailService) SendCloneFailureNotification(ctx context.Context, repo *m
 	}
 
 	if len(recipients) == 0 {
-		return nil // No valid email addresses
+		return nil // No valid email addresses.
 	}
 
-	// Render template
+	// Render template.
 	data := email.TemplateData{
 		AppName:    "GitDuppy",
 		Repository: repo,
 		CloneJob:   job,
-		Error:      err.Error(),
+		Error:      cloneErr.Error(),
 		Timestamp:  time.Now().Format("2006-01-02 15:04:05"),
 		AdminEmail: s.config.Email.From,
 		BaseURL:    s.config.Server.BaseURL,
@@ -81,7 +81,7 @@ func (s *EmailService) SendCloneFailureNotification(ctx context.Context, repo *m
 	return s.email.SendEmail(recipients, subject, body)
 }
 
-// SendSystemErrorNotification sends a notification for system errors
+// SendSystemErrorNotification sends a notification for system errors.
 func (s *EmailService) SendSystemErrorNotification(ctx context.Context, errorMessage string) error {
 	if !s.IsEnabled() {
 		return nil
@@ -124,8 +124,8 @@ func (s *EmailService) SendSystemErrorNotification(ctx context.Context, errorMes
 	return s.email.SendEmail(recipients, subject, body)
 }
 
-// getAdminUsers retrieves all active admin users
-func (s *EmailService) getAdminUsers(ctx context.Context) ([]models.User, error) {
+// getAdminUsers retrieves all active admin users.
+func (s *EmailService) getAdminUsers(_ context.Context) ([]models.User, error) {
 	var users []models.User
 	err := s.db.Where("role = ? AND is_active = ?", "admin", true).Find(&users).Error
 	return users, err

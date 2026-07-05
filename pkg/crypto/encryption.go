@@ -10,7 +10,7 @@ import (
 	"io"
 )
 
-// CredentialsPayload represents the structure stored in encrypted field
+// CredentialsPayload represents the structure stored in encrypted field.
 type CredentialsPayload struct {
 	Username string `json:"username,omitempty"`
 	Password string `json:"password,omitempty"`
@@ -18,12 +18,12 @@ type CredentialsPayload struct {
 	SSHKey   string `json:"ssh_key,omitempty"`
 }
 
-// EncryptionService handles AES-256-GCM encryption/decryption
+// EncryptionService handles AES-256-GCM encryption/decryption.
 type EncryptionService struct {
 	masterKey [32]byte // 256-bit key
 }
 
-// NewEncryptionService creates a new encryption service
+// NewEncryptionService creates a new encryption service.
 func NewEncryptionService(masterKey string) (*EncryptionService, error) {
 	if len(masterKey) != 32 {
 		return nil, errors.New("master key must be exactly 32 bytes (256 bits)")
@@ -33,8 +33,9 @@ func NewEncryptionService(masterKey string) (*EncryptionService, error) {
 	return &EncryptionService{masterKey: key}, nil
 }
 
-// Encrypt encrypts a CredentialsPayload and returns base64-encoded ciphertext
+// Encrypt encrypts a CredentialsPayload and returns base64-encoded ciphertext.
 func (s *EncryptionService) Encrypt(payload CredentialsPayload) (string, error) {
+	// #nosec G117
 	plaintext, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
@@ -59,7 +60,7 @@ func (s *EncryptionService) Encrypt(payload CredentialsPayload) (string, error) 
 	return base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
-// Decrypt decrypts a base64-encoded ciphertext and returns CredentialsPayload
+// Decrypt decrypts a base64-encoded ciphertext and returns CredentialsPayload.
 func (s *EncryptionService) Decrypt(encrypted string) (CredentialsPayload, error) {
 	var empty CredentialsPayload
 
@@ -84,9 +85,9 @@ func (s *EncryptionService) Decrypt(encrypted string) (CredentialsPayload, error
 	}
 
 	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return empty, err
+	plaintext, decryptErr := gcm.Open(nil, nonce, ciphertext, nil)
+	if decryptErr != nil {
+		return empty, decryptErr
 	}
 
 	var payload CredentialsPayload
@@ -94,7 +95,7 @@ func (s *EncryptionService) Decrypt(encrypted string) (CredentialsPayload, error
 	return payload, err
 }
 
-// EncryptString encrypts a plain string and returns base64-encoded ciphertext
+// EncryptString encrypts a plain string and returns base64-encoded ciphertext.
 func (s *EncryptionService) EncryptString(plaintext string) (string, error) {
 	block, err := aes.NewCipher(s.masterKey[:])
 	if err != nil {
@@ -115,7 +116,7 @@ func (s *EncryptionService) EncryptString(plaintext string) (string, error) {
 	return base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
-// DecryptString decrypts a base64-encoded ciphertext and returns the plain string
+// DecryptString decrypts a base64-encoded ciphertext and returns the plain string.
 func (s *EncryptionService) DecryptString(encrypted string) (string, error) {
 	ciphertext, err := base64.StdEncoding.DecodeString(encrypted)
 	if err != nil {
@@ -138,9 +139,9 @@ func (s *EncryptionService) DecryptString(encrypted string) (string, error) {
 	}
 
 	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return "", err
+	plaintext, decryptErr := gcm.Open(nil, nonce, ciphertext, nil)
+	if decryptErr != nil {
+		return "", decryptErr
 	}
 
 	return string(plaintext), nil

@@ -1,0 +1,107 @@
+{{template "base" .}}
+
+{{define "content"}}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Global Code Search</h1>
+        <p class="text-muted">Search for code and text strings across all active mirrored repositories.</p>
+    </div>
+</div>
+
+<div class="glass-panel p-6 mb-6">
+    <form id="global-search-form" onsubmit="performGlobalSearch(event)" style="display:flex; gap:12px;">
+        <div style="flex:1; position:relative; display:flex; align-items:center;">
+            <i data-lucide="search" style="position:absolute; left:16px; color:var(--text-muted);"></i>
+            <input type="text" id="global-search-input" placeholder="Type query and press Enter..." class="form-control" style="padding-left:48px; width:100%;" required>
+        </div>
+        <button type="submit" class="btn btn-primary" id="search-btn">
+            <i data-lucide="search"></i>
+            <span>Search</span>
+        </button>
+    </form>
+</div>
+
+<div id="search-loading" class="text-center py-6" style="display:none;">
+    <i data-lucide="loader" class="spin" style="width:32px; height:32px; color:var(--primary);"></i>
+    <p class="text-muted mt-2">Searching all repositories...</p>
+</div>
+
+<div id="search-results-container" class="search-results" style="display:none;">
+    <h3 class="card-title mb-4" id="results-count">Search Results</h3>
+    <div id="search-results-list" style="display:flex; flex-direction:column; gap:16px;"></div>
+</div>
+
+<p id="search-empty" class="text-muted text-center mt-6" style="display:none;">No matching code matches found.</p>
+
+<script>
+async function performGlobalSearch(event) {
+    event.preventDefault();
+    const query = document.getElementById('global-search-input').value.trim();
+    if (!query) return;
+
+    const loading = document.getElementById('search-loading');
+    const container = document.getElementById('search-results-container');
+    const list = document.getElementById('search-results-list');
+    const empty = document.getElementById('search-empty');
+    const countTitle = document.getElementById('results-count');
+
+    loading.style.display = 'block';
+    container.style.display = 'none';
+    empty.style.display = 'none';
+    list.innerHTML = '';
+
+    try {
+        const res = await fetch(`/api/v1/search?q=${encodeURIComponent(query)}`);
+        const data = await res.json();
+        
+        loading.style.display = 'none';
+        
+        if (!data.data || data.data.length === 0) {
+            empty.style.display = 'block';
+            return;
+        }
+
+        countTitle.textContent = `${data.data.length} match${data.data.length > 1 ? 'es' : ''} found`;
+        // Use flex so the .search-results column layout (gap, direction) applies.
+        container.style.display = 'flex';
+
+        // HTML-escape helper for untrusted result fields.
+        const esc = (s) => String(s == null ? '' : s)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+
+        list.innerHTML = data.data.map(item => {
+            const safeContent = esc(item.content);
+            const safeQuery = esc(query);
+
+            // Highlight matches. Both the content and the query are already
+            // HTML-escaped, so the highlight wrapper is the only markup injected.
+            const highlighted = safeContent.replaceAll(safeQuery, `<span class="search-highlight">${safeQuery}</span>`);
+
+            return `
+            <div class="search-result-item glass-panel">
+                <div class="search-result-header">
+                    <div>
+                        <span style="font-weight:600; color:var(--text-main);">${esc(item.repo_name)}</span>
+                        <span style="color:var(--text-muted); margin:0 6px;">/</span>
+                        <a href="/repos/${encodeURIComponent(item.repo_id)}" style="color:var(--primary); text-decoration:none; font-weight:500;">${esc(item.file)}</a>
+                    </div>
+                    <span class="text-muted">Line ${esc(item.line_number)}</span>
+                </div>
+                <div class="search-result-code">
+                    <code>${highlighted}</code>
+                </div>
+            </div>`;
+        }).join('');
+
+        lucide.createIcons();
+    } catch (e) {
+        loading.style.display = 'none';
+        showToast('Search request failed: ' + e.message, 'error');
+    }
+}
+</script>
+{{end}}

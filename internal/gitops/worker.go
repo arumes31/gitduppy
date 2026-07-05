@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,7 +16,53 @@ import (
 	"gorm.io/gorm"
 )
 
-// WorkerConfig holds configuration for the clone worker
+// LogHub manages subscribers for real-time repository progress logs.
+type LogHub struct {
+	mu          sync.Mutex
+	subscribers map[string][]chan string
+}
+
+// GlobalLogHub is the global instance for logging subscription.
+var GlobalLogHub = &LogHub{
+	subscribers: make(map[string][]chan string),
+}
+
+// Subscribe returns a channel of logs for a repository.
+func (h *LogHub) Subscribe(repoID string) chan string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	ch := make(chan string, 100)
+	h.subscribers[repoID] = append(h.subscribers[repoID], ch)
+	return ch
+}
+
+// Unsubscribe removes a channel subscription.
+func (h *LogHub) Unsubscribe(repoID string, ch chan string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	subs := h.subscribers[repoID]
+	for i, sub := range subs {
+		if sub == ch {
+			h.subscribers[repoID] = append(subs[:i], subs[i+1:]...)
+			close(ch)
+			break
+		}
+	}
+}
+
+// Broadcast sends a message to all subscribers for a repository.
+func (h *LogHub) Broadcast(repoID string, message string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, ch := range h.subscribers[repoID] {
+		select {
+		case ch <- message:
+		default:
+		}
+	}
+}
+
+// WorkerConfig holds configuration for the clone worker.
 type WorkerConfig struct {
 	MaxConcurrent    int
 	CloneTimeout     int
@@ -23,7 +70,7 @@ type WorkerConfig struct {
 	RetryBaseDelay   time.Duration
 }
 
-// DefaultWorkerConfig returns default worker configuration
+// DefaultWorkerConfig returns default worker configuration.
 func DefaultWorkerConfig() *WorkerConfig {
 	return &WorkerConfig{
 		MaxConcurrent:    3,
@@ -33,7 +80,7 @@ func DefaultWorkerConfig() *WorkerConfig {
 	}
 }
 
-// CloneWorker handles background clone operations
+// CloneWorker handles background clone operations.
 type CloneWorker struct {
 	config        *WorkerConfig
 	gitOps        *GitOperations
@@ -48,17 +95,17 @@ type CloneWorker struct {
 	logger        *zap.Logger
 }
 
-// WebhookSender interface for sending webhook events
+// WebhookSender interface for sending webhook events.
 type WebhookSender interface {
 	SendEvent(ctx context.Context, eventType string, payload map[string]interface{}) error
 }
 
-// EmailSender interface for sending email notifications
+// EmailSender interface for sending email notifications.
 type EmailSender interface {
 	SendCloneFailureNotification(ctx context.Context, repo *models.Repository, job *models.CloneJob, err error) error
 }
 
-// NewCloneWorker creates a new clone worker
+// NewCloneWorker creates a new clone worker.
 func NewCloneWorker(config *WorkerConfig, gitOps *GitOperations, encryption *crypto.EncryptionService) *CloneWorker {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &CloneWorker{
@@ -73,13 +120,13 @@ func NewCloneWorker(config *WorkerConfig, gitOps *GitOperations, encryption *cry
 	}
 }
 
-// SetNotificationServices sets the webhook and email notification services
+// SetNotificationServices sets the webhook and email notification services.
 func (w *CloneWorker) SetNotificationServices(webhookSender WebhookSender, emailSender EmailSender) {
 	w.webhookSender = webhookSender
 	w.emailSender = emailSender
 }
 
-// Start starts the worker pool
+// Start starts the worker pool.
 func (w *CloneWorker) Start() {
 	w.logger.Info("starting clone worker pool", zap.Int("workers", w.config.MaxConcurrent))
 
@@ -90,7 +137,7 @@ func (w *CloneWorker) Start() {
 	}
 }
 
-// Stop stops the worker pool
+// Stop stops the worker pool.
 func (w *CloneWorker) Stop() {
 	w.logger.Info("stopping clone worker pool")
 	w.cancel()
@@ -98,7 +145,7 @@ func (w *CloneWorker) Stop() {
 	close(w.jobQueue)
 }
 
-// Enqueue adds a job to the queue
+// Enqueue adds a job to the queue.
 func (w *CloneWorker) Enqueue(job *models.CloneJob) {
 	select {
 	case w.jobQueue <- job:
@@ -108,7 +155,7 @@ func (w *CloneWorker) Enqueue(job *models.CloneJob) {
 	}
 }
 
-// worker is a goroutine that processes clone jobs
+// worker is a goroutine that processes clone jobs.
 func (w *CloneWorker) worker(id int) {
 	defer w.wg.Done()
 	logger := w.logger.With(zap.Int("worker_id", id))
@@ -128,7 +175,7 @@ func (w *CloneWorker) worker(id int) {
 	}
 }
 
-// processJob processes a single clone job
+// processJob processes a single clone job.
 func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 	logger.Info("processing clone job", zap.String("job_id", job.ID.String()))
 
@@ -181,8 +228,9 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 
 	// Create progress callback
 	progress := &CloneProgress{
-		jobID: job.ID,
-		db:    w.db,
+		jobID:        job.ID,
+		repositoryID: repo.ID.String(),
+		db:           w.db,
 	}
 	cloneOpts.Progress = progress
 
@@ -192,7 +240,68 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 
 	if isUpdate {
 		logger.Info("performing fetch", zap.String("repo", repo.Name))
+
+		// Query references before fetch
+		refsBefore, refsBeforeErr := w.gitOps.GetReferences(w.ctx, repoPath)
+
 		err = w.gitOps.FetchRepository(w.ctx, cloneOpts)
+
+		// If fetch succeeded, check for pruned branches
+		if err == nil {
+			refsAfter, refsAfterErr := w.gitOps.GetReferences(w.ctx, repoPath)
+
+			// Skip prune detection entirely if either snapshot failed: a nil
+			// refsAfter would otherwise make every pre-fetch branch look deleted
+			// and create bogus DeletedBranch records.
+			if refsBeforeErr != nil || refsAfterErr != nil {
+				logger.Warn("skipping pruned-branch detection due to ref listing error",
+					zap.NamedError("refs_before_err", refsBeforeErr),
+					zap.NamedError("refs_after_err", refsAfterErr))
+				refsBefore = nil
+			}
+
+			// Find missing references that were branches
+			for refName, sha := range refsBefore {
+				isBranch := strings.HasPrefix(refName, "refs/heads/") || strings.HasPrefix(refName, "refs/remotes/origin/")
+				if isBranch {
+					if _, exists := refsAfter[refName]; !exists {
+						// Extract branch name
+						branchName := strings.TrimPrefix(refName, "refs/heads/")
+						branchName = strings.TrimPrefix(branchName, "refs/remotes/origin/")
+
+						// Skip standard HEAD tracking reference
+						if branchName == "HEAD" || strings.HasSuffix(branchName, "/HEAD") {
+							continue
+						}
+
+						logger.Info("pruned branch detected (deleted online)", zap.String("branch", branchName), zap.String("sha", sha))
+
+						// 1. Create a paperbin ref in the local repo to keep the commit alive.
+						paperbinRef := "refs/paperbin/heads/" + branchName
+						_, updateErr := RunGitCommand(w.ctx, repoPath, "update-ref", paperbinRef, sha)
+						if updateErr != nil {
+							// Without the paperbin ref the commit is not protected, so the
+							// branch would not actually be restorable. Skip creating the
+							// DeletedBranch record in that case.
+							logger.Error("failed to create paperbin ref, skipping paperbin record", zap.String("ref", paperbinRef), zap.Error(updateErr))
+							continue
+						}
+
+						// 2. Save in database under DeletedBranch
+						deletedBranch := &models.DeletedBranch{
+							ID:           uuid.New(),
+							RepositoryID: repo.ID,
+							BranchName:   branchName,
+							CommitSHA:    sha,
+							DeletedAt:    time.Now(),
+						}
+						if dbErr := w.db.Create(deletedBranch).Error; dbErr != nil {
+							logger.Error("failed to save deleted branch in DB", zap.Error(dbErr))
+						}
+					}
+				}
+			}
+		}
 	} else {
 		logger.Info("performing clone", zap.String("repo", repo.Name))
 		err = w.gitOps.CloneRepository(w.ctx, cloneOpts)
@@ -204,7 +313,7 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 
 		// Send webhook event for clone failure
 		if w.webhookSender != nil {
-			w.webhookSender.SendEvent(w.ctx, "clone.failed", map[string]interface{}{
+			_ = w.webhookSender.SendEvent(w.ctx, "clone.failed", map[string]interface{}{
 				"repository_id":   repo.ID.String(),
 				"repository_name": repo.Name,
 				"job_id":          job.ID.String(),
@@ -216,7 +325,7 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 
 		// Send email notification for clone failure
 		if w.emailSender != nil {
-			w.emailSender.SendCloneFailureNotification(w.ctx, &repo, job, err)
+			_ = w.emailSender.SendCloneFailureNotification(w.ctx, &repo, job, err)
 		}
 
 		return
@@ -230,6 +339,118 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 		"output_log":       "Clone completed successfully",
 	})
 
+	// Mirror Wiki if requested
+	if repo.MirrorWiki {
+		wikiURL := repo.URL
+		if strings.HasSuffix(wikiURL, ".git") {
+			wikiURL = strings.TrimSuffix(wikiURL, ".git") + ".wiki.git"
+		} else {
+			wikiURL = wikiURL + ".wiki.git"
+		}
+
+		wikiPath := repoPath + ".wiki"
+
+		wikiOpts := &CloneOptions{
+			URL:  wikiURL,
+			Path: wikiPath,
+			Bare: repo.IsBare,
+			LFS:  false,
+		}
+		if creds != nil {
+			wikiOpts.Username = creds.Username
+			wikiOpts.Password = creds.Password
+			wikiOpts.Token = creds.Token
+			wikiOpts.SSHKey = creds.SSHKey
+		}
+		wikiOpts.Progress = progress
+
+		var wikiErr error
+		if repo.LastCloneAt != nil && w.gitOps.IsRepositoryCloned(wikiPath) {
+			logger.Info("performing wiki fetch", zap.String("repo", repo.Name))
+			wikiErr = w.gitOps.FetchRepository(w.ctx, wikiOpts)
+		} else {
+			logger.Info("performing wiki clone", zap.String("repo", repo.Name))
+			wikiErr = w.gitOps.CloneRepository(w.ctx, wikiOpts)
+		}
+		if wikiErr != nil {
+			logger.Warn("wiki clone/fetch failed", zap.Error(wikiErr))
+		}
+	}
+
+	// Fetch GitHub Metadata if any are requested
+	if repo.MirrorIssues || repo.MirrorPullRequests || repo.MirrorReleases {
+		fetcher := NewGitHubMetadataFetcher()
+		token := ""
+		if creds != nil && creds.Token != "" {
+			token = creds.Token
+		} else if creds != nil && creds.Password != "" && repo.AuthType == "basic" {
+			token = creds.Password
+		}
+
+		if err := fetcher.FetchMetadata(w.ctx, repo.URL, repoPath, token, repo.MirrorIssues, repo.MirrorPullRequests, repo.MirrorReleases); err != nil {
+			logger.Warn("failed to fetch github metadata", zap.Error(err))
+		}
+	}
+
+	// Fetch description and tags for GitHub repositories
+	if strings.Contains(repo.URL, "github.com") {
+		fetcher := NewGitHubMetadataFetcher()
+		token := ""
+		if creds != nil && creds.Token != "" {
+			token = creds.Token
+		} else if creds != nil && creds.Password != "" && repo.AuthType == "basic" {
+			token = creds.Password
+		}
+
+		info, err := fetcher.FetchRepositoryInfo(w.ctx, repo.URL, token)
+		if err != nil {
+			logger.Warn("failed to fetch github repo info", zap.Error(err))
+		} else {
+			// Update description
+			if info.Description != "" {
+				repo.Description = &info.Description
+				w.db.Model(&repo).Update("description", info.Description)
+			}
+
+			// Update visibility (public/private)
+			if info.Visibility != "" {
+				repo.Visibility = info.Visibility
+				w.db.Model(&repo).Update("visibility", info.Visibility)
+			}
+
+			// Merge GitHub topics into the existing tag set instead of
+			// replacing it, so manually-assigned tags (e.g. via TagIDs) are
+			// preserved across syncs. Only run the merge-and-Replace when the
+			// existing tags were loaded successfully — otherwise currentTags is
+			// incomplete and the Replace would wipe manual tags.
+			var currentTags []models.Tag
+			if err := w.db.Model(&repo).Association("Tags").Find(&currentTags); err != nil {
+				logger.Error("Failed to load existing repository tags, skipping tag sync to avoid wiping manual tags", zap.Error(err))
+			} else {
+				tagSet := make(map[uuid.UUID]models.Tag)
+				for _, t := range currentTags {
+					tagSet[t.ID] = t
+				}
+				for _, topic := range info.Topics {
+					var tag models.Tag
+					if err := w.db.Where("name = ?", topic).FirstOrCreate(&tag, models.Tag{
+						Name:  topic,
+						Color: "#000000", // Default color for auto-generated tags
+					}).Error; err == nil {
+						tagSet[tag.ID] = tag
+					}
+				}
+				merged := make([]models.Tag, 0, len(tagSet))
+				for _, t := range tagSet {
+					merged = append(merged, t)
+				}
+				if err := w.db.Model(&repo).Association("Tags").Replace(merged); err != nil {
+					logger.Error("Failed to sync repository tags", zap.Error(err))
+				}
+			}
+		}
+	}
+
 	// Update repository
 	w.db.Model(&repo).Updates(map[string]interface{}{
 		"last_clone_at":     time.Now(),
@@ -240,7 +461,7 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 
 	// Send webhook event for clone success
 	if w.webhookSender != nil {
-		w.webhookSender.SendEvent(w.ctx, "clone.success", map[string]interface{}{
+		_ = w.webhookSender.SendEvent(w.ctx, "clone.success", map[string]interface{}{
 			"repository_id":   repo.ID.String(),
 			"repository_name": repo.Name,
 			"job_id":          job.ID.String(),
@@ -252,7 +473,7 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 	logger.Info("clone job completed successfully", zap.String("job_id", job.ID.String()))
 }
 
-// failJob marks a job as failed
+// failJob marks a job as failed.
 func (w *CloneWorker) failJob(logger *zap.Logger, job *models.CloneJob, errMsg string) {
 	logger.Error("job failed", zap.String("job_id", job.ID.String()), zap.String("error", errMsg))
 
@@ -268,8 +489,9 @@ func (w *CloneWorker) failJob(logger *zap.Logger, job *models.CloneJob, errMsg s
 	})
 }
 
-// handleFailure handles job failure with retry logic
-func (w *CloneWorker) handleFailure(logger *zap.Logger, repo models.Repository, job *models.CloneJob, err error) {
+// handleFailure handles job failure with retry logic.
+func (w *CloneWorker) handleFailure(logger *zap.Logger, repo models.Repository, job *models.CloneJob, _ error) {
+	_ = job // unused but kept for compatibility or just rename it. Actually I'll just rename to _ in signature if possible or just use it.
 	// Increment retry count
 	var repoData models.Repository
 	w.db.First(&repoData, repo.ID)
@@ -294,20 +516,23 @@ func (w *CloneWorker) handleFailure(logger *zap.Logger, repo models.Repository, 
 	}
 }
 
-// CloneProgress implements git.Progress interface
+// CloneProgress implements git.Progress interface.
 type CloneProgress struct {
-	jobID uuid.UUID
-	db    *gorm.DB
+	jobID        uuid.UUID
+	repositoryID string
+	db           *gorm.DB
 }
 
-// Write implements the Write method for progress tracking
+// Write implements the Write method for progress tracking.
 func (p *CloneProgress) Write(b []byte) (n int, err error) {
 	message := string(b)
 	p.db.Model(&models.CloneJob{}).Where("id = ?", p.jobID).Update("output_log", message)
+	GlobalLogHub.Broadcast(p.repositoryID, message)
+
 	return len(b), nil
 }
 
-// Scheduler handles scheduled clone jobs
+// Scheduler handles scheduled clone jobs.
 type Scheduler struct {
 	db     *gorm.DB
 	worker *CloneWorker
@@ -316,7 +541,7 @@ type Scheduler struct {
 	logger *zap.Logger
 }
 
-// NewScheduler creates a new scheduler
+// NewScheduler creates a new scheduler.
 func NewScheduler(worker *CloneWorker) *Scheduler {
 	return &Scheduler{
 		db:     database.GetDB(),
@@ -327,20 +552,20 @@ func NewScheduler(worker *CloneWorker) *Scheduler {
 	}
 }
 
-// Start starts the scheduler
+// Start starts the scheduler.
 func (s *Scheduler) Start() {
 	s.logger.Info("starting scheduler")
 	go s.run()
 }
 
-// Stop stops the scheduler
+// Stop stops the scheduler.
 func (s *Scheduler) Stop() {
 	s.logger.Info("stopping scheduler")
 	s.ticker.Stop()
 	s.done <- true
 }
 
-// run is the main scheduler loop
+// run is the main scheduler loop.
 func (s *Scheduler) run() {
 	for {
 		select {
@@ -352,9 +577,16 @@ func (s *Scheduler) run() {
 	}
 }
 
-// scheduleCloneJobs schedules clone jobs for all active repositories
+// scheduleCloneJobs schedules clone jobs for all active repositories.
 func (s *Scheduler) scheduleCloneJobs() {
 	s.logger.Debug("checking for repositories to clone")
+
+	// Skip scheduling while maintenance mode is enabled.
+	var setting models.SystemSetting
+	if err := s.db.Where("key = ?", "maintenance_mode").First(&setting).Error; err == nil && setting.Value == "true" {
+		s.logger.Info("maintenance mode enabled, skipping scheduled clone jobs")
+		return
+	}
 
 	var repos []models.Repository
 	if err := s.db.Where("is_active = ? AND status != 'cloning'", true).Find(&repos).Error; err != nil {
@@ -367,6 +599,7 @@ func (s *Scheduler) scheduleCloneJobs() {
 		// Check if clone interval has elapsed
 		if repo.LastCloneAt == nil ||
 			now.Sub(*repo.LastCloneAt) >= time.Duration(repo.CloneIntervalMinutes)*time.Minute {
+
 			job := &models.CloneJob{
 				ID:           uuid.New(),
 				RepositoryID: repo.ID,

@@ -7,7 +7,7 @@ import (
 	"github.com/gitduppy/gitduppy/internal/config"
 )
 
-// SecurityHeaders returns a middleware that adds security headers with config
+// SecurityHeaders returns a middleware that adds security headers with config.
 func SecurityHeaders(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Prevent MIME type sniffing
@@ -40,7 +40,7 @@ func SecurityHeaders(cfg *config.Config) gin.HandlerFunc {
 	}
 }
 
-// NoCache returns a middleware that disables caching
+// NoCache returns a middleware that disables caching.
 func NoCache() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
