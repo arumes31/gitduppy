@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -51,6 +52,58 @@ func isSafeRedirect(target string) bool {
 		}
 	}
 	return true
+}
+
+// currentSessionUser resolves the user for the request's existing session cookie,
+// or nil when there is no valid session.
+func (h *OAuthHandler) currentSessionUser(c *gin.Context) *models.User {
+	token, err := c.Cookie("session")
+	if err != nil || token == "" {
+		return nil
+	}
+	user, err := h.authService.ValidateSession(c, token)
+	if err != nil {
+		return nil
+	}
+	return user
+}
+
+// finishOAuthRedirect sends the browser to the post-login redirect target (query
+// param or the oauth_redirect cookie), falling back to a JSON success response.
+func (h *OAuthHandler) finishOAuthRedirect(c *gin.Context, body gin.H, message string) {
+	redirectTarget := c.Query("redirect")
+	if redirectTarget == "" {
+		if cookie, cErr := c.Cookie("oauth_redirect"); cErr == nil && cookie != "" {
+			redirectTarget = cookie
+		}
+	}
+	c.SetCookie("oauth_redirect", "", -1, "/", "", requestIsHTTPS(c), true)
+	if isSafeRedirect(redirectTarget) {
+		c.Redirect(http.StatusFound, redirectTarget)
+		return
+	}
+	response.SuccessWithMessage(c, message, body)
+}
+
+// maybeMirrorGitHubRepos, for GitHub logins, imports all of the user's GitHub
+// repositories as mirrors in the background so the redirect is not delayed. It is
+// best-effort; failures are logged.
+func (h *OAuthHandler) maybeMirrorGitHubRepos(provider services.OAuthProvider, userID uuid.UUID, token *oauth2.Token) {
+	if provider != services.GitHubProvider || token == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		n, err := h.oauthService.MirrorAllGitHubRepos(ctx, userID, token)
+		if err != nil {
+			log.Printf("github repo mirror import failed for user %s: %v", userID, err)
+			return
+		}
+		if n > 0 {
+			log.Printf("github repo mirror import: created %d repositories for user %s", n, userID)
+		}
+	}()
 }
 
 // LoginWithProvider handles GET /api/v1/oauth/:provider/login.
@@ -130,6 +183,20 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 		username = email[:idx]
 	}
 
+	// If the browser already has a valid session, link this OAuth identity to that
+	// existing account and keep the current session, instead of creating (and
+	// switching to) a separate user. This prevents an admin who connects GitHub
+	// during App setup from being silently downgraded to a fresh non-admin account.
+	if current := h.currentSessionUser(c); current != nil {
+		if linkErr := h.oauthService.LinkOAuthAccount(c, current.ID, oauthProvider, subject); linkErr == nil {
+			h.maybeMirrorGitHubRepos(oauthProvider, current.ID, token)
+			h.finishOAuthRedirect(c, gin.H{"user": current}, "GitHub account linked")
+			return
+		}
+		// Linking failed (e.g. the identity is already bound to a different user);
+		// fall through to the normal login path below.
+	}
+
 	// Create or update user from OAuth data
 	user, err := h.oauthService.CreateOrUpdateUserFromOAuth(c, oauthProvider, subject, email, username)
 	if err != nil {
@@ -165,25 +232,16 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 	}
 	setSessionCookie(c, sessionToken, maxAge)
 
+	// Kick off a background import of all the user's GitHub repositories.
+	h.maybeMirrorGitHubRepos(oauthProvider, user.ID, token)
+
 	// Redirect to frontend or return success. A redirect target may come from the
 	// query string or from the oauth_redirect cookie set at login time.
-	redirectTarget := c.Query("redirect")
-	if redirectTarget == "" {
-		if cookie, cErr := c.Cookie("oauth_redirect"); cErr == nil && cookie != "" {
-			redirectTarget = cookie
-		}
-	}
-	c.SetCookie("oauth_redirect", "", -1, "/", "", requestIsHTTPS(c), true)
-
-	if isSafeRedirect(redirectTarget) {
-		c.Redirect(http.StatusFound, redirectTarget)
-	} else {
-		response.SuccessWithMessage(c, "Login successful", gin.H{
-			"user":          user,
-			"session_token": sessionToken,
-			"expires_at":    expiresAt,
-		})
-	}
+	h.finishOAuthRedirect(c, gin.H{
+		"user":          user,
+		"session_token": sessionToken,
+		"expires_at":    expiresAt,
+	}, "Login successful")
 }
 
 // LinkAccount handles POST /api/v1/oauth/:provider/link.

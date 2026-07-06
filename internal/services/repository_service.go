@@ -211,6 +211,54 @@ func (s *RepositoryService) CreateRepository(_ context.Context, req *CreateRepos
 	return repo, nil
 }
 
+// UpsertGitHubMirror creates a mirror for a GitHub repository, or — if one with
+// the same clone URL already exists — refreshes its stored credentials for
+// private repos (the previous OAuth token may have expired). It returns true
+// when a new mirror was created. Used by the "mirror all my GitHub repos" import.
+func (s *RepositoryService) UpsertGitHubMirror(ctx context.Context, userID uuid.UUID, name, url, branch string, private bool, token string) (bool, error) {
+	if branch == "" {
+		branch = "main"
+	}
+
+	var existing models.Repository
+	err := s.db.Where("url = ?", url).First(&existing).Error
+	if err == nil {
+		// Already mirrored. Refresh the token for private repos so the mirror keeps
+		// working after a prior OAuth token expired.
+		if private && token != "" {
+			enc, encErr := s.encryptionService.Encrypt(crypto.CredentialsPayload{Token: token})
+			if encErr != nil {
+				return false, encErr
+			}
+			s.db.Model(&existing).Updates(map[string]interface{}{
+				"auth_type":             "token",
+				"encrypted_credentials": enc,
+			})
+		}
+		return false, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, err
+	}
+
+	req := &CreateRepositoryRequest{
+		Name:                 name,
+		URL:                  url,
+		Branch:               branch,
+		AuthType:             "none",
+		CloneIntervalMinutes: 60,
+		RetentionDays:        30,
+	}
+	if private && token != "" {
+		req.AuthType = "token"
+		req.Credentials = &crypto.CredentialsPayload{Token: token}
+	}
+	if _, cerr := s.CreateRepository(ctx, req, userID); cerr != nil {
+		return false, cerr
+	}
+	return true, nil
+}
+
 // UpdateRepositoryRequest represents an update repository request.
 type UpdateRepositoryRequest struct {
 	Name                 *string                    `json:"name,omitempty"`

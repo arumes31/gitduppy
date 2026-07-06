@@ -14,8 +14,11 @@ type User struct {
 	PasswordHash  *string    `gorm:"size:255" json:"-"`
 	Role          string     `gorm:"size:20;not null;default:user" json:"role"`
 	IsActive      bool       `gorm:"default:true" json:"is_active"`
-	OAuthProvider *string    `gorm:"size:50" json:"oauth_provider,omitempty"`
-	OAuthSubject  *string    `gorm:"size:255" json:"-"`
+	// Explicit column names: GORM's default naming would map these to
+	// "o_auth_provider"/"o_auth_subject", but the OAuth queries reference
+	// "oauth_provider"/"oauth_subject", so pin the columns to match.
+	OAuthProvider *string    `gorm:"size:50;column:oauth_provider" json:"oauth_provider,omitempty"`
+	OAuthSubject  *string    `gorm:"size:255;column:oauth_subject" json:"-"`
 	LastLogin     *time.Time `json:"last_login,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
