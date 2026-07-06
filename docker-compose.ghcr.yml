@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  gitduppy:
+    image: ghcr.io/arumes31/gitduppy:latest
+    ports:
+      - "7659:8080"
+    environment:
+      - GITMIRRORS_DATABASE_HOST=postgres
+      - GITMIRRORS_DATABASE_PORT=5432
+      - GITMIRRORS_DATABASE_NAME=gitduppy
+      - GITMIRRORS_DATABASE_USER=gitduppy
+      - GITMIRRORS_DATABASE_PASSWORD=gitduppy
+      - GITMIRRORS_DATABASE_SSLMODE=disable
+      - SERVER_PORT=8080
+      - SERVER_HOST=0.0.0.0
+      - GITMIRRORS_SECURITY_MASTER_KEY=${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
+      - GITMIRRORS_SECURITY_SESSION_SECRET=${SESSION_SECRET:?SESSION_SECRET is required}
+      - GITMIRRORS_SECURITY_CSRF_KEY=${CSRF_KEY:?CSRF_KEY is required}
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_USERNAME=${SMTP_USERNAME}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+    volumes:
+      - ./data/gitduppy/repos:/app/repos
+      - ./data/gitduppy/keys:/app/keys
+      - ./data/gitduppy/backups:/app/backups
+      - ./config.yaml:/app/config.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/api/v1/health" ]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+    networks:
+      - gitduppy-network
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=gitduppy
+      - POSTGRES_USER=gitduppy
+      - POSTGRES_PASSWORD=gitduppy
+    volumes:
+      # UPGRADE/MIGRATION: If upgrading from the legacy `./data/postgres` bind mount,
+      # copy your data using: docker run --rm -v ./data/postgres:/from -v gitduppy_postgres_data:/to alpine sh -c "cp -a /from/. /to/"
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U gitduppy -d gitduppy" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - gitduppy-network
+
+
+networks:
+  gitduppy-network:
+    driver: bridge
+
+volumes:
+  # Named volume for postgres database storage.
+  # To migrate existing data from the legacy `./data/postgres` bind mount:
+  # docker run --rm -v ./data/postgres:/from -v gitduppy_postgres_data:/to alpine sh -c "cp -a /from/. /to/"
+  postgres_data:
