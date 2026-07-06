@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -23,6 +24,28 @@ import (
 type OAuthService struct {
 	db            *gorm.DB
 	configService *ConfigService
+
+	// googleProvider caches the Google OIDC provider so its discovery-document
+	// HTTP fetch happens once rather than on every login.
+	googleMu       sync.Mutex
+	googleProvider *oidc.Provider
+}
+
+// googleOIDCProvider returns a cached Google OIDC provider, performing the
+// discovery-document fetch only once (cached on first success, retried on
+// failure so a transient network error is not remembered forever).
+func (s *OAuthService) googleOIDCProvider(ctx context.Context) (*oidc.Provider, error) {
+	s.googleMu.Lock()
+	defer s.googleMu.Unlock()
+	if s.googleProvider != nil {
+		return s.googleProvider, nil
+	}
+	p, err := oidc.NewProvider(ctx, "https://accounts.google.com")
+	if err != nil {
+		return nil, err
+	}
+	s.googleProvider = p
+	return p, nil
 }
 
 // NewOAuthService creates a new OAuth service.
@@ -90,6 +113,7 @@ func (s *OAuthService) GetOAuthConfig(ctx context.Context, provider OAuthProvide
 type GitHubUser struct {
 	Email *string `json:"email"`
 	Login string  `json:"login"`
+	ID    int64   `json:"id"`
 }
 
 // GitHubEmail represents a GitHub email API response.
@@ -102,10 +126,13 @@ type GitHubEmail struct {
 // GitLabUser represents a GitLab user API response.
 type GitLabUser struct {
 	Email string `json:"email"`
+	ID    int64  `json:"id"`
 }
 
-// GetUserEmailFromProvider extracts email from OAuth provider response.
-func (s *OAuthService) GetUserEmailFromProvider(ctx context.Context, provider OAuthProvider, token *oauth2.Token) (string, error) {
+// GetUserIdentityFromProvider extracts the email and a stable provider-specific
+// subject (account id / sub claim) from an OAuth provider response. The subject
+// — not the rotating access token — is what identifies the account across logins.
+func (s *OAuthService) GetUserIdentityFromProvider(ctx context.Context, provider OAuthProvider, token *oauth2.Token) (email, subject string, err error) {
 	httpClient := s.getHTTPClient(ctx, token)
 
 	switch provider {
@@ -116,116 +143,134 @@ func (s *OAuthService) GetUserEmailFromProvider(ctx context.Context, provider OA
 	case GoogleProvider:
 		return s.getGoogleEmail(ctx, token)
 	default:
-		return "", fmt.Errorf("unsupported oauth provider: %s", provider)
+		return "", "", fmt.Errorf("unsupported oauth provider: %s", provider)
 	}
 }
 
-// getGitHubEmail fetches the user's email from GitHub API.
-func (s *OAuthService) getGitHubEmail(ctx context.Context, httpClient *http.Client) (string, error) {
+// getGitHubEmail fetches the user's email and stable subject from the GitHub API.
+func (s *OAuthService) getGitHubEmail(ctx context.Context, httpClient *http.Client) (string, string, error) {
 	// Try to get user first.
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user", nil)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	userResp, err := httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to get github user: %w", err)
+		return "", "", fmt.Errorf("failed to get github user: %w", err)
 	}
 	defer userResp.Body.Close()
 
 	var user GitHubUser
 	if decodeErr := json.NewDecoder(userResp.Body).Decode(&user); decodeErr != nil {
-		return "", fmt.Errorf("failed to decode github user: %w", decodeErr)
+		return "", "", fmt.Errorf("failed to decode github user: %w", decodeErr)
+	}
+
+	// The numeric account ID is the stable identity; fall back to the login only
+	// if the API somehow omitted it.
+	subject := fmt.Sprintf("%d", user.ID)
+	if user.ID == 0 {
+		if user.Login == "" {
+			return "", "", errors.New("github user has no stable identifier")
+		}
+		subject = user.Login
 	}
 
 	if user.Email != nil && *user.Email != "" {
-		return *user.Email, nil
+		return *user.Email, subject, nil
 	}
 
 	// Try to get email from emails endpoint.
 	emailReq, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user/emails", nil)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	emailsResp, err := httpClient.Do(emailReq)
 	if err != nil {
-		return "", fmt.Errorf("failed to get github emails: %w", err)
+		return "", "", fmt.Errorf("failed to get github emails: %w", err)
 	}
 	defer emailsResp.Body.Close()
 
 	var emails []GitHubEmail
 	if decodeErr := json.NewDecoder(emailsResp.Body).Decode(&emails); decodeErr != nil {
-		return "", fmt.Errorf("failed to decode github emails: %w", decodeErr)
+		return "", "", fmt.Errorf("failed to decode github emails: %w", decodeErr)
 	}
 
 	for _, email := range emails {
 		if email.Primary && email.Verified {
-			return email.Email, nil
+			return email.Email, subject, nil
 		}
 	}
 
-	return "", errors.New("no verified primary email found")
+	return "", "", errors.New("no verified primary email found")
 }
 
-// getGitLabEmail fetches the user's email from GitLab API.
-func (s *OAuthService) getGitLabEmail(ctx context.Context, httpClient *http.Client) (string, error) {
+// getGitLabEmail fetches the user's email and stable subject from the GitLab API.
+func (s *OAuthService) getGitLabEmail(ctx context.Context, httpClient *http.Client) (string, string, error) {
 	baseURL := "https://gitlab.com"
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/api/v4/user", baseURL), nil)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to get gitlab user: %w", err)
+		return "", "", fmt.Errorf("failed to get gitlab user: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("gitlab API returned status: %d", resp.StatusCode)
+		return "", "", fmt.Errorf("gitlab API returned status: %d", resp.StatusCode)
 	}
 
 	var user GitLabUser
 	if decodeErr := json.NewDecoder(resp.Body).Decode(&user); decodeErr != nil {
-		return "", fmt.Errorf("failed to decode gitlab user: %w", decodeErr)
+		return "", "", fmt.Errorf("failed to decode gitlab user: %w", decodeErr)
 	}
 
 	if user.Email == "" {
-		return "", errors.New("no email found in gitlab response")
+		return "", "", errors.New("no email found in gitlab response")
+	}
+	if user.ID == 0 {
+		return "", "", errors.New("gitlab user has no stable identifier")
 	}
 
-	return user.Email, nil
+	return user.Email, fmt.Sprintf("%d", user.ID), nil
 }
 
-// getGoogleEmail extracts email from Google OIDC token.
-func (s *OAuthService) getGoogleEmail(ctx context.Context, token *oauth2.Token) (string, error) {
-	provider, err := oidc.NewProvider(ctx, "https://accounts.google.com")
+// getGoogleEmail extracts the email and stable subject (sub claim) from a Google
+// OIDC token.
+func (s *OAuthService) getGoogleEmail(ctx context.Context, token *oauth2.Token) (string, string, error) {
+	provider, err := s.googleOIDCProvider(ctx)
 	if err != nil {
-		return "", fmt.Errorf("failed to create oidc provider: %w", err)
+		return "", "", fmt.Errorf("failed to create oidc provider: %w", err)
 	}
 
 	rawIDToken, ok := token.Extra("id_token").(string)
 	if !ok || rawIDToken == "" {
-		return "", errors.New("no id_token found in oauth token response")
+		return "", "", errors.New("no id_token found in oauth token response")
 	}
 
 	ggConfig := s.configService.GetGoogleOAuth(ctx)
 	idToken, err := provider.Verifier(&oidc.Config{ClientID: ggConfig.ClientID}).Verify(ctx, rawIDToken)
 	if err != nil {
-		return "", fmt.Errorf("failed to verify id token: %w", err)
+		return "", "", fmt.Errorf("failed to verify id token: %w", err)
 	}
 
 	var claims map[string]interface{}
 	if err := idToken.Claims(&claims); err != nil {
-		return "", fmt.Errorf("failed to extract claims: %w", err)
+		return "", "", fmt.Errorf("failed to extract claims: %w", err)
 	}
 
 	email, ok := claims["email"].(string)
 	if !ok {
-		return "", errors.New("email not found in token claims")
+		return "", "", errors.New("email not found in token claims")
+	}
+	subject, _ := claims["sub"].(string)
+	if subject == "" {
+		return "", "", errors.New("sub not found in token claims")
 	}
 
-	return email, nil
+	return email, subject, nil
 }
 
 // getHTTPClient returns an HTTP client with the given token.

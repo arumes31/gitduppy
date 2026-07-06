@@ -181,8 +181,17 @@ func (s *AuthService) ChangePassword(_ context.Context, userID uuid.UUID, oldPas
 		return err
 	}
 
+	// Persist the new password and invalidate every existing session for this
+	// user in one transaction. A password change must log out all devices —
+	// including any attacker holding a stolen session cookie — otherwise the old
+	// sessions stay valid until natural expiry.
 	user.PasswordHash = &newHash
-	return s.db.Save(&user).Error
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(&user).Error; err != nil {
+			return err
+		}
+		return tx.Where("user_id = ?", userID).Delete(&models.Session{}).Error
+	})
 }
 
 // GetUserByID retrieves a user by ID.

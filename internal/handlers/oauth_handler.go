@@ -111,16 +111,16 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 
 	// Exchange code for token
 	code := c.Query("code")
-	token, err := oauthConfig.Exchange(context.Background(), code)
+	token, err := oauthConfig.Exchange(c.Request.Context(), code)
 	if err != nil {
 		response.BadRequest(c, "OAUTH_ERROR", "Failed to exchange code for token: "+err.Error())
 		return
 	}
 
-	// Get user email from provider
-	email, err := h.oauthService.GetUserEmailFromProvider(c, oauthProvider, token)
+	// Get user email and stable subject from provider
+	email, subject, err := h.oauthService.GetUserIdentityFromProvider(c, oauthProvider, token)
 	if err != nil {
-		response.BadRequest(c, "OAUTH_ERROR", "Failed to get user email: "+err.Error())
+		response.BadRequest(c, "OAUTH_ERROR", "Failed to get user identity: "+err.Error())
 		return
 	}
 
@@ -131,7 +131,7 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 	}
 
 	// Create or update user from OAuth data
-	user, err := h.oauthService.CreateOrUpdateUserFromOAuth(c, oauthProvider, token.AccessToken, email, username)
+	user, err := h.oauthService.CreateOrUpdateUserFromOAuth(c, oauthProvider, subject, email, username)
 	if err != nil {
 		response.InternalError(c, "Failed to create/update user: "+err.Error())
 		return
@@ -243,14 +243,21 @@ func (h *OAuthHandler) LinkCallback(c *gin.Context) {
 	}
 
 	code := c.Query("code")
-	token, err := oauthConfig.Exchange(context.Background(), code)
+	token, err := oauthConfig.Exchange(c.Request.Context(), code)
 	if err != nil {
 		response.BadRequest(c, "OAUTH_ERROR", "Failed to exchange code for token: "+err.Error())
 		return
 	}
 
+	// Resolve the stable provider subject (not the rotating access token) to link.
+	_, subject, err := h.oauthService.GetUserIdentityFromProvider(c, oauthProvider, token)
+	if err != nil {
+		response.BadRequest(c, "OAUTH_ERROR", "Failed to get user identity: "+err.Error())
+		return
+	}
+
 	// Link OAuth account to existing user
-	if err := h.oauthService.LinkOAuthAccount(c, user.ID, oauthProvider, token.AccessToken); err != nil {
+	if err := h.oauthService.LinkOAuthAccount(c, user.ID, oauthProvider, subject); err != nil {
 		response.BadRequest(c, "LINK_ERROR", "Failed to link OAuth account: "+err.Error())
 		return
 	}

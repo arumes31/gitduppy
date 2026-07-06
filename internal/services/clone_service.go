@@ -57,6 +57,9 @@ func (s *CloneService) ListCloneJobs(_ context.Context, filter *CloneFilter) ([]
 	if filter.PerPage < 1 {
 		filter.PerPage = 20
 	}
+	if filter.PerPage > 200 {
+		filter.PerPage = 200
+	}
 
 	query := s.db.Model(&models.CloneJob{}).Preload("Repository")
 
@@ -105,6 +108,21 @@ func (s *CloneService) CreateCloneJob(_ context.Context, repoID uuid.UUID, trigg
 			return nil, errors.New("repository not found")
 		}
 		return nil, err
+	}
+
+	// Deduplicate: if this repository already has an unfinished (pending or
+	// running) job, return that instead of creating and dispatching a second one
+	// that would clone into the same directory concurrently. This closes the gap
+	// where a manual/API "clone now" (or a double-click) bypassed the scheduler's
+	// in-flight check.
+	var existing models.CloneJob
+	dedupeErr := s.db.Where("repository_id = ? AND status IN ?", repoID, []string{"pending", "running"}).
+		Order("created_at DESC").First(&existing).Error
+	if dedupeErr == nil {
+		return &existing, nil
+	}
+	if !errors.Is(dedupeErr, gorm.ErrRecordNotFound) {
+		return nil, dedupeErr
 	}
 
 	job := &models.CloneJob{

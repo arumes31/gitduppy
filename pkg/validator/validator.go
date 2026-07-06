@@ -16,6 +16,9 @@ var (
 	gitURLRegex     = regexp.MustCompile(`^(https?|git|ssh|git@[\w.-]+):\/\/?[\w.-]+(:\d+)?[\/\w.-]+\.git$`)
 	gitSSHRegex     = regexp.MustCompile(`^git@[\w.-]+:[\w.-]+\/[\w.-]+\.git$`)
 	branchNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	letterRegex     = regexp.MustCompile(`[a-zA-Z]`)
+	numberRegex     = regexp.MustCompile(`[0-9]`)
+	hexColorRegex   = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 )
 
 // Init initializes the validator.
@@ -96,7 +99,7 @@ func ValidateUsername(username string) bool {
 	if len(username) < 3 || len(username) > 64 {
 		return false
 	}
-	return regexp.MustCompile(`^[a-zA-Z0-9_-]+$`).MatchString(username)
+	return branchNameRegex.MatchString(username)
 }
 
 // ValidatePassword checks if a password meets requirements.
@@ -105,8 +108,8 @@ func ValidatePassword(password string) bool {
 		return false
 	}
 	// At least one letter and one number
-	hasLetter := regexp.MustCompile(`[a-zA-Z]`).MatchString(password)
-	hasNumber := regexp.MustCompile(`[0-9]`).MatchString(password)
+	hasLetter := letterRegex.MatchString(password)
+	hasNumber := numberRegex.MatchString(password)
 	return hasLetter && hasNumber
 }
 
@@ -115,7 +118,7 @@ func ValidateTagName(name string) bool {
 	if len(name) < 1 || len(name) > 50 {
 		return false
 	}
-	return regexp.MustCompile(`^[a-zA-Z0-9_-]+$`).MatchString(name)
+	return branchNameRegex.MatchString(name)
 }
 
 // ValidateColor checks if a string is a valid hex color.
@@ -126,7 +129,7 @@ func ValidateColor(color string) bool {
 	if color[0] != '#' {
 		return false
 	}
-	return regexp.MustCompile(`^#[0-9a-fA-F]{6}$`).MatchString(color)
+	return hexColorRegex.MatchString(color)
 }
 
 // SanitizeString trims whitespace and removes potentially dangerous characters.

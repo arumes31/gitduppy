@@ -95,7 +95,7 @@ func (h *DashboardHandler) GetPaperbinQuota(c *gin.Context) {
 		return
 	}
 
-	quotaBytes := quotaGB * 1024 * 1024 * 1024
+	quotaBytes := int64(quotaGB * 1024 * 1024 * 1024)
 	exceeded := sizeBytes > quotaBytes
 
 	response.Success(c, gin.H{

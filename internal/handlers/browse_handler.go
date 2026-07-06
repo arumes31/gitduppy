@@ -9,6 +9,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -218,25 +219,39 @@ func (h *BrowseHandler) GetTree(c *gin.Context) {
 	// computed relative to the requested ref (not HEAD). The hash is a
 	// validated object id, so it cannot be interpreted as a git option.
 	refHash := hash.String()
-	for i, e := range entries {
-		logPath := e.Path
-		out, gerr := gitops.RunGitCommand(ctx, repo.StoragePath,
-			"log", "-1", "--format=%H|%s|%an|%ae|%aI", refHash, "--", logPath)
-		if gerr != nil || strings.TrimSpace(out) == "" {
-			continue
-		}
-		parts := strings.SplitN(strings.TrimSpace(out), "|", 5)
-		if len(parts) < 5 {
-			continue
-		}
-		sha := parts[0]
-		entries[i].LastCommit = sha[:minInt(7, len(sha))]
-		entries[i].LastMessage = parts[1]
-		entries[i].LastAuthor = parts[2]
-		if t, perr := time.Parse(time.RFC3339, parts[4]); perr == nil {
-			entries[i].LastDate = t
-		}
+	// Each entry's last commit needs its own `git log -1`. Run them through a
+	// bounded worker pool so a directory with many entries does not spawn one git
+	// subprocess after another serially (N × process+startup latency). Each
+	// goroutine writes only to its own entries[i], so there is no shared-slice
+	// race.
+	const maxLogWorkers = 8
+	sem := make(chan struct{}, maxLogWorkers)
+	var wg sync.WaitGroup
+	for i := range entries {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			out, gerr := gitops.RunGitCommand(ctx, repo.StoragePath,
+				"log", "-1", "--format=%H|%s|%an|%ae|%aI", refHash, "--", entries[i].Path)
+			if gerr != nil || strings.TrimSpace(out) == "" {
+				return
+			}
+			parts := strings.SplitN(strings.TrimSpace(out), "|", 5)
+			if len(parts) < 5 {
+				return
+			}
+			sha := parts[0]
+			entries[i].LastCommit = sha[:minInt(7, len(sha))]
+			entries[i].LastMessage = parts[1]
+			entries[i].LastAuthor = parts[2]
+			if t, perr := time.Parse(time.RFC3339, parts[4]); perr == nil {
+				entries[i].LastDate = t
+			}
+		}(i)
 	}
+	wg.Wait()
 
 	response.Success(c, gin.H{
 		"path":    treePath,
@@ -526,9 +541,8 @@ func (h *BrowseHandler) GetCommit(c *gin.Context) {
 
 // DownloadRepo handles GET /api/v1/repos/:id/download?ref=main
 func (h *BrowseHandler) DownloadRepo(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid repository ID")
+	id, ok := parseUUIDParam(c, "id", "repository")
+	if !ok {
 		return
 	}
 	repo, err := h.repoService.GetRepositoryByID(c, id)
@@ -555,7 +569,17 @@ func (h *BrowseHandler) DownloadRepo(c *gin.Context) {
 		return '_'
 	}, repo.Name)
 
-	filename := fmt.Sprintf("%s-%s.zip", safeName, ref)
+	// Sanitize the ref the same way for the filename so it cannot inject quotes
+	// or control characters into the Content-Disposition header. The original
+	// (option-injection-checked) ref is still passed to git archive below.
+	safeRef := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			return r
+		}
+		return '_'
+	}, ref)
+
+	filename := fmt.Sprintf("%s-%s.zip", safeName, safeRef)
 
 	c.Header("Content-Type", "application/zip")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))

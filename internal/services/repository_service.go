@@ -303,6 +303,9 @@ func (s *RepositoryService) applyUpdateFields(repo *models.Repository, req *Upda
 		repo.IsActive = *req.IsActive
 	}
 	if req.CloneIntervalMinutes != nil {
+		if *req.CloneIntervalMinutes < 5 {
+			return fmt.Errorf("clone_interval_minutes must be at least 5")
+		}
 		repo.CloneIntervalMinutes = *req.CloneIntervalMinutes
 	}
 	if req.RetentionDays != nil {
@@ -575,10 +578,7 @@ func tarGzDecompress(srcFile, destDir string) error {
 		// before doing any joins or filesystem operations.
 		// codeql[go/unsafe-unzip-symlink]
 		// lgtm[go/unsafe-unzip-symlink]
-		chName := make(chan string, 1)
-		chName <- header.Name
-		safeName := <-chName
-		cleanName := filepath.Clean(safeName)
+		cleanName := filepath.Clean(header.Name)
 		if !filepath.IsLocal(cleanName) {
 			return fmt.Errorf("invalid path in archive (path traversal): %s", header.Name)
 		}

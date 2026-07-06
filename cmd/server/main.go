@@ -167,6 +167,7 @@ func main() {
 		float64(cfg.Security.RateLimit.APIRequestsPerMinute)/60.0,
 		cfg.Security.RateLimit.APIRequestsPerMinute,
 	)
+	defer rateLimiter.Stop()
 	loggerConfig := middleware.DefaultLoggerConfig()
 	csrfMiddleware := middleware.NewCSRFMiddleware(cfg.Security.CSRFKey, cfg.Server.TLS.Enabled)
 
@@ -429,9 +430,9 @@ func setupRouter(
 		{
 			auth.POST("/login", authHandler.Login)
 			auth.POST("/logout", authHandler.Logout)
-			auth.GET("/me", authHandler.Me)
+			auth.GET("/me", authMiddleware.Middleware(), authHandler.Me)
 			auth.POST("/refresh", authHandler.Refresh)
-			auth.POST("/change-password", authHandler.ChangePassword)
+			auth.POST("/change-password", authMiddleware.Middleware(), authHandler.ChangePassword)
 		}
 
 		// OAuth routes

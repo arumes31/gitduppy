@@ -42,6 +42,28 @@ func NewWebhookHandler(webhookService *services.WebhookService) *WebhookHandler 
 	}
 }
 
+// authorizeWebhookAccess loads the webhook and ensures the current user owns it
+// (or is an admin). On failure it writes the response and returns ok=false. A
+// non-owner is given the same 404 as a missing webhook so ownership is not
+// leaked.
+func (h *WebhookHandler) authorizeWebhookAccess(c *gin.Context, id uuid.UUID) (*models.WebhookConfig, bool) {
+	user, ok := middleware.GetCurrentUser(c)
+	if !ok {
+		response.Unauthorized(c, "Not authenticated")
+		return nil, false
+	}
+	webhook, err := h.webhookService.GetWebhookByID(c, id)
+	if err != nil {
+		response.NotFound(c, "Webhook not found")
+		return nil, false
+	}
+	if webhook.UserID != user.ID && !user.IsAdmin() {
+		response.NotFound(c, "Webhook not found")
+		return nil, false
+	}
+	return webhook, true
+}
+
 // ListWebhooks handles GET /api/v1/webhooks.
 func (h *WebhookHandler) ListWebhooks(c *gin.Context) {
 	filter := &services.WebhookFilter{
@@ -62,6 +84,11 @@ func (h *WebhookHandler) ListWebhooks(c *gin.Context) {
 		filter.IsActive = &active
 	}
 
+	// Non-admins may only see their own webhooks.
+	if user, ok := middleware.GetCurrentUser(c); ok && !user.IsAdmin() {
+		filter.UserID = &user.ID
+	}
+
 	webhooks, total, err := h.webhookService.ListWebhooks(c, filter)
 	if err != nil {
 		response.InternalError(c, err.Error())
@@ -72,21 +99,19 @@ func (h *WebhookHandler) ListWebhooks(c *gin.Context) {
 		Page:       filter.Page,
 		PerPage:    filter.PerPage,
 		Total:      int(total),
-		TotalPages: int(total/int64(filter.PerPage)) + 1,
+		TotalPages: int((total + int64(filter.PerPage) - 1) / int64(filter.PerPage)),
 	})
 }
 
 // GetWebhook handles GET /api/v1/webhooks/:id.
 func (h *WebhookHandler) GetWebhook(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid webhook ID format")
+	id, ok := parseUUIDParam(c, "id", "webhook")
+	if !ok {
 		return
 	}
 
-	webhook, err := h.webhookService.GetWebhookByID(c, id)
-	if err != nil {
-		response.NotFound(c, "Webhook not found")
+	webhook, ok := h.authorizeWebhookAccess(c, id)
+	if !ok {
 		return
 	}
 
@@ -123,9 +148,12 @@ func (h *WebhookHandler) CreateWebhook(c *gin.Context) {
 
 // UpdateWebhook handles PUT /api/v1/webhooks/:id.
 func (h *WebhookHandler) UpdateWebhook(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid webhook ID format")
+	id, ok := parseUUIDParam(c, "id", "webhook")
+	if !ok {
+		return
+	}
+
+	if _, ok := h.authorizeWebhookAccess(c, id); !ok {
 		return
 	}
 
@@ -146,9 +174,12 @@ func (h *WebhookHandler) UpdateWebhook(c *gin.Context) {
 
 // DeleteWebhook handles DELETE /api/v1/webhooks/:id.
 func (h *WebhookHandler) DeleteWebhook(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid webhook ID format")
+	id, ok := parseUUIDParam(c, "id", "webhook")
+	if !ok {
+		return
+	}
+
+	if _, ok := h.authorizeWebhookAccess(c, id); !ok {
 		return
 	}
 
@@ -162,9 +193,12 @@ func (h *WebhookHandler) DeleteWebhook(c *gin.Context) {
 
 // GetWebhookDeliveries handles GET /api/v1/webhooks/:id/deliveries.
 func (h *WebhookHandler) GetWebhookDeliveries(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid webhook ID format")
+	id, ok := parseUUIDParam(c, "id", "webhook")
+	if !ok {
+		return
+	}
+
+	if _, ok := h.authorizeWebhookAccess(c, id); !ok {
 		return
 	}
 
@@ -180,9 +214,12 @@ func (h *WebhookHandler) GetWebhookDeliveries(c *gin.Context) {
 
 // TestWebhook handles POST /api/v1/webhooks/:id/test.
 func (h *WebhookHandler) TestWebhook(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid webhook ID format")
+	id, ok := parseUUIDParam(c, "id", "webhook")
+	if !ok {
+		return
+	}
+
+	if _, ok := h.authorizeWebhookAccess(c, id); !ok {
 		return
 	}
 

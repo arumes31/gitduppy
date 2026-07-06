@@ -21,6 +21,27 @@ func NewAPIKeyHandler(apiKeyService *services.APIKeyService) *APIKeyHandler {
 	}
 }
 
+// ownsAPIKey ensures the current user owns the key (or is an admin). On failure
+// it writes the response and returns false. A non-owner gets the same 404 as a
+// missing key so ownership is not leaked.
+func (h *APIKeyHandler) ownsAPIKey(c *gin.Context, id uuid.UUID) bool {
+	user, ok := middleware.GetCurrentUser(c)
+	if !ok {
+		response.Unauthorized(c, "Not authenticated")
+		return false
+	}
+	key, err := h.apiKeyService.GetAPIKeyByID(c, id)
+	if err != nil {
+		response.NotFound(c, "API key not found")
+		return false
+	}
+	if key.UserID != user.ID && !user.IsAdmin() {
+		response.NotFound(c, "API key not found")
+		return false
+	}
+	return true
+}
+
 // ListAPIKeys handles GET /api/v1/api-keys.
 func (h *APIKeyHandler) ListAPIKeys(c *gin.Context) {
 	user, ok := middleware.GetCurrentUser(c)
@@ -75,9 +96,12 @@ func (h *APIKeyHandler) CreateAPIKey(c *gin.Context) {
 
 // DeleteAPIKey handles DELETE /api/v1/api-keys/:id.
 func (h *APIKeyHandler) DeleteAPIKey(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid API key ID format")
+	id, ok := parseUUIDParam(c, "id", "API key")
+	if !ok {
+		return
+	}
+
+	if !h.ownsAPIKey(c, id) {
 		return
 	}
 
@@ -91,9 +115,12 @@ func (h *APIKeyHandler) DeleteAPIKey(c *gin.Context) {
 
 // RevokeAPIKey handles POST /api/v1/api-keys/:id/revoke.
 func (h *APIKeyHandler) RevokeAPIKey(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid API key ID format")
+	id, ok := parseUUIDParam(c, "id", "API key")
+	if !ok {
+		return
+	}
+
+	if !h.ownsAPIKey(c, id) {
 		return
 	}
 
