@@ -8,12 +8,12 @@ import (
 
 // User represents an application user with authentication details.
 type User struct {
-	ID            uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`
-	Username      string     `gorm:"size:64;uniqueIndex;not null" json:"username"`
-	Email         string     `gorm:"size:255;uniqueIndex;not null" json:"email"`
-	PasswordHash  *string    `gorm:"size:255" json:"-"`
-	Role          string     `gorm:"size:20;not null;default:user" json:"role"`
-	IsActive      bool       `gorm:"default:true" json:"is_active"`
+	ID           uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`
+	Username     string    `gorm:"size:64;uniqueIndex;not null" json:"username"`
+	Email        string    `gorm:"size:255;uniqueIndex;not null" json:"email"`
+	PasswordHash *string   `gorm:"size:255" json:"-"`
+	Role         string    `gorm:"size:20;not null;default:user" json:"role"`
+	IsActive     bool      `gorm:"default:true" json:"is_active"`
 	// Explicit column names: GORM's default naming would map these to
 	// "o_auth_provider"/"o_auth_subject", but the OAuth queries reference
 	// "oauth_provider"/"oauth_subject", so pin the columns to match.
