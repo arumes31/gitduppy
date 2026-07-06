@@ -160,6 +160,13 @@ func (s *OAuthService) getGitHubEmail(ctx context.Context, httpClient *http.Clie
 	}
 	defer userResp.Body.Close()
 
+	// Guard on the status code before decoding: a token without the required
+	// permission gets a JSON error *object*, which would otherwise fail to
+	// unmarshal into the user struct with a confusing error.
+	if userResp.StatusCode < 200 || userResp.StatusCode >= 300 {
+		return "", "", fmt.Errorf("github user request returned status %d", userResp.StatusCode)
+	}
+
 	var user GitHubUser
 	if decodeErr := json.NewDecoder(userResp.Body).Decode(&user); decodeErr != nil {
 		return "", "", fmt.Errorf("failed to decode github user: %w", decodeErr)
@@ -173,33 +180,57 @@ func (s *OAuthService) getGitHubEmail(ctx context.Context, httpClient *http.Clie
 	}
 	subject := fmt.Sprintf("%d", user.ID)
 
+	// Prefer a public primary email when the account exposes one.
 	if user.Email != nil && *user.Email != "" {
 		return *user.Email, subject, nil
 	}
 
-	// Try to get email from emails endpoint.
-	emailReq, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user/emails", nil)
-	if err != nil {
-		return "", "", err
+	// Otherwise try the emails endpoint (needs the user email permission/scope).
+	if email, ok := s.githubPrimaryEmail(ctx, httpClient); ok {
+		return email, subject, nil
 	}
-	emailsResp, err := httpClient.Do(emailReq)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to get github emails: %w", err)
+
+	// The email is private and unreadable with this token (e.g. a GitHub App
+	// without the email permission). Fall back to GitHub's stable no-reply address
+	// derived from the account id and login so login still succeeds. It is unique
+	// per account and cannot collide with a real local user's email.
+	if user.Login == "" {
+		return fmt.Sprintf("%d@users.noreply.github.com", user.ID), subject, nil
 	}
-	defer emailsResp.Body.Close()
+	return fmt.Sprintf("%d+%s@users.noreply.github.com", user.ID, user.Login), subject, nil
+}
+
+// githubPrimaryEmail returns the verified primary email from the GitHub emails
+// endpoint, or ok=false when it is unavailable (missing permission, a non-2xx
+// response, an unexpected body, or no verified primary email). It never returns
+// an error so callers can fall back gracefully.
+func (s *OAuthService) githubPrimaryEmail(ctx context.Context, httpClient *http.Client) (string, bool) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user/emails", nil)
+	if err != nil {
+		return "", false
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", false
+	}
+	defer resp.Body.Close()
+
+	// A token lacking the email permission returns a JSON error object (not an
+	// array); only decode when the request actually succeeded.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", false
+	}
 
 	var emails []GitHubEmail
-	if decodeErr := json.NewDecoder(emailsResp.Body).Decode(&emails); decodeErr != nil {
-		return "", "", fmt.Errorf("failed to decode github emails: %w", decodeErr)
+	if decodeErr := json.NewDecoder(resp.Body).Decode(&emails); decodeErr != nil {
+		return "", false
 	}
-
-	for _, email := range emails {
-		if email.Primary && email.Verified {
-			return email.Email, subject, nil
+	for _, e := range emails {
+		if e.Primary && e.Verified {
+			return e.Email, true
 		}
 	}
-
-	return "", "", errors.New("no verified primary email found")
+	return "", false
 }
 
 // getGitLabEmail fetches the user's email and stable subject from the GitLab API.

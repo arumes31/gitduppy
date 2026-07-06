@@ -352,6 +352,7 @@ if (oauthForm) {
         const manifest = {
             name: name,
             url: origin,
+            description: "GitDuppy mirrors your GitHub repositories (code, wikis, issues, PRs and releases) to this self-hosted instance. It requests read-only access and never writes to your repositories.",
             redirect_url: origin + "/api/v1/oauth/github/manifest-callback",
             callback_url: origin + "/api/v1/oauth/github/callback",
             request_oauth_on_install: true,
@@ -381,13 +382,14 @@ if (oauthForm) {
         // 500 error. We cannot sign the user in to GitHub from here — creating this
         // App is precisely what would grant us OAuth (chicken-and-egg) — so make sure
         // they are signed in to GitHub before submitting.
-        const signedIn = confirm(
-            'A GitHub App will be created on your GitHub account.\n\n' +
-            'You must be signed in to GitHub.com in this browser first, otherwise ' +
-            'GitHub returns a 500 error.\n\n' +
-            'OK – I am signed in to GitHub, continue.\n' +
-            'Cancel – open GitHub sign-in in a new tab first.'
-        );
+        const signedIn = await modernConfirm({
+            title: 'Create GitHub App',
+            message: 'A GitHub App will be created on your GitHub account.\n\n' +
+                'You must be signed in to GitHub.com in this browser first, otherwise GitHub returns a 500 error.\n\n' +
+                'Continue only if you are already signed in to GitHub.',
+            okText: "I'm signed in — continue",
+            cancelText: 'Open GitHub sign-in'
+        });
         if (!signedIn) {
             window.open('https://github.com/login', '_blank', 'noopener');
             showToast('Sign in to GitHub, then click "Register GitHub App Automatically" again.', 'success');
@@ -472,15 +474,112 @@ window.toggleMaintenanceMode = async function(enabled) {
 
 refreshMaintenanceState();
 
-// Add simple CSS for spinner animation
+// Add simple CSS for spinner animation + the modern confirm modal
 const style = document.createElement('style');
 style.innerHTML = `
     .spin { animation: spin 1s linear infinite; }
     @keyframes spin { 100% { transform: rotate(360deg); } }
     .text-center { text-align: center; }
     .py-4 { padding-top: 16px; padding-bottom: 16px; }
+
+    .mc-overlay {
+        position: fixed; inset: 0; z-index: 10000;
+        display: flex; align-items: center; justify-content: center; padding: 20px;
+        background: rgba(6, 8, 16, 0.55);
+        backdrop-filter: blur(7px) saturate(120%);
+        -webkit-backdrop-filter: blur(7px) saturate(120%);
+        opacity: 0; transition: opacity .18s ease;
+    }
+    .mc-overlay.mc-visible { opacity: 1; }
+    .mc-dialog {
+        width: 100%; max-width: 440px; box-sizing: border-box;
+        background: linear-gradient(160deg, rgba(34, 38, 60, 0.97), rgba(20, 22, 38, 0.97));
+        border: 1px solid rgba(255, 255, 255, 0.09);
+        border-radius: 16px;
+        box-shadow: 0 24px 60px -12px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+        padding: 24px;
+        color: #eceefb;
+        font-family: inherit;
+        transform: translateY(14px) scale(.97);
+        transition: transform .2s cubic-bezier(.2, .8, .2, 1);
+    }
+    .mc-overlay.mc-visible .mc-dialog { transform: translateY(0) scale(1); }
+    .mc-head { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+    .mc-icon {
+        width: 44px; height: 44px; flex: 0 0 auto; border-radius: 12px;
+        display: flex; align-items: center; justify-content: center;
+        background: rgba(56, 132, 255, 0.16); color: #6aa8ff;
+    }
+    .mc-icon.mc-danger-icon { background: rgba(255, 86, 86, 0.16); color: #ff7a7a; }
+    .mc-icon svg { width: 22px; height: 22px; }
+    .mc-title { margin: 0; font-size: 1.08rem; font-weight: 650; letter-spacing: .2px; }
+    .mc-body { font-size: .9rem; line-height: 1.6; color: #b7bcd0; margin: 0 0 22px; white-space: pre-line; }
+    .mc-actions { display: flex; justify-content: flex-end; gap: 10px; }
+    .mc-btn {
+        appearance: none; border: 0; cursor: pointer; font-family: inherit;
+        padding: 9px 20px; border-radius: 10px; font-size: .875rem; font-weight: 600;
+        transition: transform .1s ease, filter .12s ease, background .12s ease;
+    }
+    .mc-btn:active { transform: translateY(1px); }
+    .mc-btn:focus-visible { outline: 2px solid #6aa8ff; outline-offset: 2px; }
+    .mc-btn-cancel { background: rgba(255, 255, 255, 0.08); color: #d3d7e6; }
+    .mc-btn-cancel:hover { background: rgba(255, 255, 255, 0.14); }
+    .mc-btn-ok { background: linear-gradient(135deg, #38bdf8, #2f7bf6); color: #04121f; }
+    .mc-btn-ok:hover { filter: brightness(1.08); }
+    .mc-btn-danger { background: linear-gradient(135deg, #ff6b6b, #e23a3a); color: #fff; }
+    .mc-btn-danger:hover { filter: brightness(1.08); }
 `;
 document.head.appendChild(style);
+
+// modernConfirm shows a styled, promise-based confirmation modal in place of the
+// unstyleable native confirm(). Resolves true on confirm, false on cancel/Escape.
+function modernConfirm({ title = 'Please confirm', message = '', okText = 'OK', cancelText = 'Cancel', danger = false } = {}) {
+    return new Promise((resolve) => {
+        const infoIcon = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>';
+        const dangerIcon = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>';
+
+        const overlay = document.createElement('div');
+        overlay.className = 'mc-overlay';
+        overlay.innerHTML = `
+            <div class="mc-dialog" role="alertdialog" aria-modal="true">
+                <div class="mc-head">
+                    <div class="mc-icon ${danger ? 'mc-danger-icon' : ''}">${danger ? dangerIcon : infoIcon}</div>
+                    <h3 class="mc-title"></h3>
+                </div>
+                <div class="mc-body"></div>
+                <div class="mc-actions">
+                    <button type="button" class="mc-btn mc-btn-cancel"></button>
+                    <button type="button" class="mc-btn ${danger ? 'mc-btn-danger' : 'mc-btn-ok'}"></button>
+                </div>
+            </div>`;
+
+        // Set all user-provided text via textContent to avoid HTML injection.
+        overlay.querySelector('.mc-title').textContent = title;
+        overlay.querySelector('.mc-body').textContent = message;
+        const okBtn = overlay.querySelector('.mc-btn-ok, .mc-btn-danger');
+        const cancelBtn = overlay.querySelector('.mc-btn-cancel');
+        okBtn.textContent = okText;
+        cancelBtn.textContent = cancelText;
+
+        function close(result) {
+            overlay.classList.remove('mc-visible');
+            document.removeEventListener('keydown', onKey);
+            setTimeout(() => overlay.remove(), 200);
+            resolve(result);
+        }
+        function onKey(e) {
+            if (e.key === 'Escape') close(false);
+            else if (e.key === 'Enter') close(true);
+        }
+        okBtn.addEventListener('click', () => close(true));
+        cancelBtn.addEventListener('click', () => close(false));
+        overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(false); });
+        document.addEventListener('keydown', onKey);
+
+        document.body.appendChild(overlay);
+        requestAnimationFrame(() => { overlay.classList.add('mc-visible'); okBtn.focus(); });
+    });
+}
 
 // ============================================================
 // REPOSITORY LIST PAGE (/repos)
@@ -689,7 +788,7 @@ if (reposGrid) {
     }
 
     window.restoreRepo = async function(id) {
-        if (confirm('Are you sure you want to restore this repository?')) {
+        if (await modernConfirm({ title: 'Restore repository', message: 'Are you sure you want to restore this repository?', okText: 'Restore' })) {
             try {
                 await apiCall(`/api/v1/repositories/${id}/restore`, { method: 'POST' });
                 showToast('Repository restored successfully', 'success');
@@ -701,7 +800,7 @@ if (reposGrid) {
     };
 
     window.deleteRepoPermanent = async function(id, name) {
-        if (confirm(`WARNING: This will permanently delete repository "${name}" and all its cloned files on disk! This action CANNOT be undone.\n\nAre you absolutely sure?`)) {
+        if (await modernConfirm({ title: 'Permanently delete repository', message: `This will permanently delete repository "${name}" and all its cloned files on disk.\n\nThis action CANNOT be undone.`, okText: 'Delete permanently', danger: true })) {
             try {
                 await apiCall(`/api/v1/repositories/${id}/force`, { method: 'DELETE' });
                 showToast('Repository permanently deleted', 'success');
@@ -713,7 +812,7 @@ if (reposGrid) {
     };
 
     window.restoreBranch = async function(repoId, branchId, name) {
-        if (confirm(`Are you sure you want to restore the branch "${name}"?`)) {
+        if (await modernConfirm({ title: 'Restore branch', message: `Are you sure you want to restore the branch "${name}"?`, okText: 'Restore' })) {
             try {
                 await apiCall(`/api/v1/repositories/${repoId}/paperbin/branches/${branchId}/restore`, { method: 'POST' });
                 showToast(`Branch "${name}" restored successfully`, 'success');
@@ -725,7 +824,7 @@ if (reposGrid) {
     };
 
     window.deleteBranchPermanent = async function(repoId, branchId, name) {
-        if (confirm(`Are you sure you want to permanently delete branch "${name}" from the paperbin? This action CANNOT be undone.`)) {
+        if (await modernConfirm({ title: 'Permanently delete branch', message: `Permanently delete branch "${name}" from the paperbin?\n\nThis action CANNOT be undone.`, okText: 'Delete permanently', danger: true })) {
             try {
                 await apiCall(`/api/v1/repositories/${repoId}/paperbin/branches/${branchId}`, { method: 'DELETE' });
                 showToast(`Branch "${name}" permanently deleted from paperbin`, 'success');
