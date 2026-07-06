@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -103,8 +104,7 @@ func (h *BackupHandler) Import(c *gin.Context) {
 	}
 	defer data.Close()
 
-	content := make([]byte, file.Size)
-	_, err = data.Read(content)
+	content, err := io.ReadAll(data)
 	if err != nil {
 		response.BadRequest(c, "FILE_ERROR", "Failed to read file")
 		return

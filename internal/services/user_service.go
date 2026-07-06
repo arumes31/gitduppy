@@ -46,6 +46,9 @@ func (s *UserService) ListUsers(ctx context.Context, filter *UserFilter) ([]mode
 	if filter.PerPage < 1 {
 		filter.PerPage = 20
 	}
+	if filter.PerPage > 200 {
+		filter.PerPage = 200
+	}
 
 	query := s.db.WithContext(ctx).Model(&models.User{})
 

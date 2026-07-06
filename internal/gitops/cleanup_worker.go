@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/gitduppy/gitduppy/internal/database"
@@ -17,7 +18,8 @@ import (
 type CleanupWorker struct {
 	db        *gorm.DB
 	logger    *zap.Logger
-	done      chan bool
+	done      chan struct{}
+	stopOnce  sync.Once
 	interval  time.Duration
 	retention time.Duration
 }
@@ -44,7 +46,7 @@ func NewCleanupWorker(config *CleanupConfig) *CleanupWorker {
 	return &CleanupWorker{
 		db:        database.GetDB(),
 		logger:    zap.L().Named("cleanup-worker"),
-		done:      make(chan bool),
+		done:      make(chan struct{}),
 		interval:  config.Interval,
 		retention: config.Retention,
 	}
@@ -56,10 +58,13 @@ func (w *CleanupWorker) Start() {
 	go w.run()
 }
 
-// Stop stops the cleanup worker.
+// Stop stops the cleanup worker. Closing done (guarded by Once) never blocks and
+// is safe even if Start was never called or Stop is called twice — unlike the
+// previous unbuffered send, which could block for the duration of an in-progress
+// cleanup pass or deadlock forever if the loop was never started.
 func (w *CleanupWorker) Stop() {
 	w.logger.Info("stopping cleanup worker")
-	w.done <- true
+	w.stopOnce.Do(func() { close(w.done) })
 }
 
 // run is the main cleanup loop.

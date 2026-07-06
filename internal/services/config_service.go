@@ -35,25 +35,11 @@ func (s *ConfigService) GetConfig(ctx context.Context) *config.Config {
 	// Create a copy to avoid modifying original
 	cfg := *s.config
 
-	// Retrieve dynamic OAuth settings if present in the database.
-	if clientID, err := s.GetSettingString(ctx, "oauth2_github_client_id"); err == nil && clientID != "" {
-		cfg.OAuth.GitHub.ClientID = clientID
-	}
-	if clientSecret, err := s.GetSettingString(ctx, "oauth2_github_client_secret"); err == nil && clientSecret != "" {
-		cfg.OAuth.GitHub.ClientSecret = clientSecret
-	}
-	if clientID, err := s.GetSettingString(ctx, "oauth2_gitlab_client_id"); err == nil && clientID != "" {
-		cfg.OAuth.GitLab.ClientID = clientID
-	}
-	if clientSecret, err := s.GetSettingString(ctx, "oauth2_gitlab_client_secret"); err == nil && clientSecret != "" {
-		cfg.OAuth.GitLab.ClientSecret = clientSecret
-	}
-	if clientID, err := s.GetSettingString(ctx, "oauth2_google_client_id"); err == nil && clientID != "" {
-		cfg.OAuth.Google.ClientID = clientID
-	}
-	if clientSecret, err := s.GetSettingString(ctx, "oauth2_google_client_secret"); err == nil && clientSecret != "" {
-		cfg.OAuth.Google.ClientSecret = clientSecret
-	}
+	// Retrieve dynamic OAuth settings if present in the database. Load all six
+	// keys in one query rather than six sequential round-trips.
+	cfg.OAuth.GitHub = s.oauthProviderFromDB(ctx, cfg.OAuth.GitHub, "github")
+	cfg.OAuth.GitLab = s.oauthProviderFromDB(ctx, cfg.OAuth.GitLab, "gitlab")
+	cfg.OAuth.Google = s.oauthProviderFromDB(ctx, cfg.OAuth.Google, "google")
 
 	// Mask sensitive fields
 	if cfg.Database.Password != "" {
@@ -88,43 +74,67 @@ func (s *ConfigService) GetConfig(ctx context.Context) *config.Config {
 	return &cfg
 }
 
+// getSettingStrings loads several settings in a single query, decrypting any
+// encrypted values, and returns them keyed by setting key (missing keys are
+// simply absent). It replaces a run of per-key First() round-trips.
+func (s *ConfigService) getSettingStrings(ctx context.Context, keys ...string) map[string]string {
+	out := make(map[string]string, len(keys))
+	if s.db == nil || len(keys) == 0 {
+		return out
+	}
+	var rows []models.SystemSetting
+	if err := s.db.WithContext(ctx).Where("key IN ?", keys).Find(&rows).Error; err != nil {
+		return out
+	}
+	for _, r := range rows {
+		val := r.Value
+		if r.IsEncrypted && val != "" {
+			// Never expose raw ciphertext: an encrypted value must be successfully
+			// decrypted. If decryption is unavailable or fails, skip the key rather
+			// than storing the ciphertext as if it were the plaintext value.
+			if s.encryptionService == nil {
+				continue
+			}
+			dec, err := s.encryptionService.DecryptString(val)
+			if err != nil {
+				continue
+			}
+			val = dec
+		}
+		out[r.Key] = val
+	}
+	return out
+}
+
+// oauthProviderFromDB overlays DB-stored client id/secret (when present) onto the
+// static config for a provider whose settings keys are oauth2_<name>_client_id
+// and oauth2_<name>_client_secret.
+func (s *ConfigService) oauthProviderFromDB(ctx context.Context, base config.OAuthProviderConfig, name string) config.OAuthProviderConfig {
+	idKey := "oauth2_" + name + "_client_id"
+	secretKey := "oauth2_" + name + "_client_secret"
+	m := s.getSettingStrings(ctx, idKey, secretKey)
+	if v := m[idKey]; v != "" {
+		base.ClientID = v
+	}
+	if v := m[secretKey]; v != "" {
+		base.ClientSecret = v
+	}
+	return base
+}
+
 // GetGitHubOAuth retrieves the active GitHub OAuth configuration.
 func (s *ConfigService) GetGitHubOAuth(ctx context.Context) config.OAuthProviderConfig {
-	cfg := s.config.OAuth.GitHub
-
-	// Fallback to database values if available
-	if clientID, err := s.GetSettingString(ctx, "oauth2_github_client_id"); err == nil && clientID != "" {
-		cfg.ClientID = clientID
-	}
-	if clientSecret, err := s.GetSettingString(ctx, "oauth2_github_client_secret"); err == nil && clientSecret != "" {
-		cfg.ClientSecret = clientSecret
-	}
-
-	return cfg
+	return s.oauthProviderFromDB(ctx, s.config.OAuth.GitHub, "github")
 }
 
 // GetGitLabOAuth retrieves the active GitLab OAuth configuration.
 func (s *ConfigService) GetGitLabOAuth(ctx context.Context) config.OAuthProviderConfig {
-	cfg := s.config.OAuth.GitLab
-	if clientID, err := s.GetSettingString(ctx, "oauth2_gitlab_client_id"); err == nil && clientID != "" {
-		cfg.ClientID = clientID
-	}
-	if clientSecret, err := s.GetSettingString(ctx, "oauth2_gitlab_client_secret"); err == nil && clientSecret != "" {
-		cfg.ClientSecret = clientSecret
-	}
-	return cfg
+	return s.oauthProviderFromDB(ctx, s.config.OAuth.GitLab, "gitlab")
 }
 
 // GetGoogleOAuth retrieves the active Google OAuth configuration.
 func (s *ConfigService) GetGoogleOAuth(ctx context.Context) config.OAuthProviderConfig {
-	cfg := s.config.OAuth.Google
-	if clientID, err := s.GetSettingString(ctx, "oauth2_google_client_id"); err == nil && clientID != "" {
-		cfg.ClientID = clientID
-	}
-	if clientSecret, err := s.GetSettingString(ctx, "oauth2_google_client_secret"); err == nil && clientSecret != "" {
-		cfg.ClientSecret = clientSecret
-	}
-	return cfg
+	return s.oauthProviderFromDB(ctx, s.config.OAuth.Google, "google")
 }
 
 // UpdateConfig updates the configuration (requires restart).

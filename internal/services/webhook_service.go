@@ -92,8 +92,11 @@ func (s *WebhookService) decryptSecret(stored string) (string, error) {
 // WebhookFilter represents filters for listing webhooks.
 type WebhookFilter struct {
 	IsActive *bool
-	Page     int
-	PerPage  int
+	// UserID, when set, restricts the listing to webhooks owned by that user.
+	// It is left nil for admins so they can see every webhook.
+	UserID  *uuid.UUID
+	Page    int
+	PerPage int
 }
 
 // ListWebhooks returns a paginated list of webhooks.
@@ -107,8 +110,15 @@ func (s *WebhookService) ListWebhooks(_ context.Context, filter *WebhookFilter) 
 	if filter.PerPage < 1 {
 		filter.PerPage = 20
 	}
+	if filter.PerPage > 200 {
+		filter.PerPage = 200
+	}
 
 	query := s.db.Model(&models.WebhookConfig{})
+
+	if filter.UserID != nil {
+		query = query.Where("user_id = ?", *filter.UserID)
+	}
 
 	if filter.IsActive != nil {
 		query = query.Where("is_active = ?", *filter.IsActive)

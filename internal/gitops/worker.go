@@ -97,6 +97,11 @@ type CloneWorker struct {
 	cancel        context.CancelFunc
 	logger        *zap.Logger
 
+	// repoLocks serializes clone/fetch work per on-disk repository path so two
+	// jobs for the same repository never run git operations concurrently (which
+	// would corrupt .git/index.lock, packed-refs, or the object store).
+	repoLocks *keyedMutex
+
 	// Overflow backlog drained by a single dispatcher goroutine so that a burst
 	// larger than jobQueue's buffer never spawns a goroutine per job.
 	pendingMu sync.Mutex
@@ -127,7 +132,26 @@ func NewCloneWorker(config *WorkerConfig, gitOps *GitOperations, encryption *cry
 		ctx:        ctx,
 		cancel:     cancel,
 		logger:     zap.L().Named("clone-worker"),
+		repoLocks:  newKeyedMutex(),
 	}
+}
+
+// enqueueAfter re-enqueues a job after the given delay. The waiting goroutine is
+// tracked by the WaitGroup and cancelled on shutdown, so a deferred retry never
+// fires after Stop() (which would touch the DB or dispatcher post-shutdown); the
+// job is instead recovered from its persisted "pending" row on the next start.
+func (w *CloneWorker) enqueueAfter(job *models.CloneJob, delay time.Duration) {
+	w.wg.Add(1)
+	go func() {
+		defer w.wg.Done()
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			w.Enqueue(job)
+		case <-w.ctx.Done():
+		}
+	}()
 }
 
 // SetNotificationServices sets the webhook and email notification services.
@@ -294,6 +318,32 @@ func (w *CloneWorker) worker(id int) {
 func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 	logger.Info("processing clone job", zap.String("job_id", job.ID.String()))
 
+	// Get repository details first so we know the on-disk path to serialize on.
+	var repo models.Repository
+	if err := w.db.First(&repo, job.RepositoryID).Error; err != nil {
+		w.failJob(logger, job, fmt.Sprintf("repository not found: %v", err))
+		return
+	}
+
+	// StoragePath is persisted as the full on-disk path (base root already
+	// joined at creation time), so it is used directly here.
+	repoPath := repo.StoragePath
+
+	// Never run two git operations against the same on-disk repository
+	// concurrently. If another worker already holds this path (e.g. a manual
+	// "clone now" collided with a scheduled sync, or a retry raced a manual
+	// trigger), put the job back to pending and requeue it shortly rather than
+	// blocking this worker slot for the duration of the other clone.
+	unlock, ok := w.repoLocks.TryLock(repoPath)
+	if !ok {
+		logger.Info("repository already being processed, deferring job",
+			zap.String("job_id", job.ID.String()), zap.String("path", repoPath))
+		w.db.Model(job).Update("status", "pending")
+		w.enqueueAfter(job, 5*time.Second)
+		return
+	}
+	defer unlock()
+
 	// Reflect in-flight work and remaining backlog in metrics.
 	metrics.ActiveCloneJobs.Inc()
 	defer func() {
@@ -309,17 +359,6 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 		"output_log": "",
 		"exit_code":  nil,
 	})
-
-	// Get repository details
-	var repo models.Repository
-	if err := w.db.First(&repo, job.RepositoryID).Error; err != nil {
-		w.failJob(logger, job, fmt.Sprintf("repository not found: %v", err))
-		return
-	}
-
-	// StoragePath is persisted as the full on-disk path (base root already
-	// joined at creation time), so it is used directly here.
-	repoPath := repo.StoragePath
 
 	// Decrypt credentials
 	var creds *crypto.CredentialsPayload
@@ -571,7 +610,7 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 		token := ""
 		if creds != nil && creds.Token != "" {
 			token = creds.Token
-		} else if creds != nil && creds.Password != "" && repo.AuthType == "basic" {
+		} else if creds != nil && creds.Password != "" && repo.AuthType == "https" {
 			token = creds.Password
 		}
 
@@ -586,7 +625,7 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 		token := ""
 		if creds != nil && creds.Token != "" {
 			token = creds.Token
-		} else if creds != nil && creds.Password != "" && repo.AuthType == "basic" {
+		} else if creds != nil && creds.Password != "" && repo.AuthType == "https" {
 			token = creds.Password
 		}
 
@@ -703,24 +742,24 @@ func (w *CloneWorker) handleFailure(logger *zap.Logger, repo models.Repository, 
 			zap.Duration("backoff", backoff),
 		)
 
-		repoID := repo.ID
-		time.AfterFunc(backoff, func() {
-			// Persist a real, PK-bearing job row before enqueuing. processJob
-			// updates the row by primary key, so an in-memory job with no ID
-			// (as before) silently no-ops and the retry never happens.
-			retryJob := &models.CloneJob{
-				ID:           uuid.New(),
-				RepositoryID: repoID,
-				TriggerType:  "scheduled",
-				Status:       "pending",
-				CreatedAt:    time.Now(),
-			}
-			if err := w.db.Create(retryJob).Error; err != nil {
-				w.logger.Error("failed to persist retry clone job", zap.String("repo_id", repoID.String()), zap.Error(err))
-				return
-			}
-			w.Enqueue(retryJob)
-		})
+		// Persist a real, PK-bearing job row before enqueuing. processJob updates
+		// the row by primary key, so an in-memory job with no ID (as before)
+		// silently no-ops and the retry never happens. Create it now (pending) so
+		// it is visible to the scheduler's dedup and recoverable on restart, then
+		// dispatch it after the backoff via a shutdown-aware, WaitGroup-tracked
+		// timer instead of an untracked time.AfterFunc.
+		retryJob := &models.CloneJob{
+			ID:           uuid.New(),
+			RepositoryID: repo.ID,
+			TriggerType:  "scheduled",
+			Status:       "pending",
+			CreatedAt:    time.Now(),
+		}
+		if err := w.db.Create(retryJob).Error; err != nil {
+			w.logger.Error("failed to persist retry clone job", zap.String("repo_id", repo.ID.String()), zap.Error(err))
+			return
+		}
+		w.enqueueAfter(retryJob, backoff)
 	}
 }
 
@@ -761,11 +800,12 @@ func (p *CloneProgress) Write(b []byte) (n int, err error) {
 
 // Scheduler handles scheduled clone jobs.
 type Scheduler struct {
-	db     *gorm.DB
-	worker *CloneWorker
-	ticker *time.Ticker
-	done   chan bool
-	logger *zap.Logger
+	db       *gorm.DB
+	worker   *CloneWorker
+	ticker   *time.Ticker
+	done     chan struct{}
+	stopOnce sync.Once
+	logger   *zap.Logger
 }
 
 // schedulerTickInterval is how often the scheduler evaluates repositories. It is
@@ -780,7 +820,7 @@ func NewScheduler(worker *CloneWorker) *Scheduler {
 		db:     database.GetDB(),
 		worker: worker,
 		ticker: time.NewTicker(schedulerTickInterval),
-		done:   make(chan bool),
+		done:   make(chan struct{}),
 		logger: zap.L().Named("scheduler"),
 	}
 }
@@ -791,11 +831,13 @@ func (s *Scheduler) Start() {
 	go s.run()
 }
 
-// Stop stops the scheduler.
+// Stop stops the scheduler. Closing done (guarded by Once) is non-blocking and
+// safe even if Start was never called or Stop is called more than once — unlike
+// the previous unbuffered send, which could deadlock in both cases.
 func (s *Scheduler) Stop() {
 	s.logger.Info("stopping scheduler")
 	s.ticker.Stop()
-	s.done <- true
+	s.stopOnce.Do(func() { close(s.done) })
 }
 
 // run is the main scheduler loop.

@@ -6,7 +6,6 @@ import (
 	"github.com/gitduppy/gitduppy/internal/services"
 	"github.com/gitduppy/gitduppy/pkg/response"
 	"github.com/gitduppy/gitduppy/pkg/validator"
-	"github.com/google/uuid"
 )
 
 // UserHandler handles user management requests.
@@ -61,15 +60,14 @@ func (h *UserHandler) ListUsers(c *gin.Context) {
 		Page:       filter.Page,
 		PerPage:    filter.PerPage,
 		Total:      int(total),
-		TotalPages: int(total/int64(filter.PerPage)) + 1,
+		TotalPages: int((total + int64(filter.PerPage) - 1) / int64(filter.PerPage)),
 	})
 }
 
 // GetUser handles GET /api/v1/users/:id.
 func (h *UserHandler) GetUser(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid user ID format")
+	id, ok := parseUUIDParam(c, "id", "user")
+	if !ok {
 		return
 	}
 
@@ -106,9 +104,8 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 
 // UpdateUser handles PUT /api/v1/users/:id.
 func (h *UserHandler) UpdateUser(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid user ID format")
+	id, ok := parseUUIDParam(c, "id", "user")
+	if !ok {
 		return
 	}
 
@@ -129,9 +126,8 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 
 // DeleteUser handles DELETE /api/v1/users/:id.
 func (h *UserHandler) DeleteUser(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid user ID format")
+	id, ok := parseUUIDParam(c, "id", "user")
+	if !ok {
 		return
 	}
 
@@ -145,9 +141,8 @@ func (h *UserHandler) DeleteUser(c *gin.Context) {
 
 // SetUserStatus handles PATCH /api/v1/users/:id/status.
 func (h *UserHandler) SetUserStatus(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid user ID format")
+	id, ok := parseUUIDParam(c, "id", "user")
+	if !ok {
 		return
 	}
 

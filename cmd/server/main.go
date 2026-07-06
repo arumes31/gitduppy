@@ -167,6 +167,7 @@ func main() {
 		float64(cfg.Security.RateLimit.APIRequestsPerMinute)/60.0,
 		cfg.Security.RateLimit.APIRequestsPerMinute,
 	)
+	defer rateLimiter.Stop()
 	loggerConfig := middleware.DefaultLoggerConfig()
 	csrfMiddleware := middleware.NewCSRFMiddleware(cfg.Security.CSRFKey, cfg.Server.TLS.Enabled)
 
@@ -254,7 +255,39 @@ func createDefaultAdmin() error {
 		return fmt.Errorf("failed to count users: %w", err)
 	}
 	if count > 0 {
-		log.Println("Users already exist, skipping default admin creation")
+		if os.Getenv("GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD_RESET") == "true" {
+			// Fail closed: every step of the forced reset must succeed, and the
+			// admin row must actually be updated, before we log success or disclose
+			// the password. Ignoring these errors could otherwise leave the admin
+			// with an unknown/unchanged password while reporting a reset.
+			bootstrapPassword := os.Getenv("GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD")
+			if bootstrapPassword == "" {
+				pw, genErr := generateBootstrapPassword(24)
+				if genErr != nil {
+					return fmt.Errorf("failed to generate bootstrap admin password: %w", genErr)
+				}
+				bootstrapPassword = pw
+			}
+			hashedPassword, err := bcrypt.GenerateFromPassword([]byte(bootstrapPassword), bcrypt.DefaultCost)
+			if err != nil {
+				return fmt.Errorf("failed to hash admin password for reset: %w", err)
+			}
+			passwordStr := string(hashedPassword)
+			result := db.Model(&models.User{}).Where("username = ?", "admin").Update("password_hash", passwordStr)
+			if result.Error != nil {
+				return fmt.Errorf("failed to reset admin password: %w", result.Error)
+			}
+			if result.RowsAffected == 0 {
+				return errors.New("admin password reset requested but no 'admin' user was updated")
+			}
+			if os.Getenv("GITMIRRORS_BOOTSTRAP_SHOW_PASSWORD") == "true" {
+				log.Printf("=== ADMIN PASSWORD RESET (username: admin) — new password: %q ===", bootstrapPassword) //nolint:gosec // intentional for admin bootstrap
+			} else {
+				log.Println("Admin password forcefully reset from GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD.")
+			}
+		} else {
+			log.Println("Users already exist, skipping default admin creation")
+		}
 		return nil
 	}
 	// Determine the initial admin password. Prefer an operator-supplied secret;
@@ -412,9 +445,9 @@ func setupRouter(
 		{
 			auth.POST("/login", authHandler.Login)
 			auth.POST("/logout", authHandler.Logout)
-			auth.GET("/me", authHandler.Me)
+			auth.GET("/me", authMiddleware.Middleware(), authHandler.Me)
 			auth.POST("/refresh", authHandler.Refresh)
-			auth.POST("/change-password", authHandler.ChangePassword)
+			auth.POST("/change-password", authMiddleware.Middleware(), authHandler.ChangePassword)
 		}
 
 		// OAuth routes

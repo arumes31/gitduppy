@@ -506,9 +506,23 @@ func (g *GitOperations) getPoolPath(url string) string {
 	return filepath.Join(g.BasePath, "pools", hashStr[0:2], hashStr[2:4], hashStr)
 }
 
+// poolLocks serializes access to each shared object pool. The pool is keyed by
+// the remote URL, so two different repositories that share an upstream URL would
+// otherwise fetch into the same bare pool directory concurrently and corrupt its
+// packfiles/refs. A per-repo guard cannot prevent this because the collision key
+// is the URL, not the repository id.
+//
+//nolint:gochecknoglobals
+var poolLocks = newKeyedMutex()
+
 // updatePool populates or updates the shared object pool for the remote URL.
 func (g *GitOperations) updatePool(ctx context.Context, url string, auth transport.AuthMethod, progress sideband.Progress) (string, error) {
 	poolPath := g.getPoolPath(url)
+
+	// Serialize all work on this pool directory. Blocking here is correct: two
+	// fetches into the same pool must not overlap.
+	unlock := poolLocks.Lock(poolPath)
+	defer unlock()
 
 	var r *git.Repository
 	var err error

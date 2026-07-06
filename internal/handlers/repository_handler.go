@@ -98,15 +98,14 @@ func (h *RepositoryHandler) ListRepositories(c *gin.Context) {
 		Page:       filter.Page,
 		PerPage:    filter.PerPage,
 		Total:      int(total),
-		TotalPages: int(total/int64(filter.PerPage)) + 1,
+		TotalPages: int((total + int64(filter.PerPage) - 1) / int64(filter.PerPage)),
 	})
 }
 
 // GetRepository handles GET /api/v1/repositories/:id.
 func (h *RepositoryHandler) GetRepository(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+	id, ok := parseUUIDParam(c, "id", "repository")
+	if !ok {
 		return
 	}
 
@@ -192,9 +191,8 @@ func (h *RepositoryHandler) CreateRepository(c *gin.Context) {
 
 // UpdateRepository handles PUT /api/v1/repositories/:id.
 func (h *RepositoryHandler) UpdateRepository(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+	id, ok := parseUUIDParam(c, "id", "repository")
+	if !ok {
 		return
 	}
 
@@ -222,9 +220,8 @@ func (h *RepositoryHandler) UpdateRepository(c *gin.Context) {
 
 // DeleteRepository handles DELETE /api/v1/repositories/:id.
 func (h *RepositoryHandler) DeleteRepository(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+	id, ok := parseUUIDParam(c, "id", "repository")
+	if !ok {
 		return
 	}
 
@@ -247,9 +244,8 @@ func (h *RepositoryHandler) DeleteRepository(c *gin.Context) {
 
 // SetRepositoryStatus handles PATCH /api/v1/repositories/:id/status.
 func (h *RepositoryHandler) SetRepositoryStatus(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+	id, ok := parseUUIDParam(c, "id", "repository")
+	if !ok {
 		return
 	}
 
@@ -271,9 +267,8 @@ func (h *RepositoryHandler) SetRepositoryStatus(c *gin.Context) {
 
 // TriggerClone handles POST /api/v1/repositories/:id/clone.
 func (h *RepositoryHandler) TriggerClone(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+	id, ok := parseUUIDParam(c, "id", "repository")
+	if !ok {
 		return
 	}
 
@@ -292,9 +287,8 @@ func (h *RepositoryHandler) TriggerClone(c *gin.Context) {
 
 // GetRepositoryLogs handles GET /api/v1/repositories/:id/logs.
 func (h *RepositoryHandler) GetRepositoryLogs(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+	id, ok := parseUUIDParam(c, "id", "repository")
+	if !ok {
 		return
 	}
 
@@ -334,9 +328,8 @@ func (h *RepositoryHandler) GetPaperbin(c *gin.Context) {
 
 // RestoreRepository handles POST /api/v1/repositories/:id/restore.
 func (h *RepositoryHandler) RestoreRepository(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+	id, ok := parseUUIDParam(c, "id", "repository")
+	if !ok {
 		return
 	}
 
@@ -360,9 +353,8 @@ func (h *RepositoryHandler) RestoreRepository(c *gin.Context) {
 
 // PermanentDeleteRepository handles DELETE /api/v1/repositories/:id/force.
 func (h *RepositoryHandler) PermanentDeleteRepository(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+	id, ok := parseUUIDParam(c, "id", "repository")
+	if !ok {
 		return
 	}
 
@@ -390,15 +382,13 @@ func (h *RepositoryHandler) PermanentDeleteRepository(c *gin.Context) {
 
 // RestoreBranch handles POST /api/v1/repositories/:id/paperbin/branches/:branchId/restore.
 func (h *RepositoryHandler) RestoreBranch(c *gin.Context) {
-	repoID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+	repoID, ok := parseUUIDParam(c, "id", "repository")
+	if !ok {
 		return
 	}
 
-	branchID, err := uuid.Parse(c.Param("branchId"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid branch ID format")
+	branchID, ok := parseUUIDParam(c, "branchId", "branch")
+	if !ok {
 		return
 	}
 
@@ -455,15 +445,13 @@ func (h *RepositoryHandler) RestoreBranch(c *gin.Context) {
 
 // PermanentDeleteBranch handles DELETE /api/v1/repositories/:id/paperbin/branches/:branchId.
 func (h *RepositoryHandler) PermanentDeleteBranch(c *gin.Context) {
-	repoID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+	repoID, ok := parseUUIDParam(c, "id", "repository")
+	if !ok {
 		return
 	}
 
-	branchID, err := uuid.Parse(c.Param("branchId"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid branch ID format")
+	branchID, ok := parseUUIDParam(c, "branchId", "branch")
+	if !ok {
 		return
 	}
 
@@ -532,6 +520,22 @@ func (h *RepositoryHandler) StreamRepositoryLogs(c *gin.Context) {
 	logChan := gitops.GlobalLogHub.Subscribe(repoID)
 	defer gitops.GlobalLogHub.Unsubscribe(repoID, logChan)
 
+	// A websocket has no read pump here, and a hijacked connection's request
+	// context is not cancelled until this handler returns — so for an idle repo a
+	// client that closed its tab would block the loop below forever, leaking this
+	// goroutine and its LogHub subscription. Run a reader whose only job is to
+	// notice the peer going away (ReadMessage erroring) and cancel.
+	ctx, cancel := context.WithCancel(c.Request.Context())
+	defer cancel()
+	go func() {
+		for {
+			if _, _, rerr := ws.ReadMessage(); rerr != nil {
+				cancel()
+				return
+			}
+		}
+	}()
+
 	// Both the keep-alive goroutine and the log-streaming loop write to the same
 	// websocket connection, so serialize all writes through a single mutex —
 	// concurrent gorilla/websocket writes are not safe.
@@ -552,7 +556,7 @@ func (h *RepositoryHandler) StreamRepositoryLogs(c *gin.Context) {
 				if err := writeMessage(websocket.PingMessage, []byte{}); err != nil {
 					return
 				}
-			case <-c.Request.Context().Done():
+			case <-ctx.Done():
 				return
 			}
 		}
@@ -567,7 +571,7 @@ func (h *RepositoryHandler) StreamRepositoryLogs(c *gin.Context) {
 			if err := writeMessage(websocket.TextMessage, []byte(msg)); err != nil {
 				return
 			}
-		case <-c.Request.Context().Done():
+		case <-ctx.Done():
 			return
 		}
 	}

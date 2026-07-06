@@ -62,15 +62,14 @@ func (h *CloneHandler) ListCloneJobs(c *gin.Context) {
 		Page:       filter.Page,
 		PerPage:    filter.PerPage,
 		Total:      int(total),
-		TotalPages: int(total/int64(filter.PerPage)) + 1,
+		TotalPages: int((total + int64(filter.PerPage) - 1) / int64(filter.PerPage)),
 	})
 }
 
 // GetCloneJob handles GET /api/v1/clone-jobs/:id.
 func (h *CloneHandler) GetCloneJob(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid clone job ID format")
+	id, ok := parseUUIDParam(c, "id", "clone job")
+	if !ok {
 		return
 	}
 
@@ -85,9 +84,8 @@ func (h *CloneHandler) GetCloneJob(c *gin.Context) {
 
 // CancelCloneJob handles POST /api/v1/clone-jobs/:id/cancel.
 func (h *CloneHandler) CancelCloneJob(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid clone job ID format")
+	id, ok := parseUUIDParam(c, "id", "clone job")
+	if !ok {
 		return
 	}
 
@@ -101,9 +99,8 @@ func (h *CloneHandler) CancelCloneJob(c *gin.Context) {
 
 // ListRepositoryJobs handles GET /api/v1/repositories/:id/jobs.
 func (h *CloneHandler) ListRepositoryJobs(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+	id, ok := parseUUIDParam(c, "id", "repository")
+	if !ok {
 		return
 	}
 
@@ -135,15 +132,14 @@ func (h *CloneHandler) ListRepositoryJobs(c *gin.Context) {
 		Page:       filter.Page,
 		PerPage:    filter.PerPage,
 		Total:      int(total),
-		TotalPages: int(total/int64(filter.PerPage)) + 1,
+		TotalPages: int((total + int64(filter.PerPage) - 1) / int64(filter.PerPage)),
 	})
 }
 
 // GetCloneJobLogs handles GET /api/v1/clone-jobs/:id/logs.
 func (h *CloneHandler) GetCloneJobLogs(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid clone job ID format")
+	id, ok := parseUUIDParam(c, "id", "clone job")
+	if !ok {
 		return
 	}
 

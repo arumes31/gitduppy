@@ -68,6 +68,27 @@
         </main>
     </div>
 
+    <!-- Custom Confirm Modal -->
+    <div id="custom-confirm-modal" class="modal-overlay" style="display:none">
+        <div class="modal-content glass-panel">
+            <div class="modal-header">
+                <i data-lucide="github" class="icon-lg"></i>
+                <h3 id="custom-confirm-title" class="modal-title">GitHub Integration</h3>
+            </div>
+            <div id="custom-confirm-message" class="modal-body text-muted">
+                <!-- Message will be injected here -->
+            </div>
+            <div class="modal-actions mt-6">
+                <button id="custom-confirm-cancel" class="btn btn-secondary">
+                    <span>Cancel</span>
+                </button>
+                <button id="custom-confirm-ok" class="btn btn-primary btn-glow">
+                    <span>OK</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast Notification Container -->
     <div id="toast-container" class="toast-container"></div>
 

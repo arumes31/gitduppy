@@ -272,6 +272,45 @@ if (oauthForm) {
         }
     }
 
+    window.changePassword = async function(e) {
+        e.preventDefault();
+        
+        const old_password = document.getElementById('old_password').value;
+        const new_password = document.getElementById('new_password').value;
+        const confirm_password = document.getElementById('confirm_password').value;
+        
+        if (new_password !== confirm_password) {
+            showToast('New passwords do not match.', 'error');
+            return;
+        }
+        
+        const btn = e.target.querySelector('button[type="submit"]');
+        const originalContent = btn.innerHTML;
+        
+        try {
+            btn.innerHTML = '<i class="lucide lucide-loader animate-spin"></i><span>Saving...</span>';
+            btn.disabled = true;
+
+            // Route through the shared apiCall wrapper so auth/credentials and
+            // error parsing match every other request.
+            await apiCall('/api/v1/auth/change-password', {
+                method: 'POST',
+                body: JSON.stringify({ old_password, new_password })
+            });
+
+            // Changing the password invalidates every existing session (including
+            // this one), so the current cookie is no longer valid — send the user
+            // to the login page to re-authenticate instead of just resetting the form.
+            showToast('Password changed. Please sign in again.', 'success');
+            setTimeout(() => { window.location.href = '/login'; }, 1000);
+        } catch (err) {
+            // apiCall already surfaced the error via a toast.
+            console.error('Password change error:', err);
+            btn.innerHTML = originalContent;
+            btn.disabled = false;
+        }
+    };
+
     window.saveQuotaConfig = async function(e) {
         e.preventDefault();
         const quotaGB = document.getElementById('paperbin_quota_gb').value;
@@ -314,9 +353,8 @@ if (oauthForm) {
             name: name,
             url: origin,
             redirect_url: origin + "/api/v1/oauth/github/manifest-callback",
-            callback_urls: [
-                origin + "/api/v1/oauth/github/callback"
-            ],
+            callback_url: origin + "/api/v1/oauth/github/callback",
+            request_oauth_on_install: true,
             setup_url: origin + "/config",
             public: false,
             default_permissions: {

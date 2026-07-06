@@ -78,3 +78,4 @@ architecture.md
 coverage.txt
 lint-report.txt
 vulncheck-report.txt
+.claudeignore

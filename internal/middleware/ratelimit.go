@@ -50,6 +50,8 @@ type RateLimiter struct {
 	limiters sync.Map // map[string]*rateLimiter
 	rps      float64
 	burst    int
+	done     chan struct{}
+	stopOnce sync.Once
 }
 
 // NewRateLimiter creates a new rate limiter.
@@ -57,6 +59,7 @@ func NewRateLimiter(requestsPerSecond float64, burstSize int) *RateLimiter {
 	rl := &RateLimiter{
 		rps:   requestsPerSecond,
 		burst: burstSize,
+		done:  make(chan struct{}),
 	}
 
 	// Start cleanup goroutine to remove inactive limiters
@@ -64,23 +67,37 @@ func NewRateLimiter(requestsPerSecond float64, burstSize int) *RateLimiter {
 	return rl
 }
 
-// cleanupWorker removes inactive limiters periodically.
+// Stop terminates the background cleanup goroutine. It is safe to call more than
+// once, and a no-op for a limiter created without NewRateLimiter (e.g. in tests).
+func (rl *RateLimiter) Stop() {
+	if rl.done == nil {
+		return
+	}
+	rl.stopOnce.Do(func() { close(rl.done) })
+}
+
+// cleanupWorker removes inactive limiters periodically until Stop is called.
 func (rl *RateLimiter) cleanupWorker(interval time.Duration) {
 	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 	for {
-		<-ticker.C
-		rl.limiters.Range(func(key, value interface{}) bool {
-			limiter := value.(*rateLimiter)
-			// Read lastRefill under the limiter's lock to avoid racing allow().
-			limiter.mu.Lock()
-			idle := time.Since(limiter.lastRefill)
-			limiter.mu.Unlock()
-			// Remove limiters that haven't been used in the last 10 minutes
-			if idle > 10*time.Minute {
-				rl.limiters.Delete(key)
-			}
-			return true
-		})
+		select {
+		case <-rl.done:
+			return
+		case <-ticker.C:
+			rl.limiters.Range(func(key, value interface{}) bool {
+				limiter := value.(*rateLimiter)
+				// Read lastRefill under the limiter's lock to avoid racing allow().
+				limiter.mu.Lock()
+				idle := time.Since(limiter.lastRefill)
+				limiter.mu.Unlock()
+				// Remove limiters that haven't been used in the last 10 minutes
+				if idle > 10*time.Minute {
+					rl.limiters.Delete(key)
+				}
+				return true
+			})
+		}
 	}
 }
 

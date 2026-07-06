@@ -33,9 +33,8 @@ func (h *TagHandler) ListTags(c *gin.Context) {
 
 // GetTag handles GET /api/v1/tags/:id.
 func (h *TagHandler) GetTag(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid tag ID format")
+	id, ok := parseUUIDParam(c, "id", "tag")
+	if !ok {
 		return
 	}
 
@@ -77,9 +76,8 @@ func (h *TagHandler) CreateTag(c *gin.Context) {
 
 // UpdateTag handles PUT /api/v1/tags/:id.
 func (h *TagHandler) UpdateTag(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid tag ID format")
+	id, ok := parseUUIDParam(c, "id", "tag")
+	if !ok {
 		return
 	}
 
@@ -100,9 +98,8 @@ func (h *TagHandler) UpdateTag(c *gin.Context) {
 
 // DeleteTag handles DELETE /api/v1/tags/:id.
 func (h *TagHandler) DeleteTag(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid tag ID format")
+	id, ok := parseUUIDParam(c, "id", "tag")
+	if !ok {
 		return
 	}
 
@@ -116,9 +113,8 @@ func (h *TagHandler) DeleteTag(c *gin.Context) {
 
 // GetRepositoryTags handles GET /api/v1/repositories/:id/tags.
 func (h *TagHandler) GetRepositoryTags(c *gin.Context) {
-	repoID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+	repoID, ok := parseUUIDParam(c, "id", "repository")
+	if !ok {
 		return
 	}
 
@@ -133,9 +129,8 @@ func (h *TagHandler) GetRepositoryTags(c *gin.Context) {
 
 // AddTagToRepository handles POST /api/v1/repositories/:id/tags.
 func (h *TagHandler) AddTagToRepository(c *gin.Context) {
-	repoID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+	repoID, ok := parseUUIDParam(c, "id", "repository")
+	if !ok {
 		return
 	}
 
@@ -157,15 +152,13 @@ func (h *TagHandler) AddTagToRepository(c *gin.Context) {
 
 // RemoveTagFromRepository handles DELETE /api/v1/repositories/:id/tags/:tagId.
 func (h *TagHandler) RemoveTagFromRepository(c *gin.Context) {
-	repoID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+	repoID, ok := parseUUIDParam(c, "id", "repository")
+	if !ok {
 		return
 	}
 
-	tagID, err := uuid.Parse(c.Param("tagId"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid tag ID format")
+	tagID, ok := parseUUIDParam(c, "tagId", "tag")
+	if !ok {
 		return
 	}
 
@@ -179,9 +172,8 @@ func (h *TagHandler) RemoveTagFromRepository(c *gin.Context) {
 
 // SetRepositoryTags handles PUT /api/v1/repositories/:id/tags.
 func (h *TagHandler) SetRepositoryTags(c *gin.Context) {
-	repoID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		response.BadRequest(c, "INVALID_ID", "Invalid repository ID format")
+	repoID, ok := parseUUIDParam(c, "id", "repository")
+	if !ok {
 		return
 	}
 

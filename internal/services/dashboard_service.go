@@ -420,11 +420,14 @@ func (s *DashboardService) GetTimelineData(ctx context.Context, limit int) ([]mo
 }
 
 // GetPaperbinSize calculates the total storage size used by the paperbin and retrieves the configured quota limit.
-func (s *DashboardService) GetPaperbinSize(ctx context.Context) (int64, int64, error) {
+func (s *DashboardService) GetPaperbinSize(ctx context.Context) (int64, float64, error) {
 	var setting models.SystemSetting
-	quotaGB := int64(50) // Default quota is 50 GB
+	quotaGB := float64(50) // Default quota is 50 GB
 	if err := s.db.WithContext(ctx).Where("key = ?", "paperbin_quota_gb").First(&setting).Error; err == nil {
-		if val, parseErr := strconv.ParseInt(setting.Value, 10, 64); parseErr == nil && val > 0 {
+		// The quota is stored as a (possibly fractional) GB value by UpdateQuota,
+		// so parse it as a float; ParseInt would reject "10.5" and silently
+		// fall back to the default.
+		if val, parseErr := strconv.ParseFloat(setting.Value, 64); parseErr == nil && val > 0 {
 			quotaGB = val
 		}
 	}
