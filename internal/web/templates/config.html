@@ -53,6 +53,49 @@
                     </button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- Security Settings -->
+    <div class="card glass-panel mb-6">
+        <div class="card-header border-bottom">
+            <div class="flex items-center gap-3">
+                <i data-lucide="shield" class="icon-lg"></i>
+                <div>
+                    <h3 class="card-title">Security Settings</h3>
+                    <p class="text-sm text-muted">Manage your account security and password</p>
+                </div>
+            </div>
+        </div>
+        <div class="card-body">
+            <form id="password-form" class="settings-form" onsubmit="changePassword(event)">
+                <div class="form-group">
+                    <label for="old_password">Current Password</label>
+                    <input type="password" id="old_password" name="old_password" class="form-control" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="new_password">New Password</label>
+                    <input type="password" id="new_password" name="new_password" class="form-control" minlength="8" required>
+                    <p class="help-text">Minimum 8 characters required.</p>
+                </div>
+                
+                <div class="form-group">
+                    <label for="confirm_password">Confirm New Password</label>
+                    <input type="password" id="confirm_password" name="confirm_password" class="form-control" minlength="8" required>
+                </div>
+                
+                <div class="form-actions mt-6">
+                    <button type="submit" class="btn btn-primary btn-glow">
+                        <i data-lucide="key"></i>
+                        <span>Change Password</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Paperbin Quota Settings -->
     <div class="card glass-panel mb-6">
         <div class="card-header border-bottom">
             <div class="flex items-center gap-3">

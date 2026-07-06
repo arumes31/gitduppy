@@ -254,7 +254,24 @@ func createDefaultAdmin() error {
 		return fmt.Errorf("failed to count users: %w", err)
 	}
 	if count > 0 {
-		log.Println("Users already exist, skipping default admin creation")
+		if os.Getenv("GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD_RESET") == "true" {
+			bootstrapPassword := os.Getenv("GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD")
+			if bootstrapPassword == "" {
+				bootstrapPassword, _ = generateBootstrapPassword(24)
+			}
+			hashedPassword, err := bcrypt.GenerateFromPassword([]byte(bootstrapPassword), bcrypt.DefaultCost)
+			if err == nil {
+				passwordStr := string(hashedPassword)
+				db.Model(&models.User{}).Where("username = ?", "admin").Update("password_hash", passwordStr)
+				if os.Getenv("GITMIRRORS_BOOTSTRAP_SHOW_PASSWORD") == "true" {
+					log.Printf("=== ADMIN PASSWORD RESET (username: admin) — new password: %q ===", bootstrapPassword) //nolint:gosec // intentional for admin bootstrap
+				} else {
+					log.Println("Admin password forcefully reset from GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD.")
+				}
+			}
+		} else {
+			log.Println("Users already exist, skipping default admin creation")
+		}
 		return nil
 	}
 	// Determine the initial admin password. Prefer an operator-supplied secret;

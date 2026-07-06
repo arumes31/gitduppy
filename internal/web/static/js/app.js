@@ -272,6 +272,47 @@ if (oauthForm) {
         }
     }
 
+    window.changePassword = async function(e) {
+        e.preventDefault();
+        
+        const old_password = document.getElementById('old_password').value;
+        const new_password = document.getElementById('new_password').value;
+        const confirm_password = document.getElementById('confirm_password').value;
+        
+        if (new_password !== confirm_password) {
+            showToast('New passwords do not match.', 'error');
+            return;
+        }
+        
+        const btn = e.target.querySelector('button[type="submit"]');
+        const originalContent = btn.innerHTML;
+        
+        try {
+            btn.innerHTML = '<i class="lucide lucide-loader animate-spin"></i><span>Saving...</span>';
+            btn.disabled = true;
+            
+            const res = await fetch('/api/v1/auth/change-password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ old_password, new_password })
+            });
+            
+            if (!res.ok) {
+                const data = await res.json();
+                throw new Error(data.error || 'Failed to change password');
+            }
+            
+            showToast('Password successfully changed.', 'success');
+            e.target.reset();
+        } catch (err) {
+            console.error('Password change error:', err);
+            showToast(err.message, 'error');
+        } finally {
+            btn.innerHTML = originalContent;
+            btn.disabled = false;
+        }
+    };
+
     window.saveQuotaConfig = async function(e) {
         e.preventDefault();
         const quotaGB = document.getElementById('paperbin_quota_gb').value;
@@ -314,9 +355,8 @@ if (oauthForm) {
             name: name,
             url: origin,
             redirect_url: origin + "/api/v1/oauth/github/manifest-callback",
-            callback_urls: [
-                origin + "/api/v1/oauth/github/callback"
-            ],
+            callback_url: origin + "/api/v1/oauth/github/callback",
+            request_oauth_on_install: true,
             setup_url: origin + "/config",
             public: false,
             default_permissions: {
