@@ -233,12 +233,15 @@ func (h *BrowseHandler) GetTree(c *gin.Context) {
 		go func(i int) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			// Use the ASCII unit separator (\x1f) between fields instead of "|":
+			// a commit subject (%s) or author name (%an) can legitimately contain
+			// "|", which would otherwise shift every subsequent field.
 			out, gerr := gitops.RunGitCommand(ctx, repo.StoragePath,
-				"log", "-1", "--format=%H|%s|%an|%ae|%aI", refHash, "--", entries[i].Path)
+				"log", "-1", "--format=%H%x1f%s%x1f%an%x1f%ae%x1f%aI", refHash, "--", entries[i].Path)
 			if gerr != nil || strings.TrimSpace(out) == "" {
 				return
 			}
-			parts := strings.SplitN(strings.TrimSpace(out), "|", 5)
+			parts := strings.SplitN(strings.TrimSpace(out), "\x1f", 5)
 			if len(parts) < 5 {
 				return
 			}
@@ -379,7 +382,8 @@ func (h *BrowseHandler) GetCommits(c *gin.Context) {
 	out, gerr := gitops.RunGitCommand(ctx, repo.StoragePath,
 		"log", hash.String(),
 		fmt.Sprintf("--max-count=%d", limit),
-		"--format=%H|%s|%an|%ae|%aI",
+		// Field-separate with \x1f so a "|" inside a subject/author cannot shift fields.
+		"--format=%H%x1f%s%x1f%an%x1f%ae%x1f%aI",
 	)
 	if gerr != nil {
 		response.InternalError(c, "Failed to get commit log: "+gerr.Error())
@@ -392,7 +396,7 @@ func (h *BrowseHandler) GetCommits(c *gin.Context) {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "|", 5)
+		parts := strings.SplitN(line, "\x1f", 5)
 		if len(parts) < 5 {
 			continue
 		}

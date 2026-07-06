@@ -88,7 +88,13 @@ func (s *ConfigService) getSettingStrings(ctx context.Context, keys ...string) m
 	}
 	for _, r := range rows {
 		val := r.Value
-		if r.IsEncrypted && val != "" && s.encryptionService != nil {
+		if r.IsEncrypted && val != "" {
+			// Never expose raw ciphertext: an encrypted value must be successfully
+			// decrypted. If decryption is unavailable or fails, skip the key rather
+			// than storing the ciphertext as if it were the plaintext value.
+			if s.encryptionService == nil {
+				continue
+			}
 			dec, err := s.encryptionService.DecryptString(val)
 			if err != nil {
 				continue

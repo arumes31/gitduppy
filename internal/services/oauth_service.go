@@ -165,15 +165,13 @@ func (s *OAuthService) getGitHubEmail(ctx context.Context, httpClient *http.Clie
 		return "", "", fmt.Errorf("failed to decode github user: %w", decodeErr)
 	}
 
-	// The numeric account ID is the stable identity; fall back to the login only
-	// if the API somehow omitted it.
-	subject := fmt.Sprintf("%d", user.ID)
+	// The numeric account ID is the only stable identity. The login is mutable
+	// (users can rename), so it must never be used as the subject — require a real
+	// numeric id.
 	if user.ID == 0 {
-		if user.Login == "" {
-			return "", "", errors.New("github user has no stable identifier")
-		}
-		subject = user.Login
+		return "", "", errors.New("github user has no stable numeric identifier")
 	}
+	subject := fmt.Sprintf("%d", user.ID)
 
 	if user.Email != nil && *user.Email != "" {
 		return *user.Email, subject, nil
@@ -264,6 +262,12 @@ func (s *OAuthService) getGoogleEmail(ctx context.Context, token *oauth2.Token) 
 	email, ok := claims["email"].(string)
 	if !ok {
 		return "", "", errors.New("email not found in token claims")
+	}
+	// Only trust a verified email. An unverified Google email must not be able to
+	// create or link an account (someone could otherwise claim an address they do
+	// not control).
+	if verified, _ := claims["email_verified"].(bool); !verified {
+		return "", "", errors.New("google email is not verified")
 	}
 	subject, _ := claims["sub"].(string)
 	if subject == "" {

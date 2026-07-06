@@ -290,24 +290,22 @@ if (oauthForm) {
         try {
             btn.innerHTML = '<i class="lucide lucide-loader animate-spin"></i><span>Saving...</span>';
             btn.disabled = true;
-            
-            const res = await fetch('/api/v1/auth/change-password', {
+
+            // Route through the shared apiCall wrapper so auth/credentials and
+            // error parsing match every other request.
+            await apiCall('/api/v1/auth/change-password', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ old_password, new_password })
             });
-            
-            if (!res.ok) {
-                const data = await res.json();
-                throw new Error(data.error || 'Failed to change password');
-            }
-            
-            showToast('Password successfully changed.', 'success');
-            e.target.reset();
+
+            // Changing the password invalidates every existing session (including
+            // this one), so the current cookie is no longer valid — send the user
+            // to the login page to re-authenticate instead of just resetting the form.
+            showToast('Password changed. Please sign in again.', 'success');
+            setTimeout(() => { window.location.href = '/login'; }, 1000);
         } catch (err) {
+            // apiCall already surfaced the error via a toast.
             console.error('Password change error:', err);
-            showToast(err.message, 'error');
-        } finally {
             btn.innerHTML = originalContent;
             btn.disabled = false;
         }

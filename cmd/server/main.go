@@ -256,19 +256,34 @@ func createDefaultAdmin() error {
 	}
 	if count > 0 {
 		if os.Getenv("GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD_RESET") == "true" {
+			// Fail closed: every step of the forced reset must succeed, and the
+			// admin row must actually be updated, before we log success or disclose
+			// the password. Ignoring these errors could otherwise leave the admin
+			// with an unknown/unchanged password while reporting a reset.
 			bootstrapPassword := os.Getenv("GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD")
 			if bootstrapPassword == "" {
-				bootstrapPassword, _ = generateBootstrapPassword(24)
+				pw, genErr := generateBootstrapPassword(24)
+				if genErr != nil {
+					return fmt.Errorf("failed to generate bootstrap admin password: %w", genErr)
+				}
+				bootstrapPassword = pw
 			}
 			hashedPassword, err := bcrypt.GenerateFromPassword([]byte(bootstrapPassword), bcrypt.DefaultCost)
-			if err == nil {
-				passwordStr := string(hashedPassword)
-				db.Model(&models.User{}).Where("username = ?", "admin").Update("password_hash", passwordStr)
-				if os.Getenv("GITMIRRORS_BOOTSTRAP_SHOW_PASSWORD") == "true" {
-					log.Printf("=== ADMIN PASSWORD RESET (username: admin) — new password: %q ===", bootstrapPassword) //nolint:gosec // intentional for admin bootstrap
-				} else {
-					log.Println("Admin password forcefully reset from GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD.")
-				}
+			if err != nil {
+				return fmt.Errorf("failed to hash admin password for reset: %w", err)
+			}
+			passwordStr := string(hashedPassword)
+			result := db.Model(&models.User{}).Where("username = ?", "admin").Update("password_hash", passwordStr)
+			if result.Error != nil {
+				return fmt.Errorf("failed to reset admin password: %w", result.Error)
+			}
+			if result.RowsAffected == 0 {
+				return errors.New("admin password reset requested but no 'admin' user was updated")
+			}
+			if os.Getenv("GITMIRRORS_BOOTSTRAP_SHOW_PASSWORD") == "true" {
+				log.Printf("=== ADMIN PASSWORD RESET (username: admin) — new password: %q ===", bootstrapPassword) //nolint:gosec // intentional for admin bootstrap
+			} else {
+				log.Println("Admin password forcefully reset from GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD.")
 			}
 		} else {
 			log.Println("Users already exist, skipping default admin creation")

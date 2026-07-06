@@ -84,8 +84,15 @@ func (h *WebhookHandler) ListWebhooks(c *gin.Context) {
 		filter.IsActive = &active
 	}
 
-	// Non-admins may only see their own webhooks.
-	if user, ok := middleware.GetCurrentUser(c); ok && !user.IsAdmin() {
+	// Fail closed: this route is behind auth middleware, but never fall through to
+	// listing every user's webhooks if no current user is present. Non-admins are
+	// scoped to their own webhooks; admins see all.
+	user, ok := middleware.GetCurrentUser(c)
+	if !ok {
+		response.Unauthorized(c, "Not authenticated")
+		return
+	}
+	if !user.IsAdmin() {
 		filter.UserID = &user.ID
 	}
 
