@@ -95,6 +95,8 @@ func main() {
 
 	configService := services.NewConfigService(cfg, database.GetDB(), encryptionService)
 	oauthService := services.NewOAuthService(configService)
+	// Enable "mirror all my GitHub repos" on OAuth login.
+	oauthService.SetRepositoryService(repoService)
 
 	backupService := services.NewBackupService(cfg)
 	emailService := services.NewEmailService(cfg)

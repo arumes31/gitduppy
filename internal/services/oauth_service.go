@@ -24,11 +24,89 @@ import (
 type OAuthService struct {
 	db            *gorm.DB
 	configService *ConfigService
+	// repoService is used to import the authenticated user's GitHub repositories
+	// as mirrors. Wired via SetRepositoryService to avoid a constructor cycle.
+	repoService *RepositoryService
 
 	// googleProvider caches the Google OIDC provider so its discovery-document
 	// HTTP fetch happens once rather than on every login.
 	googleMu       sync.Mutex
 	googleProvider *oidc.Provider
+}
+
+// SetRepositoryService wires the repository service used to mirror GitHub repos.
+func (s *OAuthService) SetRepositoryService(rs *RepositoryService) {
+	s.repoService = rs
+}
+
+// GitHubRepo is the subset of the GitHub repositories API response we need.
+type GitHubRepo struct {
+	Name          string `json:"name"`
+	CloneURL      string `json:"clone_url"`
+	DefaultBranch string `json:"default_branch"`
+	Private       bool   `json:"private"`
+	Archived      bool   `json:"archived"`
+}
+
+// listGitHubRepos returns every repository owned by the authenticated user,
+// following pagination (capped to avoid an unbounded loop).
+func (s *OAuthService) listGitHubRepos(ctx context.Context, httpClient *http.Client) ([]GitHubRepo, error) {
+	var all []GitHubRepo
+	for page := 1; page <= 50; page++ {
+		url := fmt.Sprintf("https://api.github.com/user/repos?per_page=100&affiliation=owner&page=%d", page)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			resp.Body.Close()
+			return nil, fmt.Errorf("github repos request returned status %d", resp.StatusCode)
+		}
+		var batch []GitHubRepo
+		decodeErr := json.NewDecoder(resp.Body).Decode(&batch)
+		resp.Body.Close()
+		if decodeErr != nil {
+			return nil, fmt.Errorf("failed to decode github repos: %w", decodeErr)
+		}
+		all = append(all, batch...)
+		if len(batch) < 100 {
+			break
+		}
+	}
+	return all, nil
+}
+
+// MirrorAllGitHubRepos imports every repository owned by the authenticated GitHub
+// user as a mirror for userID (creating new ones, refreshing credentials on
+// existing ones). It is best-effort: a per-repo failure is skipped so one bad
+// repo cannot abort the batch. Returns the number of newly created mirrors.
+func (s *OAuthService) MirrorAllGitHubRepos(ctx context.Context, userID uuid.UUID, token *oauth2.Token) (int, error) {
+	if s.repoService == nil {
+		return 0, errors.New("repository service not configured")
+	}
+	httpClient := s.getHTTPClient(ctx, token)
+	repos, err := s.listGitHubRepos(ctx, httpClient)
+	if err != nil {
+		return 0, err
+	}
+	created := 0
+	for _, r := range repos {
+		if r.Archived || r.CloneURL == "" {
+			continue
+		}
+		isNew, upErr := s.repoService.UpsertGitHubMirror(ctx, userID, r.Name, r.CloneURL, r.DefaultBranch, r.Private, token.AccessToken)
+		if upErr != nil {
+			continue
+		}
+		if isNew {
+			created++
+		}
+	}
+	return created, nil
 }
 
 // googleOIDCProvider returns a cached Google OIDC provider, performing the
