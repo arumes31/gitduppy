@@ -420,11 +420,14 @@ func setupRouter(
 		webGroup.GET("/search", webHandler.Search)
 	}
 
-	// Health check endpoints (no auth required)
-	router.GET("/api/v1/health", healthHandler.GetHealth)
-	router.GET("/api/v1/health/live", healthHandler.GetHealthLive)
-	router.GET("/api/v1/health/ready", healthHandler.GetHealthReady)
-	router.GET("/api/v1/health/git-servers", gitHealthHandler.GetGitServerHealth)
+	// Health check endpoints (no auth required). They accept GET and HEAD because
+	// container healthchecks use `wget --spider` (a HEAD request), and Gin does not
+	// route HEAD to a GET-only handler (it would 404).
+	healthMethods := []string{http.MethodGet, http.MethodHead}
+	router.Match(healthMethods, "/api/v1/health", healthHandler.GetHealth)
+	router.Match(healthMethods, "/api/v1/health/live", healthHandler.GetHealthLive)
+	router.Match(healthMethods, "/api/v1/health/ready", healthHandler.GetHealthReady)
+	router.Match(healthMethods, "/api/v1/health/git-servers", gitHealthHandler.GetGitServerHealth)
 
 	// API v1 group
 	v1 := router.Group("/api/v1")

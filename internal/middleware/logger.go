@@ -73,7 +73,15 @@ func Logger(config *LoggerConfig) gin.HandlerFunc {
 	}
 }
 
-// GinLogger is a compatibility wrapper for gin's default logger.
+// GinLogger is a request logger based on gin's default logger, but it skips the
+// health-check endpoints. Container/orchestrator probes hit these every few
+// seconds, and logging each one buries the useful lines.
 func GinLogger() gin.HandlerFunc {
-	return gin.Logger()
+	return gin.LoggerWithConfig(gin.LoggerConfig{
+		SkipPaths: []string{
+			"/api/v1/health",
+			"/api/v1/health/live",
+			"/api/v1/health/ready",
+		},
+	})
 }

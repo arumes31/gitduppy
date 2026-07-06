@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/gitduppy/gitduppy/internal/config"
 	"github.com/gitduppy/gitduppy/internal/models"
@@ -20,8 +21,19 @@ var DB *gorm.DB
 func Connect(cfg *config.DatabaseConfig) error {
 	dsn := cfg.DSN()
 
-	// Configure GORM logger (can be made configurable later).
-	ormLogger := logger.Default
+	// Log slow queries and real errors, but not the expected "record not found"
+	// results — callers handle gorm.ErrRecordNotFound explicitly (e.g. optional
+	// system settings like maintenance_mode / paperbin_quota_gb), so logging each
+	// miss (with its SQL) is pure noise.
+	ormLogger := logger.New(
+		log.New(os.Stdout, "", log.LstdFlags),
+		logger.Config{
+			SlowThreshold:             200 * time.Millisecond,
+			LogLevel:                  logger.Warn,
+			IgnoreRecordNotFoundError: true,
+			Colorful:                  false,
+		},
+	)
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		Logger: ormLogger,
