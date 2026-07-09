@@ -186,6 +186,16 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 		return
 	}
 
+	// Re-issue the cookie so its Max-Age tracks the renewed server-side expiry;
+	// otherwise the browser keeps the original (shorter) lifetime and the client
+	// is signed out despite the session being extended. Same raw token, same
+	// hardened flags as at login.
+	maxAge := int(time.Until(session.Expiry).Seconds())
+	if maxAge < 0 {
+		maxAge = 0
+	}
+	setSessionCookie(c, sessionToken, maxAge)
+
 	// Return the caller's own raw token (from the cookie), never session.Token —
 	// which now holds the at-rest SHA-256 hash, not a usable token.
 	response.Success(c, gin.H{

@@ -144,12 +144,17 @@ func (s *Scheduler) scheduleCloneJobs() {
 	// Load the set of repositories that already have an unfinished job in a single
 	// query, rather than issuing one COUNT per repo each tick. Used below to avoid
 	// piling up duplicate clones into the same directory (a slow clone can span
-	// several ticks).
+	// several ticks). If this query fails the busy set would be empty and every
+	// eligible repo would be re-enqueued despite already having a running/pending
+	// job, so abort the tick rather than schedule duplicates.
 	var busyIDs []uuid.UUID
-	s.db.Model(&models.CloneJob{}).
+	if err := s.db.Model(&models.CloneJob{}).
 		Where("status IN ?", []string{"pending", "running"}).
 		Distinct().
-		Pluck("repository_id", &busyIDs)
+		Pluck("repository_id", &busyIDs).Error; err != nil {
+		s.logger.Error("failed to load busy repositories, skipping tick to avoid duplicate clones", zap.Error(err))
+		return
+	}
 	busy := make(map[uuid.UUID]struct{}, len(busyIDs))
 	for _, id := range busyIDs {
 		busy[id] = struct{}{}
@@ -181,7 +186,14 @@ func (s *Scheduler) scheduleCloneJobs() {
 				Status:       "pending",
 				CreatedAt:    time.Now().UTC(),
 			}
-			s.db.Create(job)
+			// Only enqueue a job that actually persisted: the worker updates the
+			// row by primary key, so an unpersisted job would silently no-op and
+			// the repo would never clone. Skip this repo on a failed insert and
+			// let the next tick retry it.
+			if err := s.db.Create(job).Error; err != nil {
+				s.logger.Error("failed to persist scheduled clone job", zap.String("repo", repo.Name), zap.Error(err))
+				continue
+			}
 			s.worker.Enqueue(job)
 			s.logger.Debug("enqueued clone job", zap.String("repo", repo.Name))
 		}

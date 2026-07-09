@@ -66,6 +66,13 @@ func ETag() gin.HandlerFunc {
 		etag := `W/"` + hex.EncodeToString(sum[:]) + `"`
 		orig.Header().Set("ETag", etag)
 
+		// These endpoints return per-user, session-authenticated content. Mark the
+		// response "private" so shared caches (proxies/CDNs) never store it, and
+		// "no-cache" so a client always revalidates via If-None-Match — which the
+		// ETag above answers with a 304 — rather than serving it without checking.
+		// Set on both the 200 and 304 paths (this runs before either is written).
+		orig.Header().Set("Cache-Control", "private, no-cache")
+
 		if ifNoneMatchContains(c.GetHeader("If-None-Match"), etag) {
 			orig.Header().Del("Content-Length")
 			orig.WriteHeader(http.StatusNotModified)

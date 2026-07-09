@@ -56,7 +56,7 @@ type WebhookDelivery struct {
 	HTTPStatus      *int      `json:"http_status,omitempty"`
 	ResponseBody    string    `gorm:"type:text" json:"response_body,omitempty"`
 	Success         bool      `gorm:"default:false" json:"success"`
-	Status          string    `gorm:"size:20;not null;default:pending" json:"status"`
+	Status          string    `gorm:"size:20;not null;default:'pending'" json:"status"`
 	AttemptNumber   int       `gorm:"default:1" json:"attempt_number"`
 	DeliveredAt     time.Time `json:"delivered_at"`
 

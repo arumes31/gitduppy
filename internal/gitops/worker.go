@@ -117,6 +117,14 @@ type CloneWorker struct {
 	inflight      sync.WaitGroup
 	shutdownGrace time.Duration
 
+	// inflightMu serializes inflight.Add against Stop() setting stopping. A worker
+	// admits a job (inflight.Add) only under this lock and only while stopping is
+	// false; Stop() takes the same lock to set stopping before it calls
+	// inflight.Wait(). That ordering makes every Add happen-before the Wait, closing
+	// the sync.WaitGroup hazard of growing the counter from zero during a Wait.
+	inflightMu sync.Mutex
+	stopping   bool
+
 	// repoLocks serializes clone/fetch work per on-disk repository path so two
 	// jobs for the same repository never run git operations concurrently (which
 	// would corrupt .git/index.lock, packed-refs, or the object store).
@@ -224,7 +232,15 @@ func (w *CloneWorker) Stop() {
 	// Phase 1: stop accepting new jobs. In-flight jobs continue running.
 	w.softStopOnce.Do(func() { close(w.softStop) })
 
-	// Phase 2: give in-flight jobs a bounded grace period to complete on their own.
+	// Phase 2: mark the worker stopping under inflightMu so no further job can be
+	// admitted, then give in-flight jobs a bounded grace period to complete. Setting
+	// stopping here (not merely closing softStop above) is what guarantees
+	// inflight.Add can never race this Wait: admit() takes the same lock and refuses
+	// once stopping is set, so every prior Add happened-before this point.
+	w.inflightMu.Lock()
+	w.stopping = true
+	w.inflightMu.Unlock()
+
 	drained := make(chan struct{})
 	go func() {
 		w.inflight.Wait()
@@ -312,6 +328,22 @@ func (w *CloneWorker) dispatch() {
 	}
 }
 
+// admit registers one job as in-flight unless a graceful stop has begun. It
+// returns false when the worker is stopping, in which case the caller must not
+// process the job (it is left "pending" for the next start to recover). The lock
+// pairs with Stop(), which sets stopping before calling inflight.Wait(), so the
+// Add here can never grow the WaitGroup counter from zero concurrently with that
+// Wait. On success the caller owns exactly one inflight.Done().
+func (w *CloneWorker) admit() bool {
+	w.inflightMu.Lock()
+	defer w.inflightMu.Unlock()
+	if w.stopping {
+		return false
+	}
+	w.inflight.Add(1)
+	return true
+}
+
 // worker is a goroutine that processes clone jobs.
 func (w *CloneWorker) worker(id int) {
 	defer w.wg.Done()
@@ -331,13 +363,13 @@ func (w *CloneWorker) worker(id int) {
 			if job == nil {
 				continue
 			}
-			// If a graceful stop started between dequeue and now, do not begin new
-			// work; leave the job "pending" for the next start to recover.
-			select {
-			case <-w.softStop:
+			// Register the job as in-flight before processing. admit() returns false
+			// if a graceful stop has begun (leaving the job "pending" for the next
+			// start to recover) and, on success, takes the same lock Stop() holds
+			// before inflight.Wait() — so the Add can never race that Wait.
+			if !w.admit() {
 				logger.Info("worker stopped")
 				return
-			default:
 			}
 			w.processJob(logger, job)
 		}
@@ -370,9 +402,9 @@ func cleanupStaleTempClones(logger *zap.Logger, finalPath string) {
 
 // processJob processes a single clone job.
 func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
-	// Count this job as in-flight so a graceful Stop() can wait for it to finish
-	// within the shutdown grace period before contexts are cancelled.
-	w.inflight.Add(1)
+	// The caller (worker) already registered this job as in-flight via admit(), so a
+	// graceful Stop() can wait for it within the shutdown grace period; release that
+	// count when we return.
 	defer w.inflight.Done()
 
 	logger.Info("processing clone job", zap.String("job_id", job.ID.String()))

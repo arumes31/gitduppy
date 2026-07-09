@@ -12,7 +12,9 @@ import (
 	"github.com/gitduppy/gitduppy/internal/models"
 	"github.com/gitduppy/gitduppy/pkg/crypto"
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // Account lockout policy for password logins. After maxFailedLoginAttempts
@@ -125,38 +127,52 @@ func (s *AuthService) Login(ctx context.Context, req *LoginRequest) (*LoginRespo
 
 	// Verify password
 	if user.PasswordHash == nil || !s.passwordService.Verify(*user.PasswordHash, req.Password) {
-		// Count the failure and, past the threshold, lock the account with a
-		// progressive backoff. Persist just the two affected columns to avoid a
-		// read-modify-write race clobbering other fields. The generic failure
-		// itself is audited (with client IP) by the caller as "auth.login_failed";
-		// only the lockout transition — which the caller cannot observe — is
-		// recorded here, as "login.locked".
-		user.FailedLoginAttempts++
-		updates := map[string]any{"failed_login_attempts": user.FailedLoginAttempts}
-		if user.FailedLoginAttempts >= maxFailedLoginAttempts {
+		// Count the failure atomically: a read-modify-write (read count, ++, write)
+		// lets two concurrent failures both persist the same value and undercount
+		// toward the lockout threshold, so increment in SQL and read the new count
+		// back via RETURNING to decide whether to lock. These writes are best-effort
+		// brute-force throttling — on error we log and still return the generic
+		// failure (never the DB error) so the security response is unchanged. The
+		// generic failure is audited (with client IP) by the caller as
+		// "auth.login_failed"; only the lockout transition is recorded here.
+		if err := s.db.Model(&user).
+			Clauses(clause.Returning{Columns: []clause.Column{{Name: "failed_login_attempts"}}}).
+			Update("failed_login_attempts", gorm.Expr("failed_login_attempts + 1")).Error; err != nil {
+			zap.L().Named("auth-service").Error("failed to record failed login attempt",
+				zap.String("user_id", user.ID.String()), zap.Error(err))
+		} else if user.FailedLoginAttempts >= maxFailedLoginAttempts {
 			lockedUntil := time.Now().UTC().Add(lockoutDuration(user.FailedLoginAttempts))
-			user.LockedUntil = &lockedUntil
-			updates["locked_until"] = lockedUntil
-			s.audit(ctx, &user.ID, "login.locked", map[string]any{
-				"username":     user.Username,
-				"locked_until": lockedUntil,
-				"failed_count": user.FailedLoginAttempts,
-			})
+			if err := s.db.Model(&user).Update("locked_until", lockedUntil).Error; err != nil {
+				zap.L().Named("auth-service").Error("failed to persist account lockout",
+					zap.String("user_id", user.ID.String()), zap.Error(err))
+			} else {
+				s.audit(ctx, &user.ID, "login.locked", map[string]any{
+					"username":     user.Username,
+					"locked_until": lockedUntil,
+					"failed_count": user.FailedLoginAttempts,
+				})
+			}
 		}
-		s.db.Model(&user).Updates(updates)
 		return nil, errors.New("invalid username or password")
 	}
 
 	// Successful login: clear any lockout state and record the last-login time.
+	// Correct credentials were supplied and the account is not locked (checked
+	// above), so a failure to clear this throttle bookkeeping must not block the
+	// login — log it and continue; the next successful login clears the stale
+	// counter.
 	now := time.Now().UTC()
 	user.LastLogin = &now
 	user.FailedLoginAttempts = 0
 	user.LockedUntil = nil
-	s.db.Model(&user).Updates(map[string]any{
+	if err := s.db.Model(&user).Updates(map[string]any{
 		"last_login":            now,
 		"failed_login_attempts": 0,
 		"locked_until":          nil,
-	})
+	}).Error; err != nil {
+		zap.L().Named("auth-service").Error("failed to reset login state after success",
+			zap.String("user_id", user.ID.String()), zap.Error(err))
+	}
 
 	// Generate session token
 	sessionToken, err := s.GenerateSessionToken()

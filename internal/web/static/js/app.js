@@ -252,6 +252,16 @@ if (document.getElementById('stats-container')) {
             renderQuota(d.paperbin_quota);
         } catch (error) {
             console.error('Failed to fetch dashboard overview:', error);
+            // The overview feeds every section, so failing it must not leave the
+            // stat cards stuck on their loading skeletons: strip the skeleton class
+            // and mark the (single-value) cards unavailable, and hide the quota
+            // banner. Timeline and jobs are containers, so they get full error UI.
+            document.querySelectorAll('.skeleton-text').forEach(el => el.classList.remove('skeleton-text'));
+            ['stat-total-repos', 'stat-success-clones', 'stat-failed-clones', 'stat-storage-used'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.textContent = '—';
+            });
+            renderQuota(null);
             if (timelineContainer) renderError(timelineContainer, error.message, window.fetchStats);
             if (jobsBody) renderError(jobsBody, error.message, window.fetchStats, { colspan: 4 });
         }
