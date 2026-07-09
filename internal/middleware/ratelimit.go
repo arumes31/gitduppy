@@ -116,18 +116,27 @@ func (rl *RateLimiter) getLimiter(key string, rps float64, burst int) *rateLimit
 }
 
 // limitFor picks a rate-limit category (key prefix + params) for a request path.
-// Authentication and expensive fan-out endpoints (global search, dashboard stats
-// which walk the DB/filesystem) get tighter budgets than ordinary API calls so a
-// single client cannot exhaust the server through them.
+// Authentication and expensive fan-out endpoints (global search) get tighter
+// budgets than ordinary API calls so a single client cannot exhaust the server
+// through them.
 func (rl *RateLimiter) limitFor(path string) (prefix string, rps float64, burst int) {
 	switch {
 	case strings.HasPrefix(path, "/api/v1/auth"),
 		strings.HasPrefix(path, "/api/v1/oauth"):
 		// Auth is the most abuse-prone surface (credential stuffing).
 		return "auth:", rl.rps / 6, max(1, rl.burst/6)
-	case strings.HasPrefix(path, "/api/v1/search"),
-		strings.HasPrefix(path, "/api/v1/dashboard"):
+	case strings.HasPrefix(path, "/api/v1/search"):
+		// Global search fans out across every repository's index, so keep it
+		// tight to stop one client from monopolizing that work.
 		return "expensive:", rl.rps / 3, max(1, rl.burst/3)
+	case strings.HasPrefix(path, "/api/v1/dashboard"):
+		// The dashboard renders one view by fanning out to ~4 of these cheap
+		// (single-digit-millisecond) read endpoints, and it is meant to be
+		// opened and refreshed often. The old "expensive" budget throttled a
+		// user after only a handful of views, so give the dashboard its own key
+		// with the full API budget: isolated from other API traffic, but large
+		// enough that ordinary navigation never trips the limiter.
+		return "dashboard:", rl.rps, rl.burst
 	default:
 		return "api:", rl.rps, rl.burst
 	}

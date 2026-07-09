@@ -12,7 +12,7 @@ func TestLimitForCategories(t *testing.T) {
 		{"/api/v1/auth/login", "auth:"},
 		{"/api/v1/oauth/github/login", "auth:"},
 		{"/api/v1/search", "expensive:"},
-		{"/api/v1/dashboard/stats", "expensive:"},
+		{"/api/v1/dashboard/stats", "dashboard:"},
 		{"/api/v1/repositories", "api:"},
 		{"/api/v1/health", "api:"},
 	}
@@ -30,6 +30,13 @@ func TestLimitForCategories(t *testing.T) {
 		case "expensive:":
 			if rps >= rl.rps {
 				t.Errorf("expensive tier rps %v should be below default %v", rps, rl.rps)
+			}
+		case "dashboard:":
+			// The dashboard is isolated on its own key but must stay generous:
+			// a single view fans out to several of these endpoints, so it uses
+			// the full API budget rather than a throttled fraction of it.
+			if rps != rl.rps || burst != rl.burst {
+				t.Errorf("dashboard tier should use full API budget, got rps=%v burst=%v", rps, burst)
 			}
 		case "api:":
 			if rps != rl.rps || burst != rl.burst {

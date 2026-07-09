@@ -1005,6 +1005,22 @@ if (repoBrowser) {
         try {
             const data = await apiCall(`/api/v1/repos/${REPO_ID}/refs`);
             allRefs = data.data || [];
+
+            // The configured branch (repo.branch, defaulted to "main" above) is
+            // not guaranteed to exist in the actual mirror — e.g. the repo is
+            // configured as "main" but its upstream default is "master". Asking
+            // the tree endpoint for a ref that doesn't resolve returns 400, so
+            // reconcile currentRef against the refs that really exist before the
+            // initial load.
+            const refNames = allRefs.map(r => r.name);
+            if (allRefs.length && !refNames.includes(currentRef)) {
+                const branches = allRefs.filter(r => r.type === 'branch').map(r => r.name);
+                currentRef = branches.includes('main') ? 'main'
+                    : branches.includes('master') ? 'master'
+                    : (branches[0] || allRefs[0].name);
+                document.getElementById('current-branch-label').textContent = currentRef;
+            }
+
             renderBranchList(allRefs);
         } catch (e) { /* ignore if not cloned yet */ }
 
