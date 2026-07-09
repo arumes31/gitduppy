@@ -46,13 +46,14 @@ func (s *HealthService) CheckGitServerHealth(ctx context.Context, url string) (*
 	var status string
 	var errorMessage string
 
-	if reqErr != nil {
+	switch {
+	case reqErr != nil:
 		status = "failed"
 		errorMessage = reqErr.Error()
-	} else if doErr != nil {
+	case doErr != nil:
 		status = "failed"
 		errorMessage = doErr.Error()
-	} else {
+	default:
 		defer resp.Body.Close()
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			status = "healthy"
@@ -69,7 +70,7 @@ func (s *HealthService) CheckGitServerHealth(ctx context.Context, url string) (*
 		Status:         status,
 		ResponseTimeMs: &responseTimeMs,
 		ErrorMessage:   &errorMessage,
-		CheckedAt:      endTime,
+		CheckedAt:      endTime.UTC(),
 	}
 
 	// Save to database

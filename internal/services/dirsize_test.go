@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestDirSize(t *testing.T) {
+func TestScanStorageTotal(t *testing.T) {
 	root := t.TempDir()
 	// Two files totalling 9 bytes across a nested directory.
 	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("hello"), 0o600); err != nil {
@@ -20,13 +20,13 @@ func TestDirSize(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := dirSize(root); got != 9 {
-		t.Errorf("dirSize = %d, want 9", got)
+	if got, _ := scanStorage(root); got != 9 {
+		t.Errorf("scanStorage total = %d, want 9", got)
 	}
 }
 
-func TestDirSizeMissingPathIsZero(t *testing.T) {
-	if got := dirSize(filepath.Join(t.TempDir(), "does-not-exist")); got != 0 {
-		t.Errorf("dirSize of missing path = %d, want 0", got)
+func TestScanStorageMissingPathIsZero(t *testing.T) {
+	if got, _ := scanStorage(filepath.Join(t.TempDir(), "does-not-exist")); got != 0 {
+		t.Errorf("scanStorage total of missing path = %d, want 0", got)
 	}
 }

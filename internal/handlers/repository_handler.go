@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"net/url"
@@ -11,7 +12,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gitduppy/gitduppy/internal/database"
 	"github.com/gitduppy/gitduppy/internal/gitops"
 	"github.com/gitduppy/gitduppy/internal/middleware"
 	"github.com/gitduppy/gitduppy/internal/models"
@@ -21,6 +21,7 @@ import (
 	"github.com/gitduppy/gitduppy/pkg/validator"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"gorm.io/gorm"
 )
 
 const stringTrue = "true"
@@ -31,20 +32,25 @@ type RepositoryHandler struct {
 	cloneService *services.CloneService
 	tagService   *services.TagService
 	auditService *services.AuditService
+	db           *gorm.DB
 }
 
-// NewRepositoryHandler creates a new repository handler.
+// NewRepositoryHandler creates a new repository handler. The *gorm.DB is injected
+// explicitly (rather than reached for via database.GetDB() inside handlers) so
+// the paperbin/search read paths that touch the DB directly are testable.
 func NewRepositoryHandler(
 	repoService *services.RepositoryService,
 	cloneService *services.CloneService,
 	tagService *services.TagService,
 	auditService *services.AuditService,
+	db *gorm.DB,
 ) *RepositoryHandler { //nolint:whitespace
 	return &RepositoryHandler{
 		repoService:  repoService,
 		cloneService: cloneService,
 		tagService:   tagService,
 		auditService: auditService,
+		db:           db,
 	}
 }
 
@@ -90,7 +96,7 @@ func (h *RepositoryHandler) ListRepositories(c *gin.Context) {
 
 	repos, total, err := h.repoService.ListRepositories(c, filter)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -177,7 +183,7 @@ func (h *RepositoryHandler) CreateRepository(c *gin.Context) {
 		TagIDs:               req.TagIDs,
 	}, user.ID)
 	if err != nil {
-		response.BadRequest(c, "CREATE_ERROR", err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -204,7 +210,7 @@ func (h *RepositoryHandler) UpdateRepository(c *gin.Context) {
 
 	repo, err := h.repoService.UpdateRepository(c, id, &req)
 	if err != nil {
-		response.BadRequest(c, "UPDATE_ERROR", err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -228,7 +234,7 @@ func (h *RepositoryHandler) DeleteRepository(c *gin.Context) {
 	repo, _ := h.repoService.GetRepositoryByID(c, id)
 
 	if deleteErr := h.repoService.DeleteRepository(c, id); deleteErr != nil {
-		response.BadRequest(c, "DELETE_ERROR", deleteErr.Error())
+		respondServiceError(c, deleteErr)
 		return
 	}
 
@@ -258,7 +264,7 @@ func (h *RepositoryHandler) SetRepositoryStatus(c *gin.Context) {
 	}
 
 	if statusErr := h.repoService.SetRepositoryStatus(c, id, req.IsActive); statusErr != nil {
-		response.BadRequest(c, "UPDATE_ERROR", statusErr.Error())
+		respondServiceError(c, statusErr)
 		return
 	}
 
@@ -274,7 +280,7 @@ func (h *RepositoryHandler) TriggerClone(c *gin.Context) {
 
 	job, err := h.cloneService.CreateCloneJob(c, id, "manual")
 	if err != nil {
-		response.BadRequest(c, "CREATE_ERROR", err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -292,10 +298,10 @@ func (h *RepositoryHandler) GetRepositoryLogs(c *gin.Context) {
 		return
 	}
 
-	limit := validator.ParseInt(c.Query("limit"), 100)
+	limit := parseLimitParam(c, "limit", 100, 500)
 	logs, err := h.cloneService.GetRepositoryLogs(c, id, limit)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -304,19 +310,19 @@ func (h *RepositoryHandler) GetRepositoryLogs(c *gin.Context) {
 
 // GetPaperbin handles GET /api/v1/repositories/paperbin.
 func (h *RepositoryHandler) GetPaperbin(c *gin.Context) {
-	db := database.GetDB()
+	db := h.db
 
 	// 1. Fetch soft-deleted repositories
 	var repos []models.Repository
 	if err := db.Unscoped().Where("deleted_at IS NOT NULL").Find(&repos).Error; err != nil {
-		response.InternalError(c, "Failed to fetch deleted repositories: "+err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
 	// 2. Fetch deleted branches
 	var branches []models.DeletedBranch
 	if err := db.Unscoped().Preload("Repository").Find(&branches).Error; err != nil {
-		response.InternalError(c, "Failed to fetch deleted branches: "+err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -334,7 +340,7 @@ func (h *RepositoryHandler) RestoreRepository(c *gin.Context) {
 	}
 
 	if err := h.repoService.RestoreRepository(c, id); err != nil {
-		response.BadRequest(c, "RESTORE_ERROR", err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -358,15 +364,14 @@ func (h *RepositoryHandler) PermanentDeleteRepository(c *gin.Context) {
 		return
 	}
 
-	db := database.GetDB()
 	var repo models.Repository
-	if err := db.Unscoped().First(&repo, id).Error; err != nil {
+	if err := h.db.Unscoped().First(&repo, id).Error; err != nil {
 		response.NotFound(c, "Repository not found")
 		return
 	}
 
 	if err := h.repoService.PermanentDeleteRepository(c, id); err != nil {
-		response.BadRequest(c, "DELETE_ERROR", err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -392,7 +397,7 @@ func (h *RepositoryHandler) RestoreBranch(c *gin.Context) {
 		return
 	}
 
-	db := database.GetDB()
+	db := h.db
 
 	var delBranch models.DeletedBranch
 	if err := db.First(&delBranch, branchID).Error; err != nil {
@@ -420,7 +425,8 @@ func (h *RepositoryHandler) RestoreBranch(c *gin.Context) {
 	}
 
 	if gitErr != nil {
-		response.InternalError(c, "Failed to recreate git branch: "+gitErr.Error())
+		logServerError(c, gitErr)
+		response.InternalError(c, "Failed to recreate git branch")
 		return
 	}
 
@@ -429,7 +435,7 @@ func (h *RepositoryHandler) RestoreBranch(c *gin.Context) {
 
 	// Delete DeletedBranch record
 	if err := db.Delete(&delBranch).Error; err != nil {
-		response.InternalError(c, "Failed to delete paperbin DB record: "+err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -455,7 +461,7 @@ func (h *RepositoryHandler) PermanentDeleteBranch(c *gin.Context) {
 		return
 	}
 
-	db := database.GetDB()
+	db := h.db
 
 	var delBranch models.DeletedBranch
 	if err := db.First(&delBranch, branchID).Error; err != nil {
@@ -475,7 +481,7 @@ func (h *RepositoryHandler) PermanentDeleteBranch(c *gin.Context) {
 	}
 
 	if err := db.Delete(&delBranch).Error; err != nil {
-		response.InternalError(c, "Failed to delete paperbin DB record: "+err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -504,6 +510,16 @@ var upgrader = websocket.Upgrader{
 		}
 		return strings.EqualFold(u.Host, r.Host)
 	},
+}
+
+// logFrame is the structured envelope for a single streamed log line. The
+// "type" field is a discriminator so future frame kinds (e.g. "status" or
+// "progress") can share the same socket without a breaking format change; the
+// current frontend renders "type":"log" and displays anything else raw.
+type logFrame struct {
+	Type string `json:"type"`
+	TS   string `json:"ts"`
+	Line string `json:"line"`
 }
 
 // StreamRepositoryLogs upgrades request to websocket and streams live progress logs.
@@ -568,7 +584,21 @@ func (h *RepositoryHandler) StreamRepositoryLogs(c *gin.Context) {
 			if !ok {
 				return
 			}
-			if err := writeMessage(websocket.TextMessage, []byte(msg)); err != nil {
+			// Wrap the raw line in a JSON frame so the client can render a
+			// timestamp and, later, distinguish additional frame kinds. Marshal
+			// properly rather than hand-building the string so log content with
+			// quotes/newlines stays valid JSON.
+			payload, err := json.Marshal(logFrame{
+				Type: "log",
+				TS:   time.Now().UTC().Format(time.RFC3339),
+				Line: msg,
+			})
+			if err != nil {
+				// A string field can't realistically fail to marshal; skip this
+				// line rather than tear down the stream if it somehow does.
+				continue
+			}
+			if err := writeMessage(websocket.TextMessage, payload); err != nil {
 				return
 			}
 		case <-ctx.Done():
@@ -600,10 +630,9 @@ func (h *RepositoryHandler) GlobalSearch(c *gin.Context) {
 		return
 	}
 
-	db := database.GetDB()
 	var repos []models.Repository
-	if err := db.Where("is_active = ?", true).Find(&repos).Error; err != nil {
-		response.InternalError(c, err.Error())
+	if err := h.db.Where("is_active = ?", true).Find(&repos).Error; err != nil {
+		respondServiceError(c, err)
 		return
 	}
 

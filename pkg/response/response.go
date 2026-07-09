@@ -8,11 +8,11 @@ import (
 
 // Response represents the standard API response envelope.
 type Response struct {
-	Success bool        `json:"success"`
-	Message string      `json:"message,omitempty"`
-	Data    interface{} `json:"data,omitempty"`
-	Errors  []Error     `json:"errors,omitempty"`
-	Meta    *Meta       `json:"meta,omitempty"`
+	Success bool    `json:"success"`
+	Message string  `json:"message,omitempty"`
+	Data    any     `json:"data,omitempty"`
+	Errors  []Error `json:"errors,omitempty"`
+	Meta    *Meta   `json:"meta,omitempty"`
 }
 
 // Error represents an API error.
@@ -31,7 +31,7 @@ type Meta struct {
 }
 
 // Success sends a success response.
-func Success(c *gin.Context, data interface{}) {
+func Success(c *gin.Context, data any) {
 	c.JSON(http.StatusOK, Response{
 		Success: true,
 		Data:    data,
@@ -39,7 +39,7 @@ func Success(c *gin.Context, data interface{}) {
 }
 
 // SuccessWithMessage sends a success response with a message.
-func SuccessWithMessage(c *gin.Context, message string, data interface{}) {
+func SuccessWithMessage(c *gin.Context, message string, data any) {
 	c.JSON(http.StatusOK, Response{
 		Success: true,
 		Message: message,
@@ -48,7 +48,7 @@ func SuccessWithMessage(c *gin.Context, message string, data interface{}) {
 }
 
 // SuccessWithMeta sends a success response with pagination metadata.
-func SuccessWithMeta(c *gin.Context, data interface{}, meta *Meta) {
+func SuccessWithMeta(c *gin.Context, data any, meta *Meta) {
 	c.JSON(http.StatusOK, Response{
 		Success: true,
 		Data:    data,
@@ -57,7 +57,7 @@ func SuccessWithMeta(c *gin.Context, data interface{}, meta *Meta) {
 }
 
 // Created sends a 201 Created response.
-func Created(c *gin.Context, data interface{}) {
+func Created(c *gin.Context, data any) {
 	c.JSON(http.StatusCreated, Response{
 		Success: true,
 		Data:    data,
@@ -65,7 +65,7 @@ func Created(c *gin.Context, data interface{}) {
 }
 
 // Accepted sends a 202 Accepted response.
-func Accepted(c *gin.Context, data interface{}) {
+func Accepted(c *gin.Context, data any) {
 	c.JSON(http.StatusAccepted, Response{
 		Success: true,
 		Data:    data,

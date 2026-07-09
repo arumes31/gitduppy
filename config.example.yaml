@@ -21,8 +21,22 @@ database:
   user: "gitmirrors"
   password: ""
   sslmode: "disable"
+  # Connection pool sizing. Each gitduppy replica opens up to max_open_conns
+  # connections to Postgres, so size these against Postgres `max_connections`
+  # (default 100), leaving headroom for other clients and for superuser/admin
+  # connections: replicas * max_open_conns must stay comfortably below it. For
+  # example, with the default max_connections=100, four replicas at 25 already
+  # reach 100 — lower max_open_conns (or raise Postgres max_connections) before
+  # scaling out further.
   max_open_conns: 25
+  # Idle connections kept warm for reuse. Keep <= max_open_conns. Higher values
+  # cut connection setup latency under bursty load at the cost of holding idle
+  # server-side connections; 5 is a reasonable default for a single replica.
   max_idle_conns: 5
+  # Maximum lifetime of a pooled connection before it is recycled. Bounds the age
+  # of connections so load rebalances after a Postgres failover and stale
+  # server-side state does not accumulate; keep it below any proxy/database idle
+  # timeout.
   conn_max_lifetime: "1h"
 
 security:
@@ -30,6 +44,10 @@ security:
   session_secret: ""  # exactly 32 chars for session signing (openssl rand -hex 16)
   csrf_key: ""  # exactly 32 chars for CSRF tokens (openssl rand -hex 16)
   session_duration: "24h"
+  # Force the Secure flag on the session cookie. When omitted it is derived from
+  # server.base_url (true for https://, false otherwise). Override here or via
+  # GITMIRRORS_SECURITY_COOKIE_SECURE (e.g. set true behind a TLS-terminating proxy).
+  # cookie_secure: false
   rate_limit:
     auth_requests_per_minute: 10
     api_requests_per_minute: 60

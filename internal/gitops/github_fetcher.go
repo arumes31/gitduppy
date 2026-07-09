@@ -25,7 +25,7 @@ import (
 const maxMediaBytes = 100 << 20 // 100 MB
 
 type cacheEntry struct {
-	value      interface{}
+	value      any
 	expiration time.Time
 }
 
@@ -108,7 +108,7 @@ type RepositoryInfo struct {
 	Visibility  string // "public" or "private"
 }
 
-func (f *GitHubMetadataFetcher) getCache(key string) (interface{}, bool) {
+func (f *GitHubMetadataFetcher) getCache(key string) (any, bool) {
 	val, ok := f.cache.Load(key)
 	if !ok {
 		return nil, false
@@ -121,7 +121,7 @@ func (f *GitHubMetadataFetcher) getCache(key string) (interface{}, bool) {
 	return entry.value, true
 }
 
-func (f *GitHubMetadataFetcher) setCache(key string, val interface{}, ttl time.Duration) {
+func (f *GitHubMetadataFetcher) setCache(key string, val any, ttl time.Duration) {
 	f.cache.Store(key, cacheEntry{
 		value:      val,
 		expiration: time.Now().Add(ttl),

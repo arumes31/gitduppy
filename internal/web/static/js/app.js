@@ -25,17 +25,97 @@ function showToast(message, type = 'success') {
     }, 3000);
 }
 
-// API Helper
+// ============================================================
+// API HELPER (centralized fetch + caching)
+// ============================================================
+// Item 51: a tiny module-level TTL cache for GET responses, keyed by URL.
+// Within API_CACHE_TTL a repeated GET is served from memory with no network
+// hit (kills rapid-navigation refetch storms); after the TTL we revalidate
+// with If-None-Match when an ETag was captured and reuse the body on 304.
+// The cache is capped at API_CACHE_MAX entries and evicts oldest-first (Map
+// preserves insertion order).
+const API_CACHE = new Map();
+const API_CACHE_TTL = 5000; // ms
+const API_CACHE_MAX = 50;
+
+// makeApiError builds a structured Error {status, code, message} so callers can
+// branch on the HTTP status / server error code while still using err.message.
+function makeApiError(status, code, message) {
+    const err = new Error(message || 'Request failed');
+    err.status = status;
+    err.code = code || '';
+    return err;
+}
+
+// apiCall is the single entry point for JSON API requests. It handles:
+//   (91a) 429 backoff — honor Retry-After (capped at 10s) and retry ONCE;
+//   (91b) 401 — redirect to /login for API calls (except the login call itself);
+//   (91c) structured errors — {status, code, message} parsed from the
+//         {success:false, errors:[{code,message}]} envelope;
+//   (51)  GET caching + If-None-Match revalidation (bypassed with {fresh:true}).
+// Cookies ride along automatically (same-origin), so no auth header is added.
+// There is currently no CSRF token scheme wired on the server, so none is sent.
 async function apiCall(endpoint, options = {}) {
+    const method = (options.method || 'GET').toUpperCase();
+    const isGet = method === 'GET';
+    const fresh = options.fresh === true;
+
+    // Serve a still-fresh GET straight from cache without a network round trip.
+    if (isGet && !fresh) {
+        const hit = API_CACHE.get(endpoint);
+        if (hit && hit.expires > Date.now()) {
+            return hit.body;
+        }
+    }
+
+    const buildHeaders = () => {
+        const headers = { 'Content-Type': 'application/json', ...options.headers };
+        if (isGet && !fresh) {
+            const hit = API_CACHE.get(endpoint);
+            if (hit && hit.etag) headers['If-None-Match'] = hit.etag;
+        }
+        return headers;
+    };
+
+    const doFetch = () => fetch(endpoint, { ...options, method, headers: buildHeaders() });
+
     try {
-        const response = await fetch(endpoint, {
-            ...options,
-            headers: {
-                'Content-Type': 'application/json',
-                ...options.headers
+        let response = await doFetch();
+
+        // (91a) Rate limited: wait out Retry-After (bounded) and retry once.
+        if (response.status === 429) {
+            const retryAfter = parseInt(response.headers.get('Retry-After'), 10);
+            const waitSec = Math.min(Number.isNaN(retryAfter) ? 1 : retryAfter, 10);
+            await new Promise(r => setTimeout(r, waitSec * 1000));
+            response = await doFetch();
+            if (response.status === 429) {
+                showToast('Rate limited — retrying later', 'error');
+                throw makeApiError(429, 'RATE_LIMITED', 'Rate limited — please retry in a moment');
             }
-        });
-        
+        }
+
+        // (51) Not Modified: reuse the cached body and refresh its TTL.
+        if (response.status === 304 && isGet) {
+            const hit = API_CACHE.get(endpoint);
+            if (hit) {
+                hit.expires = Date.now() + API_CACHE_TTL;
+                return hit.body;
+            }
+            // Cache entry vanished under us — re-request without the validator.
+            response = await fetch(endpoint, {
+                ...options,
+                method,
+                headers: { 'Content-Type': 'application/json', ...options.headers }
+            });
+        }
+
+        // (91b) Session gone on an authenticated call — go to login. The login
+        // endpoint's own 401 means "bad credentials" and must surface inline.
+        if (response.status === 401 && endpoint !== '/api/v1/auth/login') {
+            window.location.href = '/login';
+            throw makeApiError(401, 'UNAUTHORIZED', 'Session expired — please sign in again');
+        }
+
         // Parse defensively: an error response from a proxy/middleware may be
         // HTML or empty, in which case response.json() would throw a cryptic
         // SyntaxError before the !response.ok branch runs.
@@ -46,13 +126,37 @@ async function apiCall(endpoint, options = {}) {
         }
 
         if (!response.ok) {
-            throw new Error(data.message || `Request failed (${response.status})`);
+            // (91c) Prefer the first structured error from the envelope; fall
+            // back to a top-level message, then a generic status message.
+            const envErr = (data && Array.isArray(data.errors) && data.errors.length) ? data.errors[0] : null;
+            const message = (envErr && envErr.message) || data.message || `Request failed (${response.status})`;
+            const code = (envErr && envErr.code) || '';
+            showToast(message, 'error');
+            throw makeApiError(response.status, code, message);
+        }
+
+        // (51) Cache successful GET bodies (with the ETag when the server sent
+        // one). Re-insert to keep insertion order = recency, then evict oldest.
+        if (isGet) {
+            const etag = response.headers.get('ETag') || '';
+            API_CACHE.delete(endpoint);
+            API_CACHE.set(endpoint, { body: data, etag, expires: Date.now() + API_CACHE_TTL });
+            while (API_CACHE.size > API_CACHE_MAX) {
+                API_CACHE.delete(API_CACHE.keys().next().value);
+            }
         }
 
         return data;
     } catch (error) {
-        showToast(error.message, 'error');
-        throw error;
+        // A structured error (thrown above) already toasted — just propagate.
+        // Anything without a .status is a network/transport failure: toast once
+        // and rethrow it in the same structured shape callers expect.
+        if (error && typeof error.status !== 'undefined') {
+            throw error;
+        }
+        const netErr = makeApiError(0, 'NETWORK', (error && error.message) || 'Network error');
+        showToast(netErr.message, 'error');
+        throw netErr;
     }
 }
 
@@ -104,56 +208,66 @@ if (logoutBtn) {
 
 // Dashboard
 if (document.getElementById('stats-container')) {
-    window.fetchStats = async () => {
-        try {
-            const data = await apiCall('/api/v1/dashboard/stats');
-            
-            // Remove skeleton classes
-            document.querySelectorAll('.skeleton-text').forEach(el => {
-                el.classList.remove('skeleton-text');
-            });
-            
-            document.getElementById('stat-total-repos').textContent = data.data.total_repositories || 0;
-            document.getElementById('stat-success-clones').textContent = data.data.successful_clones || 0;
-            document.getElementById('stat-failed-clones').textContent = data.data.failed_clones || 0;
-            
-            // Format storage (bytes to GB)
-            const storageBytes = data.data.total_storage_bytes || 0;
-            const storageGB = (storageBytes / (1024 * 1024 * 1024)).toFixed(2);
-            document.getElementById('stat-storage-used').textContent = `${storageGB} GB`;
-            
-            // Fetch jobs
-            fetchJobs();
-            fetchAndRenderTimeline();
+    // Render the four stat cards from the overview payload's stats section.
+    function renderStats(stats) {
+        stats = stats || {};
+        // Remove skeleton classes
+        document.querySelectorAll('.skeleton-text').forEach(el => {
+            el.classList.remove('skeleton-text');
+        });
 
-            // Fetch paperbin quota and warning
-            try {
-                const quotaData = await apiCall('/api/v1/dashboard/paperbin-quota');
-                const banner = document.getElementById('quota-warning-banner');
-                if (banner) {
-                    banner.style.display = quotaData.data && quotaData.data.exceeded ? 'flex' : 'none';
-                }
-            } catch (e) {
-                console.error('Failed to fetch paperbin quota status:', e);
-            }
+        document.getElementById('stat-total-repos').textContent = stats.total_repositories || 0;
+        document.getElementById('stat-success-clones').textContent = stats.successful_clones || 0;
+        document.getElementById('stat-failed-clones').textContent = stats.failed_clones || 0;
+
+        // Format storage (bytes to GB)
+        const storageBytes = stats.total_storage_bytes || 0;
+        const storageGB = (storageBytes / (1024 * 1024 * 1024)).toFixed(2);
+        document.getElementById('stat-storage-used').textContent = `${storageGB} GB`;
+    }
+
+    // Show/hide the paperbin over-quota banner from the overview payload.
+    function renderQuota(quota) {
+        const banner = document.getElementById('quota-warning-banner');
+        if (banner) {
+            banner.style.display = quota && quota.exceeded ? 'flex' : 'none';
+        }
+    }
+
+    // Single combined dashboard load: one /dashboard/overview call feeds all four
+    // sections (stats, recent jobs, timeline, paperbin quota) instead of the
+    // previous four-request fan-out. Kept on window so a manual refresh reloads
+    // everything at once.
+    window.fetchStats = async () => {
+        const timelineContainer = document.getElementById('timeline-chart-container');
+        const jobsBody = document.getElementById('jobs-body');
+        if (timelineContainer) renderLoading(timelineContainer, 'Loading timeline data...');
+
+        try {
+            const res = await apiCall('/api/v1/dashboard/overview');
+            const d = res.data || {};
+            renderStats(d.stats);
+            renderJobs(d.recent_jobs || []);
+            renderTimeline(d.timeline || []);
+            renderQuota(d.paperbin_quota);
         } catch (error) {
-            console.error('Failed to fetch stats:', error);
+            console.error('Failed to fetch dashboard overview:', error);
+            if (timelineContainer) renderError(timelineContainer, error.message, window.fetchStats);
+            if (jobsBody) renderError(jobsBody, error.message, window.fetchStats, { colspan: 4 });
         }
     };
 
-    async function fetchAndRenderTimeline() {
+    // Renders the timeline (Gantt-style) bars from the overview timeline array.
+    function renderTimeline(jobs) {
         const container = document.getElementById('timeline-chart-container');
         if (!container) return;
 
-        try {
-            const res = await apiCall('/api/v1/dashboard/timeline?limit=50');
-            const jobs = res.data || [];
-            if (jobs.length === 0) {
-                container.innerHTML = '<p class="text-muted text-center py-4">No recent jobs to display on timeline.</p>';
-                return;
-            }
+        if (!jobs || jobs.length === 0) {
+            renderEmpty(container, 'No recent jobs to display on timeline.');
+            return;
+        }
 
-            container.innerHTML = jobs.map(job => {
+        container.innerHTML = jobs.map(job => {
                 const repoName = escHtml(job.repository ? job.repository.name : 'Unknown');
                 const rawStatus = job.status || '';
                 const status = escHtml(rawStatus);
@@ -175,24 +289,21 @@ if (document.getElementById('stats-container')) {
                         <span style="position:absolute; left:8px; top:2px; font-size:0.75rem; color:#fff; font-weight:600; text-shadow:0 1px 2px rgba(0,0,0,0.8);">${duration} (${status})</span>
                     </div>
                 </div>`;
-            }).join('');
-        } catch (e) {
-            container.innerHTML = '<p class="text-muted text-center py-4">Failed to load timeline data.</p>';
-        }
+        }).join('');
     }
-    
-    async function fetchJobs() {
-        try {
-            const data = await apiCall('/api/v1/dashboard/recent-jobs?limit=5');
-            const tbody = document.getElementById('jobs-body');
-            tbody.innerHTML = '';
-            
-            if (!data.data || data.data.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-4">No recent jobs</td></tr>';
-                return;
-            }
-            
-            data.data.forEach(job => {
+
+    // Renders the recent-jobs table body from the overview recent_jobs array.
+    function renderJobs(jobs) {
+        const tbody = document.getElementById('jobs-body');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        if (!jobs || jobs.length === 0) {
+            renderEmpty(tbody, 'No recent jobs', { colspan: 4 });
+            return;
+        }
+
+        jobs.forEach(job => {
                 const statusColor = job.status === 'success' ? 'var(--success)' : 
                                    (job.status === 'failed' ? 'var(--danger)' : 'var(--warning)');
                 
@@ -214,12 +325,9 @@ if (document.getElementById('stats-container')) {
                     <td>${duration}</td>
                 `;
                 tbody.appendChild(tr);
-            });
-        } catch (error) {
-            console.error('Failed to fetch jobs:', error);
-        }
+        });
     }
-    
+
     // Initial fetch
     fetchStats();
 }
@@ -588,13 +696,16 @@ const reposGrid = document.getElementById('repos-grid');
 if (reposGrid) {
     let allRepos = [];
 
-    async function loadRepos() {
+    async function loadRepos(opts = {}) {
+        renderLoading(reposGrid, 'Loading repositories...');
         try {
-            const data = await apiCall('/api/v1/repositories?per_page=100');
+            // Post-action reloads pass { fresh: true } to bypass the short GET
+            // cache so a just-added repo shows up immediately.
+            const data = await apiCall('/api/v1/repositories?per_page=100', { fresh: opts.fresh === true });
             allRepos = data.data || [];
             renderRepos(allRepos);
         } catch (e) {
-            reposGrid.innerHTML = '<p class="text-muted">Failed to load repositories.</p>';
+            renderError(reposGrid, e.message || 'Failed to load repositories.', () => loadRepos({ fresh: true }));
         }
     }
 
@@ -697,7 +808,9 @@ if (reposGrid) {
         deletedBranchesBody.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-muted">Loading pruned branches...</td></tr>';
         
         try {
-            const data = await apiCall('/api/v1/repositories/paperbin');
+            // Always fresh: this view is reloaded right after restore/purge
+            // actions, so a stale cached copy would show already-removed items.
+            const data = await apiCall('/api/v1/repositories/paperbin', { fresh: true });
             const payload = data.data || { repositories: [], branches: [] };
             
             // Render Deleted Repositories
@@ -884,7 +997,7 @@ if (reposGrid) {
             });
             showToast('Repository added successfully');
             closeAddRepoModal();
-            loadRepos();
+            loadRepos({ fresh: true });
         } catch (error) {
             console.error(error);
         }
@@ -942,7 +1055,24 @@ if (repoBrowser) {
         logWS = new WebSocket(wsUrl);
         
         logWS.onmessage = (event) => {
-            logsConsole.textContent += event.data + '\n';
+            // Item 76: log lines arrive as JSON frames {type:"log", ts, line}.
+            // Render "[HH:MM:SS] line" from the timestamp; fall back to the raw
+            // payload for anything unparseable or of an unknown frame type so a
+            // future/unexpected frame is still visible rather than dropped.
+            let text;
+            try {
+                const frame = JSON.parse(event.data);
+                if (frame && frame.type === 'log' && typeof frame.line === 'string') {
+                    const t = frame.ts ? new Date(frame.ts) : null;
+                    const stamp = (t && !isNaN(t.getTime())) ? t.toTimeString().slice(0, 8) : '';
+                    text = stamp ? `[${stamp}] ${frame.line}` : frame.line;
+                } else {
+                    text = event.data;
+                }
+            } catch (_) {
+                text = event.data;
+            }
+            logsConsole.textContent += text + '\n';
             logsConsole.scrollTop = logsConsole.scrollHeight;
         };
 
@@ -976,7 +1106,7 @@ if (repoBrowser) {
     };
 
     window.downloadRepoZip = function() {
-        window.location.href = `/api/v1/repos/${REPO_ID}/download?ref=${encodeURIComponent(currentRef)}`;
+        window.location.href = `/api/v1/repositories/${REPO_ID}/download?ref=${encodeURIComponent(currentRef)}`;
     };
 
     async function initRepoBrowser() {
@@ -1003,7 +1133,7 @@ if (repoBrowser) {
 
         // Load refs
         try {
-            const data = await apiCall(`/api/v1/repos/${REPO_ID}/refs`);
+            const data = await apiCall(`/api/v1/repositories/${REPO_ID}/refs`);
             allRefs = data.data || [];
 
             // The configured branch (repo.branch, defaulted to "main" above) is
@@ -1083,17 +1213,19 @@ if (repoBrowser) {
 
     async function loadTree(path, ref) {
         currentPath = path;
-        document.getElementById('file-tree-loading').style.display = 'flex';
+        const loadingEl = document.getElementById('file-tree-loading');
+        loadingEl.style.display = 'flex';
         document.getElementById('file-table').style.display = 'none';
         const commitBar = document.getElementById('latest-commit-bar');
         commitBar.style.display = 'none';
 
         updateBreadcrumb(path);
+        renderLoading(loadingEl, 'Loading files...');
 
         try {
             const params = new URLSearchParams({ ref: ref || currentRef });
             if (path) params.set('path', path);
-            const data = await apiCall(`/api/v1/repos/${REPO_ID}/tree?${params}`);
+            const data = await apiCall(`/api/v1/repositories/${REPO_ID}/tree?${params}`);
             const { entries, commit } = data.data;
 
             // Update commit bar
@@ -1108,7 +1240,8 @@ if (repoBrowser) {
 
             renderFileTable(entries, path);
         } catch (e) {
-            document.getElementById('file-tree-loading').innerHTML = `<span class="text-muted">⚠ ${escHtml(e.message || 'Could not load repository — has it been cloned yet?')}</span>`;
+            loadingEl.style.display = 'flex';
+            renderError(loadingEl, e.message || 'Could not load repository — has it been cloned yet?', () => loadTree(path, ref));
         }
     }
 
@@ -1119,7 +1252,7 @@ if (repoBrowser) {
 
         if (!entries || entries.length === 0) {
             loading.style.display = 'flex';
-            loading.innerHTML = '<span class="text-muted">This directory is empty.</span>';
+            renderEmpty(loading, 'This directory is empty.');
             return;
         }
 
@@ -1199,7 +1332,7 @@ if (repoBrowser) {
 
         try {
             const params = new URLSearchParams({ ref: currentRef, path });
-            const data = await apiCall(`/api/v1/repos/${REPO_ID}/blob?${params}`);
+            const data = await apiCall(`/api/v1/repositories/${REPO_ID}/blob?${params}`);
             const file = data.data;
             document.getElementById('fc-size').textContent = formatSize(file.size);
             if (file.is_binary) {
@@ -1241,7 +1374,7 @@ if (repoBrowser) {
         list.innerHTML = '<div class="text-muted text-center py-4"><i data-lucide="loader" class="spin"></i> Loading commits...</div>';
         lucide.createIcons();
         try {
-            const data = await apiCall(`/api/v1/repos/${REPO_ID}/commits?ref=${currentRef}&limit=30`);
+            const data = await apiCall(`/api/v1/repositories/${REPO_ID}/commits?ref=${currentRef}&limit=30`);
             const commits = data.data || [];
             commitsLoaded = true;
             if (!commits.length) {
@@ -1279,7 +1412,7 @@ if (commitPage) {
 
     async function loadCommitDetail() {
         try {
-            const data = await apiCall(`/api/v1/repos/${REPO_ID}/commit/${SHA}`);
+            const data = await apiCall(`/api/v1/repositories/${REPO_ID}/commit/${SHA}`);
             const c = data.data;
 
             document.getElementById('commit-sha-label').textContent = c.short_sha;
@@ -1370,6 +1503,75 @@ if (commitPage) {
     }
 
     loadCommitDetail();
+}
+
+// ============================================================
+// LOADING / EMPTY / ERROR STATE HELPERS (item 95)
+// ============================================================
+// Consistent state blocks reused across the dashboard, repo list, file browser,
+// and search views. They deliberately reuse existing utility classes
+// (.text-muted, .text-center, .py-4, .spin) rather than inventing new styles.
+// Each helper renders either a <div> block or, when the target is a <tbody> (or
+// an explicit { colspan } is given), a full-width table row so the markup stays
+// valid inside a table.
+function stateIsRow(container, colspan) {
+    return (container && container.tagName === 'TBODY') || !!colspan;
+}
+
+function renderLoading(container, label = 'Loading...', opts = {}) {
+    if (!container) return;
+    const inner = `<i data-lucide="loader" class="spin"></i> <span>${escHtml(label)}</span>`;
+    if (stateIsRow(container, opts.colspan)) {
+        container.innerHTML = `<tr><td colspan="${opts.colspan || 4}" class="text-center text-muted py-4">${inner}</td></tr>`;
+    } else {
+        container.innerHTML = `<div class="text-muted text-center py-4">${inner}</div>`;
+    }
+    if (window.lucide) lucide.createIcons();
+}
+
+function renderEmpty(container, message = 'Nothing to show.', opts = {}) {
+    if (!container) return;
+    if (stateIsRow(container, opts.colspan)) {
+        container.innerHTML = `<tr><td colspan="${opts.colspan || 4}" class="text-center text-muted py-4">${escHtml(message)}</td></tr>`;
+    } else {
+        container.innerHTML = `<div class="text-muted text-center py-4">${escHtml(message)}</div>`;
+    }
+}
+
+// renderError shows the (structured) failure message and, when a retryFn is
+// given, a Retry button wired via addEventListener — never an inline onclick —
+// so it stays CSP-friendly.
+function renderError(container, message, retryFn, opts = {}) {
+    if (!container) return;
+
+    const content = document.createElement('div');
+    const msg = document.createElement('div');
+    msg.textContent = message || 'Something went wrong.';
+    content.appendChild(msg);
+
+    if (typeof retryFn === 'function') {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn btn-secondary btn-sm';
+        btn.style.marginTop = '10px';
+        btn.textContent = 'Retry';
+        btn.addEventListener('click', retryFn);
+        content.appendChild(btn);
+    }
+
+    container.innerHTML = '';
+    if (stateIsRow(container, opts.colspan)) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = opts.colspan || 4;
+        td.className = 'text-center text-muted py-4';
+        td.appendChild(content);
+        tr.appendChild(td);
+        container.appendChild(tr);
+    } else {
+        content.className = 'text-muted text-center py-4';
+        container.appendChild(content);
+    }
 }
 
 // ============================================================

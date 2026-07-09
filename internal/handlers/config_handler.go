@@ -185,7 +185,7 @@ func (h *ConfigHandler) UpdateQuota(c *gin.Context) {
 	}
 
 	if err := h.configService.SetSetting(c, "paperbin_quota_gb", quotaStr, "Paperbin Storage Quota in GB", false); err != nil {
-		response.InternalError(c, err.Error())
+		respondServiceError(c, err)
 		return
 	}
 

@@ -79,7 +79,7 @@ func (s *AuditService) ListAuditLogs(_ context.Context, filter *AuditFilter) ([]
 }
 
 // Log creates a new audit log entry.
-func (s *AuditService) Log(_ context.Context, userID *uuid.UUID, repositoryID *uuid.UUID, action string, details interface{}, ipAddress, userAgent string) error {
+func (s *AuditService) Log(_ context.Context, userID *uuid.UUID, repositoryID *uuid.UUID, action string, details any, ipAddress, userAgent string) error {
 	var detailsJSON string
 	if details != nil {
 		bytes, err := json.Marshal(details)
@@ -98,14 +98,14 @@ func (s *AuditService) Log(_ context.Context, userID *uuid.UUID, repositoryID *u
 		Details:      detailsJSON,
 		IPAddress:    &ipAddress,
 		UserAgent:    &userAgent,
-		CreatedAt:    time.Now(),
+		CreatedAt:    time.Now().UTC(),
 	}
 
 	return s.db.Create(log).Error
 }
 
 // LogAction logs a user action with the given context.
-func (s *AuditService) LogAction(ctx context.Context, userID *uuid.UUID, repositoryID *uuid.UUID, action string, details map[string]interface{}, c interface{}) error {
+func (s *AuditService) LogAction(ctx context.Context, userID *uuid.UUID, repositoryID *uuid.UUID, action string, details map[string]any, c any) error {
 	var ipAddress, userAgent string
 
 	// Try to extract IP and UserAgent from gin context if available

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 // AuditLog represents an audit log entry for tracking user actions.
@@ -25,4 +26,13 @@ type AuditLog struct {
 // TableName specifies the table name for the AuditLog model.
 func (AuditLog) TableName() string {
 	return "audit_logs"
+}
+
+// BeforeCreate assigns a UUID primary key when one was not set explicitly (same
+// rationale as Tag.BeforeCreate).
+func (a *AuditLog) BeforeCreate(*gorm.DB) error {
+	if a.ID == uuid.Nil {
+		a.ID = uuid.New()
+	}
+	return nil
 }

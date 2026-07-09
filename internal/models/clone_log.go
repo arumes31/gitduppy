@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 // CloneLog represents a detailed log entry for a clone job.
@@ -21,4 +22,13 @@ type CloneLog struct {
 // TableName specifies the table name for the CloneLog model.
 func (CloneLog) TableName() string {
 	return "clone_logs"
+}
+
+// BeforeCreate assigns a UUID primary key when one was not set explicitly (same
+// rationale as Tag.BeforeCreate).
+func (l *CloneLog) BeforeCreate(*gorm.DB) error {
+	if l.ID == uuid.Nil {
+		l.ID = uuid.New()
+	}
+	return nil
 }

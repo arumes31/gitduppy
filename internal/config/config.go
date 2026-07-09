@@ -71,6 +71,11 @@ type SecurityConfig struct {
 	SessionDuration time.Duration   `mapstructure:"session_duration"`
 	RateLimit       RateLimitConfig `mapstructure:"rate_limit"`
 	HSTSMaxAge      int             `mapstructure:"hsts_max_age"` // HSTS max age in seconds.
+	// CookieSecure forces the Secure flag on the session cookie. When it is not
+	// set explicitly (config file or GITMIRRORS_SECURITY_COOKIE_SECURE) it is
+	// derived at load time from server.base_url — true for an https:// URL, false
+	// otherwise — so HTTPS deployments get Secure cookies without extra config.
+	CookieSecure bool `mapstructure:"cookie_secure"`
 }
 
 // RateLimitConfig holds rate limiting configuration.
@@ -219,13 +224,22 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
 	}
 
+	// Derive the session-cookie Secure flag from the base_url scheme unless it was
+	// set explicitly. No viper default is registered for the key, so IsSet is true
+	// only when the operator provided it via config file or GITMIRRORS_SECURITY_
+	// COOKIE_SECURE; otherwise an https:// base_url implies Secure cookies.
+	if !v.IsSet("security.cookie_secure") {
+		config.Security.CookieSecure = strings.HasPrefix(
+			strings.ToLower(strings.TrimSpace(config.Server.BaseURL)), "https://")
+	}
+
 	return &config, nil
 }
 
 // bindEnvs walks a (possibly nested) struct and calls v.BindEnv for every leaf
 // field, using the dotted mapstructure path as the key. This makes AutomaticEnv
 // work with Unmarshal even for keys that have no default value set.
-func bindEnvs(v *viper.Viper, iface interface{}, parts ...string) {
+func bindEnvs(v *viper.Viper, iface any, parts ...string) {
 	ift := reflect.TypeOf(iface)
 	ifv := reflect.ValueOf(iface)
 	for i := 0; i < ift.NumField(); i++ {

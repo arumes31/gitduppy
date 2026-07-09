@@ -13,6 +13,7 @@ type Tag struct {
 	Name      string    `gorm:"size:50;uniqueIndex;not null" json:"name"`
 	Color     string    `gorm:"size:7;default:#6366f1" json:"color"`
 	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 
 	// Relations
 	Repositories []Repository `gorm:"many2many:repository_tags" json:"-"`
@@ -50,4 +51,14 @@ type RepositoryTag struct {
 // TableName specifies the table name for the RepositoryTag model.
 func (RepositoryTag) TableName() string {
 	return "repository_tags"
+}
+
+// BeforeCreate assigns a UUID primary key when one was not set explicitly (same
+// rationale as Tag.BeforeCreate). This is what makes association appends/replaces
+// through the explicit join model (see database.SetupJoinTable) insert a valid PK.
+func (rt *RepositoryTag) BeforeCreate(*gorm.DB) error {
+	if rt.ID == uuid.Nil {
+		rt.ID = uuid.New()
+	}
+	return nil
 }

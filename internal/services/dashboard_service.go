@@ -131,13 +131,6 @@ func scanStorage(root string) (total, paperbin int64) {
 	return total, paperbin
 }
 
-// dirSize returns the total size in bytes of all files under root. Missing paths
-// contribute zero rather than erroring so the stat is best-effort.
-func dirSize(root string) int64 { //nolint:unused
-	total, _ := scanStorage(root)
-	return total
-}
-
 // DashboardStats represents dashboard statistics.
 type DashboardStats struct {
 	TotalRepositories         int64            `json:"total_repositories"`
@@ -254,9 +247,30 @@ func (s *DashboardService) GetStats(ctx context.Context) (*DashboardStats, error
 		stats.SuccessRate = float64(stats.SuccessfulClones) / float64(completed) * 100
 	}
 
-	// Total on-disk storage used by mirrored repositories (best-effort, cached
-	// walk — see totalStorageBytes).
-	stats.TotalStorageBytes = s.totalStorageBytes()
+	// Total on-disk storage used by mirrored repositories. Prefer summing the
+	// per-repository size_bytes persisted after each successful sync (a cheap DB
+	// aggregate, no tree walk) — but only once EVERY active repository has a nonzero
+	// size. While any active repo still carries 0 (cloned before size persistence
+	// existed, or not yet re-synced) the DB sum would undercount, so fall back to
+	// the cached filesystem walk (totalStorageBytes), which also counts paperbin
+	// archives and inactive repos. The transition resolves itself as repositories
+	// are re-synced. Both paths respect the surrounding statsCacheTTL cache; the
+	// walk additionally keeps its own storageSizeTTL cache.
+	var sizeAgg struct {
+		Total       int64
+		ActiveCount int64
+		ActiveSized int64
+	}
+	if err := db.Model(&models.Repository{}).
+		Select("COALESCE(SUM(size_bytes), 0) AS total, " +
+			"COUNT(*) FILTER (WHERE is_active) AS active_count, " +
+			"COUNT(*) FILTER (WHERE is_active AND size_bytes > 0) AS active_sized").
+		Scan(&sizeAgg).Error; err == nil &&
+		sizeAgg.ActiveCount > 0 && sizeAgg.ActiveCount == sizeAgg.ActiveSized {
+		stats.TotalStorageBytes = sizeAgg.Total
+	} else {
+		stats.TotalStorageBytes = s.totalStorageBytes()
+	}
 
 	// Average clone duration
 	type DurationResult struct {
@@ -410,9 +424,11 @@ func (s *DashboardService) GetTimelineData(ctx context.Context, limit int) ([]mo
 
 	var jobs []models.CloneJob
 	// Order by effective activity time: pending jobs have NULL started_at (which
-	// Postgres would otherwise sort first), so fall back to created_at.
+	// Postgres would otherwise sort first), so fall back to created_at. The
+	// preloaded repository omits its encrypted credentials blob (never serialized,
+	// never needed by the timeline) so the preload query stays lean.
 	err := s.db.WithContext(ctx).
-		Preload("Repository").
+		Preload("Repository", func(db *gorm.DB) *gorm.DB { return db.Omit("EncryptedCredentials") }).
 		Order("COALESCE(started_at, created_at) DESC").
 		Limit(limit).
 		Find(&jobs).Error

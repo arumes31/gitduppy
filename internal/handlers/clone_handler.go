@@ -54,7 +54,7 @@ func (h *CloneHandler) ListCloneJobs(c *gin.Context) {
 
 	jobs, total, err := h.cloneService.ListCloneJobs(c, filter)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -90,7 +90,7 @@ func (h *CloneHandler) CancelCloneJob(c *gin.Context) {
 	}
 
 	if err := h.cloneService.CancelCloneJob(c, id); err != nil {
-		response.BadRequest(c, "CANCEL_ERROR", err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -124,7 +124,7 @@ func (h *CloneHandler) ListRepositoryJobs(c *gin.Context) {
 
 	jobs, total, err := h.cloneService.ListCloneJobs(c, filter)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -145,7 +145,7 @@ func (h *CloneHandler) GetCloneJobLogs(c *gin.Context) {
 
 	logs, err := h.cloneService.GetCloneLogs(c, id)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		respondServiceError(c, err)
 		return
 	}
 

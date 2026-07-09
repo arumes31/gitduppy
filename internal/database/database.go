@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/gitduppy/gitduppy/internal/config"
+	"github.com/gitduppy/gitduppy/internal/database/migrations"
 	"github.com/gitduppy/gitduppy/internal/models"
+	"github.com/pressly/goose/v3"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -37,6 +39,10 @@ func Connect(cfg *config.DatabaseConfig) error {
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		Logger: ormLogger,
+		// Persist all GORM-managed timestamps (CreatedAt/UpdatedAt) in UTC so rows
+		// are comparable regardless of the server's local timezone. Explicit
+		// timestamp writes in the services/worker call time.Now().UTC() themselves.
+		NowFunc: func() time.Time { return time.Now().UTC() },
 	})
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
@@ -63,6 +69,17 @@ func AutoMigrate() error {
 		return fmt.Errorf("database not connected")
 	}
 
+	// Register the explicit join model for the repository<->tag many-to-many so
+	// association Append/Replace route inserts through RepositoryTag — honoring its
+	// BeforeCreate (PK) hook and CreatedAt — instead of GORM's implicit join table.
+	// Must run before AutoMigrate so the join table is built from this model.
+	if err := DB.SetupJoinTable(&models.Repository{}, "Tags", &models.RepositoryTag{}); err != nil {
+		return fmt.Errorf("failed to set up repository_tags join table (Repository.Tags): %w", err)
+	}
+	if err := DB.SetupJoinTable(&models.Tag{}, "Repositories", &models.RepositoryTag{}); err != nil {
+		return fmt.Errorf("failed to set up repository_tags join table (Tag.Repositories): %w", err)
+	}
+
 	err := DB.AutoMigrate(
 		&models.User{},
 		&models.Repository{},
@@ -86,6 +103,35 @@ func AutoMigrate() error {
 	createPerformanceIndexes()
 
 	log.Println("Database migrations completed successfully")
+	return nil
+}
+
+// RunSQLMigrations applies the embedded goose SQL migrations. It must run AFTER
+// AutoMigrate: AutoMigrate owns the base tables/columns, while goose owns the
+// constraints, indexes and data fixes layered on top (see internal/database/
+// migrations). Every migration is written idempotently, but a failure here is
+// fatal to the caller — a half-applied schema must stop the boot rather than run
+// with missing integrity guarantees.
+func RunSQLMigrations() error {
+	if DB == nil {
+		return fmt.Errorf("database not connected")
+	}
+	sqlDB, err := DB.DB()
+	if err != nil {
+		return fmt.Errorf("failed to get underlying SQL DB for migrations: %w", err)
+	}
+
+	goose.SetBaseFS(migrations.FS)
+	if err := goose.SetDialect("postgres"); err != nil {
+		return fmt.Errorf("failed to set goose dialect: %w", err)
+	}
+	// Silence goose's own logger; the caller logs success/failure.
+	goose.SetLogger(goose.NopLogger())
+	if err := goose.Up(sqlDB, "."); err != nil {
+		return fmt.Errorf("goose migrations failed: %w", err)
+	}
+
+	log.Println("SQL (goose) migrations applied successfully")
 	return nil
 }
 

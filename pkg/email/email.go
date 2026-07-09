@@ -104,8 +104,8 @@ func (s *Service) sendEmailSSL(to []string, auth smtp.Auth, msg string) error {
 // TemplateData represents data for email templates.
 type TemplateData struct {
 	AppName    string
-	Repository interface{}
-	CloneJob   interface{}
+	Repository any
+	CloneJob   any
 	Error      string
 	Timestamp  string
 	AdminEmail string

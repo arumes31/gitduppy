@@ -1,6 +1,8 @@
 package middleware
 
 import (
+	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,7 +28,12 @@ func newRateLimiter(rps float64, burst int) *rateLimiter {
 	}
 }
 
-func (rl *rateLimiter) allow() bool {
+// allow reports whether a request may proceed, consuming one token when it can.
+// It also returns the tokens left in the bucket and, when denied, the seconds
+// until the next whole token refills. All three values are computed under the
+// same lock that mutates the bucket, so the reported remaining/retry figures are
+// consistent with the allow/deny decision and with concurrent callers.
+func (rl *rateLimiter) allow() (allowed bool, remaining, retryAfter float64) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	now := time.Now()
@@ -40,9 +47,13 @@ func (rl *rateLimiter) allow() bool {
 	// Check if we have tokens available
 	if rl.tokens >= 1 {
 		rl.tokens--
-		return true
+		return true, rl.tokens, 0
 	}
-	return false
+	// Denied: report how long until the bucket accumulates one full token.
+	if rl.refillRate > 0 {
+		retryAfter = (1 - rl.tokens) / rl.refillRate
+	}
+	return false, rl.tokens, retryAfter
 }
 
 // RateLimiter handles rate limiting per client.
@@ -85,7 +96,7 @@ func (rl *RateLimiter) cleanupWorker(interval time.Duration) {
 		case <-rl.done:
 			return
 		case <-ticker.C:
-			rl.limiters.Range(func(key, value interface{}) bool {
+			rl.limiters.Range(func(key, value any) bool {
 				limiter := value.(*rateLimiter)
 				// Read lastRefill under the limiter's lock to avoid racing allow().
 				limiter.mu.Lock()
@@ -149,8 +160,20 @@ func (rl *RateLimiter) Middleware() gin.HandlerFunc {
 		key := prefix + c.ClientIP()
 
 		limiter := rl.getLimiter(key, rps, burst)
+		allowed, remaining, retryAfter := limiter.allow()
 
-		if !limiter.allow() {
+		// X-RateLimit-Limit advertises this tier's burst (bucket capacity) on both
+		// accepted and rejected responses.
+		c.Header("X-RateLimit-Limit", strconv.Itoa(burst))
+
+		if !allowed {
+			// Retry-After is whole seconds until the next token; never less than 1
+			// so a client always backs off before retrying.
+			retrySecs := int(math.Ceil(retryAfter))
+			if retrySecs < 1 {
+				retrySecs = 1
+			}
+			c.Header("Retry-After", strconv.Itoa(retrySecs))
 			c.JSON(429, gin.H{
 				"success": false,
 				"errors": []gin.H{
@@ -163,6 +186,12 @@ func (rl *RateLimiter) Middleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+
+		// Report whole tokens still available in the bucket.
+		if remaining < 0 {
+			remaining = 0
+		}
+		c.Header("X-RateLimit-Remaining", strconv.Itoa(int(math.Floor(remaining))))
 
 		c.Next()
 	}

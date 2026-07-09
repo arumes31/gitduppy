@@ -3,7 +3,9 @@ package gitops
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -37,14 +39,24 @@ func (h *LogHub) Subscribe(repoID string) chan string {
 	return ch
 }
 
-// Unsubscribe removes a channel subscription.
+// Unsubscribe removes a channel subscription. The channel is closed and dropped
+// from the subscriber slice; once a repository has no subscribers left its map
+// entry is deleted so the map does not accumulate empty slices for every
+// repository that was ever streamed.
 func (h *LogHub) Unsubscribe(repoID string, ch chan string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	subs := h.subscribers[repoID]
 	for i, sub := range subs {
 		if sub == ch {
-			h.subscribers[repoID] = append(subs[:i], subs[i+1:]...)
+			// Assign the append result back to subs (same backing slice) so gocritic's
+			// appendAssign is satisfied; this removes element i in place.
+			subs = append(subs[:i], subs[i+1:]...)
+			if len(subs) == 0 {
+				delete(h.subscribers, repoID)
+			} else {
+				h.subscribers[repoID] = subs
+			}
 			close(ch)
 			break
 		}
@@ -97,6 +109,14 @@ type CloneWorker struct {
 	cancel        context.CancelFunc
 	logger        *zap.Logger
 
+	// Graceful shutdown: softStop is closed first to stop accepting new jobs while
+	// in-flight jobs (tracked by inflight) are given shutdownGrace to finish before
+	// their contexts are hard-cancelled via cancel(). softStopOnce guards the close.
+	softStop      chan struct{}
+	softStopOnce  sync.Once
+	inflight      sync.WaitGroup
+	shutdownGrace time.Duration
+
 	// repoLocks serializes clone/fetch work per on-disk repository path so two
 	// jobs for the same repository never run git operations concurrently (which
 	// would corrupt .git/index.lock, packed-refs, or the object store).
@@ -111,7 +131,7 @@ type CloneWorker struct {
 
 // WebhookSender interface for sending webhook events.
 type WebhookSender interface {
-	SendEvent(ctx context.Context, eventType string, payload map[string]interface{}) error
+	SendEvent(ctx context.Context, eventType string, payload map[string]any) error
 }
 
 // EmailSender interface for sending email notifications.
@@ -119,20 +139,30 @@ type EmailSender interface {
 	SendCloneFailureNotification(ctx context.Context, repo *models.Repository, job *models.CloneJob, err error) error
 }
 
+// defaultShutdownGrace bounds how long Stop() waits for in-flight clone jobs to
+// finish before hard-cancelling their contexts. Cancelled jobs are put back to
+// pending and recovered on the next start, so this is kept short to keep total
+// shutdown time reasonable.
+const defaultShutdownGrace = 20 * time.Second
+
 // NewCloneWorker creates a new clone worker.
 func NewCloneWorker(config *WorkerConfig, gitOps *GitOperations, encryption *crypto.EncryptionService) *CloneWorker {
+	// context.Background is the correct root here: the worker pool's lifetime spans
+	// the whole process, not any single request. cancel() is called on Stop().
 	ctx, cancel := context.WithCancel(context.Background())
 	return &CloneWorker{
-		config:     config,
-		gitOps:     gitOps,
-		db:         database.GetDB(),
-		encryption: encryption,
-		jobQueue:   make(chan *models.CloneJob, 128),
-		notify:     make(chan struct{}, 1),
-		ctx:        ctx,
-		cancel:     cancel,
-		logger:     zap.L().Named("clone-worker"),
-		repoLocks:  newKeyedMutex(),
+		config:        config,
+		gitOps:        gitOps,
+		db:            database.GetDB(),
+		encryption:    encryption,
+		jobQueue:      make(chan *models.CloneJob, 128),
+		notify:        make(chan struct{}, 1),
+		ctx:           ctx,
+		cancel:        cancel,
+		logger:        zap.L().Named("clone-worker"),
+		repoLocks:     newKeyedMutex(),
+		softStop:      make(chan struct{}),
+		shutdownGrace: defaultShutdownGrace,
 	}
 }
 
@@ -174,58 +204,42 @@ func (w *CloneWorker) Start() {
 	w.wg.Add(1)
 	go w.dispatch()
 
-	// Requeue any jobs left pending or interrupted mid-run by a previous restart
-	// so they are not stranded. Only *stale* running jobs are reset (see
-	// requeueUnfinishedJobs) so a co-running instance's in-flight jobs are left
-	// alone under a multi-replica deployment.
-	w.requeueUnfinishedJobs()
+	// Reap clone jobs orphaned by a previous process (stale "running"/"pending"
+	// rows) and recover recently queued pending jobs so a restart neither leaves
+	// zombie rows nor strands work. See reapOrphanedJobs.
+	w.reapOrphanedJobs()
 }
 
-// requeueUnfinishedJobs re-enqueues jobs that never completed (pending, or
-// "running" long enough that no live worker could still hold them) so a restart
-// or a burst does not strand them.
+// Stop stops the worker pool with a bounded graceful drain. First it stops
+// accepting new work (softStop); then it gives in-flight jobs up to shutdownGrace
+// to finish; then it hard-cancels the worker context (aborting any still-running
+// git operation — those jobs are put back to "pending" for the next start) and
+// waits for every goroutine to exit.
 //
-// A "running" job is only reset when its started_at is older than a stale
-// threshold derived from the clone timeout. This avoids clobbering jobs that
-// another replica started moments ago — resetting those would let two instances
-// clone into the same directory concurrently.
-func (w *CloneWorker) requeueUnfinishedJobs() {
-	if w.db == nil {
-		return
-	}
-
-	// Stale = older than the clone timeout plus a margin; a running job past this
-	// point cannot still be owned by a live worker (which would have timed out).
-	timeout := time.Duration(w.config.CloneTimeout) * time.Second
-	if timeout <= 0 {
-		timeout = time.Duration(DefaultWorkerConfig().CloneTimeout) * time.Second
-	}
-	staleBefore := time.Now().Add(-timeout - time.Minute)
-
-	// Rows whose started_at is NULL are also treated as stale: they were marked
-	// running but never recorded a start, so no worker is holding them.
-	w.db.Model(&models.CloneJob{}).
-		Where("status = ? AND (started_at IS NULL OR started_at < ?)", "running", staleBefore).
-		Update("status", "pending")
-
-	var jobs []models.CloneJob
-	if err := w.db.Where("status = ?", "pending").Order("created_at asc").Find(&jobs).Error; err != nil {
-		w.logger.Error("failed to load pending jobs for requeue", zap.Error(err))
-		return
-	}
-	if len(jobs) == 0 {
-		return
-	}
-	w.logger.Info("requeuing unfinished clone jobs", zap.Int("count", len(jobs)))
-	for i := range jobs {
-		w.Enqueue(&jobs[i])
-	}
-}
-
-// Stop stops the worker pool. The job channel is intentionally NOT closed: with
-// the non-dropping Enqueue below, closing it could race a blocked send and panic.
+// The job channel is intentionally NOT closed: with the non-dropping Enqueue,
+// closing it could race a blocked send and panic.
 func (w *CloneWorker) Stop() {
 	w.logger.Info("stopping clone worker pool")
+
+	// Phase 1: stop accepting new jobs. In-flight jobs continue running.
+	w.softStopOnce.Do(func() { close(w.softStop) })
+
+	// Phase 2: give in-flight jobs a bounded grace period to complete on their own.
+	drained := make(chan struct{})
+	go func() {
+		w.inflight.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+		w.logger.Info("in-flight clone jobs finished within grace period")
+	case <-time.After(w.shutdownGrace):
+		w.logger.Warn("clone shutdown grace elapsed; cancelling in-flight jobs",
+			zap.Duration("grace", w.shutdownGrace))
+	}
+
+	// Phase 3: cancel everything (idle workers, retry timers, any job still
+	// running past the grace period) and wait for all goroutines to exit.
 	w.cancel()
 	w.wg.Wait()
 }
@@ -273,6 +287,8 @@ func (w *CloneWorker) dispatch() {
 			select {
 			case <-w.notify:
 				continue
+			case <-w.softStop:
+				return
 			case <-w.ctx.Done():
 				return
 			}
@@ -288,6 +304,8 @@ func (w *CloneWorker) dispatch() {
 
 		select {
 		case w.jobQueue <- job:
+		case <-w.softStop:
+			return
 		case <-w.ctx.Done():
 			return
 		}
@@ -305,17 +323,58 @@ func (w *CloneWorker) worker(id int) {
 		case <-w.ctx.Done():
 			logger.Info("worker stopped")
 			return
+		case <-w.softStop:
+			// Graceful shutdown began: exit rather than pick up new work.
+			logger.Info("worker stopped")
+			return
 		case job := <-w.jobQueue:
 			if job == nil {
 				continue
+			}
+			// If a graceful stop started between dequeue and now, do not begin new
+			// work; leave the job "pending" for the next start to recover.
+			select {
+			case <-w.softStop:
+				logger.Info("worker stopped")
+				return
+			default:
 			}
 			w.processJob(logger, job)
 		}
 	}
 }
 
+// cleanupStaleTempClones removes any leftover "<finalPath>.tmp-*" sibling
+// directories from a previously interrupted atomic clone so they do not
+// accumulate on disk. It reads the parent directory and matches by prefix rather
+// than globbing to avoid filepath.Glob metacharacter issues in storage paths.
+func cleanupStaleTempClones(logger *zap.Logger, finalPath string) {
+	dir := filepath.Dir(finalPath)
+	prefix := filepath.Base(finalPath) + ".tmp-"
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		if rmErr := os.RemoveAll(p); rmErr != nil {
+			logger.Warn("failed to remove stale temp clone directory", zap.String("path", p), zap.Error(rmErr))
+		} else {
+			logger.Info("removed stale temp clone directory", zap.String("path", p))
+		}
+	}
+}
+
 // processJob processes a single clone job.
 func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
+	// Count this job as in-flight so a graceful Stop() can wait for it to finish
+	// within the shutdown grace period before contexts are cancelled.
+	w.inflight.Add(1)
+	defer w.inflight.Done()
+
 	logger.Info("processing clone job", zap.String("job_id", job.ID.String()))
 
 	// Get repository details first so we know the on-disk path to serialize on.
@@ -352,8 +411,8 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 	}()
 
 	// Update job status to running
-	now := time.Now()
-	w.db.Model(job).Updates(map[string]interface{}{
+	now := time.Now().UTC()
+	w.db.Model(job).Updates(map[string]any{
 		"status":     "running",
 		"started_at": now,
 		"output_log": "",
@@ -472,7 +531,7 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 							RepositoryID: repo.ID,
 							BranchName:   branchName,
 							CommitSHA:    sha,
-							DeletedAt:    time.Now(),
+							DeletedAt:    time.Now().UTC(),
 						})
 					}
 				}
@@ -485,18 +544,53 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 		}
 	} else {
 		// The path is not a valid repository but may still hold a leftover from a
-		// previously interrupted clone (a non-.git directory, or a half-written
-		// tree). git clone refuses a non-empty destination, so that debris would
-		// make every future attempt fail permanently. Clear it first so the clone
-		// can self-heal.
+		// previously interrupted clone (a legacy in-place partial), and there may be
+		// stale *.tmp-* siblings from an interrupted atomic clone. git clone refuses
+		// a non-empty destination, so clear both first so the clone can self-heal.
 		if _, statErr := os.Stat(repoPath); statErr == nil {
 			logger.Warn("removing leftover incomplete clone directory before re-clone", zap.String("path", repoPath))
 			if rmErr := os.RemoveAll(repoPath); rmErr != nil {
 				logger.Error("failed to remove leftover clone directory", zap.String("path", repoPath), zap.Error(rmErr))
 			}
 		}
+		cleanupStaleTempClones(logger, repoPath)
+
+		// Clone into a sibling temp directory on the same filesystem, then rename it
+		// into place only after a successful clone. This guarantees repoPath only
+		// ever appears as a complete repository: an interrupted attempt leaves a
+		// *.tmp-* directory (reaped above and on the next attempt) instead of a
+		// half-written final path that would make every future clone see a
+		// non-empty destination and fail permanently. Git repositories are
+		// relocatable, and dedupe's object "alternates" file holds an absolute path
+		// to the shared pool, so the rename does not break either.
+		tmpPath := repoPath + ".tmp-" + job.ID.String()
+		if rmErr := os.RemoveAll(tmpPath); rmErr != nil {
+			logger.Warn("failed to clear pre-existing temp clone dir", zap.String("path", tmpPath), zap.Error(rmErr))
+		}
+
 		logger.Info("performing clone", zap.String("repo", repo.Name))
+		cloneOpts.Path = tmpPath
 		err = w.gitOps.CloneRepository(opCtx, cloneOpts)
+		cloneOpts.Path = repoPath
+
+		if err == nil {
+			// The destination must not exist for os.Rename on Windows (and to avoid
+			// merging into a stray dir on Linux); we already removed any leftover.
+			if rmErr := os.RemoveAll(repoPath); rmErr != nil {
+				logger.Warn("failed to clear destination before rename", zap.String("path", repoPath), zap.Error(rmErr))
+			}
+			if renErr := os.Rename(tmpPath, repoPath); renErr != nil {
+				err = fmt.Errorf("failed to move completed clone into place: %w", renErr)
+				if rmErr := os.RemoveAll(tmpPath); rmErr != nil {
+					logger.Warn("failed to remove temp clone after failed rename", zap.String("path", tmpPath), zap.Error(rmErr))
+				}
+			}
+		} else {
+			// Clean up the partial temp clone on failure.
+			if rmErr := os.RemoveAll(tmpPath); rmErr != nil {
+				logger.Warn("failed to remove temp clone after failed clone", zap.String("path", tmpPath), zap.Error(rmErr))
+			}
+		}
 	}
 
 	// If the worker is shutting down (w.ctx cancelled, not a per-op timeout), put
@@ -504,7 +598,7 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 	// it instead of surfacing a spurious failure.
 	if err != nil && w.ctx.Err() != nil {
 		logger.Info("clone interrupted by shutdown, requeuing job", zap.String("job_id", job.ID.String()))
-		w.db.Model(job).Updates(map[string]interface{}{"status": "pending", "started_at": nil})
+		w.db.Model(job).Updates(map[string]any{"status": "pending", "started_at": nil})
 		return
 	}
 
@@ -514,7 +608,7 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 
 		// Send webhook event for clone failure
 		if w.webhookSender != nil {
-			_ = w.webhookSender.SendEvent(w.ctx, "clone.failed", map[string]interface{}{
+			_ = w.webhookSender.SendEvent(w.ctx, "clone.failed", map[string]any{
 				"repository_id":   repo.ID.String(),
 				"repository_name": repo.Name,
 				"job_id":          job.ID.String(),
@@ -533,172 +627,26 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 	}
 
 	// Update job status to success
-	w.db.Model(job).Updates(map[string]interface{}{
+	w.db.Model(job).Updates(map[string]any{
 		"status":           "success",
-		"completed_at":     time.Now(),
+		"completed_at":     time.Now().UTC(),
 		"progress_percent": 100,
 		"output_log":       "Clone completed successfully",
 	})
 
-	// Post-clone housekeeping (gc, wiki mirror, GitHub metadata) gets its OWN
-	// timeout budget derived fresh from w.ctx, rather than sharing opCtx which the
-	// primary clone has already partly (or fully) consumed. Otherwise a slow but
-	// successful clone would leave no time for these follow-ups and they would
-	// silently skip.
-	postCtx := w.ctx
-	if w.config.CloneTimeout > 0 {
-		var postCancel context.CancelFunc
-		postCtx, postCancel = context.WithTimeout(w.ctx, time.Duration(w.config.CloneTimeout)*time.Second)
-		defer postCancel()
-	}
+	// Post-clone housekeeping (gc, wiki mirror, GitHub metadata + tag sync, the
+	// repository metadata refresh and the success webhook) lives in postclone.go
+	// to keep this function focused on the clone/fetch itself.
+	w.runPostClone(logger, job, repo, creds, progress, repoPath)
 
-	// Housekeeping: let git repack/prune loose objects when its own heuristics say
-	// it is worthwhile. "--auto" is a cheap no-op until thresholds are crossed, so
-	// this keeps long-lived mirrors compact without adding a heavy fixed cost.
-	if _, gcErr := RunGitCommand(postCtx, repoPath, "gc", "--auto"); gcErr != nil {
-		logger.Debug("git gc --auto skipped", zap.String("repo", repo.Name), zap.Error(gcErr))
-	}
-
-	// Mirror Wiki if requested
-	if repo.MirrorWiki {
-		wikiURL := repo.URL
-		if strings.HasSuffix(wikiURL, ".git") {
-			wikiURL = strings.TrimSuffix(wikiURL, ".git") + ".wiki.git"
-		} else {
-			wikiURL = wikiURL + ".wiki.git"
-		}
-
-		wikiPath := repoPath + ".wiki"
-
-		wikiOpts := &CloneOptions{
-			URL:  wikiURL,
-			Path: wikiPath,
-			Bare: repo.IsBare,
-			LFS:  false,
-		}
-		if creds != nil {
-			wikiOpts.Username = creds.Username
-			wikiOpts.Password = creds.Password
-			wikiOpts.Token = creds.Token
-			wikiOpts.SSHKey = creds.SSHKey
-		}
-		wikiOpts.Progress = progress
-
-		// Decide fetch vs clone from what is actually on disk (consistent with the
-		// main tree), not from LastCloneAt which can be nil for an already-present
-		// wiki and would force a clone into a populated directory.
-		var wikiErr error
-		if w.gitOps.IsRepositoryCloned(wikiPath) {
-			logger.Info("performing wiki fetch", zap.String("repo", repo.Name))
-			wikiErr = w.gitOps.FetchRepository(postCtx, wikiOpts)
-		} else {
-			// Clear any leftover incomplete wiki tree so the clone can self-heal.
-			if _, statErr := os.Stat(wikiPath); statErr == nil {
-				_ = os.RemoveAll(wikiPath)
-			}
-			logger.Info("performing wiki clone", zap.String("repo", repo.Name))
-			wikiErr = w.gitOps.CloneRepository(postCtx, wikiOpts)
-		}
-		if wikiErr != nil {
-			logger.Warn("wiki clone/fetch failed", zap.Error(wikiErr))
-		}
-	}
-
-	// Fetch GitHub Metadata if any are requested
-	if repo.MirrorIssues || repo.MirrorPullRequests || repo.MirrorReleases {
-		fetcher := NewGitHubMetadataFetcher()
-		token := ""
-		if creds != nil && creds.Token != "" {
-			token = creds.Token
-		} else if creds != nil && creds.Password != "" && repo.AuthType == "https" {
-			token = creds.Password
-		}
-
-		if err := fetcher.FetchMetadata(postCtx, repo.URL, repoPath, token, repo.MirrorIssues, repo.MirrorPullRequests, repo.MirrorReleases); err != nil {
-			logger.Warn("failed to fetch github metadata", zap.Error(err))
-		}
-	}
-
-	// Fetch description and tags for GitHub repositories
-	if strings.Contains(repo.URL, "github.com") {
-		fetcher := NewGitHubMetadataFetcher()
-		token := ""
-		if creds != nil && creds.Token != "" {
-			token = creds.Token
-		} else if creds != nil && creds.Password != "" && repo.AuthType == "https" {
-			token = creds.Password
-		}
-
-		info, err := fetcher.FetchRepositoryInfo(postCtx, repo.URL, token)
-		if err != nil {
-			logger.Warn("failed to fetch github repo info", zap.Error(err))
-		} else {
-			// Update description
-			if info.Description != "" {
-				repo.Description = &info.Description
-				w.db.Model(&repo).Update("description", info.Description)
-			}
-
-			// Update visibility (public/private)
-			if info.Visibility != "" {
-				repo.Visibility = info.Visibility
-				w.db.Model(&repo).Update("visibility", info.Visibility)
-			}
-
-			// Merge GitHub topics into the existing tag set instead of
-			// replacing it, so manually-assigned tags (e.g. via TagIDs) are
-			// preserved across syncs. Only run the merge-and-Replace when the
-			// existing tags were loaded successfully — otherwise currentTags is
-			// incomplete and the Replace would wipe manual tags.
-			var currentTags []models.Tag
-			if err := w.db.Model(&repo).Association("Tags").Find(&currentTags); err != nil {
-				logger.Error("Failed to load existing repository tags, skipping tag sync to avoid wiping manual tags", zap.Error(err))
-			} else {
-				tagSet := make(map[uuid.UUID]models.Tag)
-				for _, t := range currentTags {
-					tagSet[t.ID] = t
-				}
-				for _, topic := range info.Topics {
-					var tag models.Tag
-					// Use Attrs for the default color so it is applied ONLY on
-					// insert. Passing it as a create struct would fold color into
-					// the lookup WHERE, so a topic matching an existing tag with a
-					// different color would miss, attempt a duplicate-name insert,
-					// and drop the topic.
-					if err := w.db.Where(models.Tag{Name: topic}).
-						Attrs(models.Tag{Color: "#000000"}).
-						FirstOrCreate(&tag).Error; err == nil {
-						tagSet[tag.ID] = tag
-					}
-				}
-				merged := make([]models.Tag, 0, len(tagSet))
-				for _, t := range tagSet {
-					merged = append(merged, t)
-				}
-				if err := w.db.Model(&repo).Association("Tags").Replace(merged); err != nil {
-					logger.Error("Failed to sync repository tags", zap.Error(err))
-				}
-			}
-		}
-	}
-
-	// Update repository
-	w.db.Model(&repo).Updates(map[string]interface{}{
-		"last_clone_at":     time.Now(),
-		"last_clone_status": "success",
-		"retry_count":       0,
-		"status":            "success",
-	})
-
-	// Send webhook event for clone success
-	if w.webhookSender != nil {
-		_ = w.webhookSender.SendEvent(w.ctx, "clone.success", map[string]interface{}{
-			"repository_id":   repo.ID.String(),
-			"repository_name": repo.Name,
-			"job_id":          job.ID.String(),
-			"timestamp":       time.Now().UTC().Format(time.RFC3339),
-			"trigger_type":    job.TriggerType,
-		})
+	// Persist the repository's on-disk size so the dashboard can SUM it from the DB
+	// instead of walking the whole storage tree. Measured after housekeeping — git
+	// gc --auto may have repacked the object store — so the stored figure reflects
+	// the settled tree. Best-effort: skip persisting a zero (a transient walk
+	// failure) rather than clobbering a previously good value on an already
+	// successful job.
+	if size := DirSize(repoPath); size > 0 {
+		w.db.Model(&models.Repository{}).Where("id = ?", repo.ID).Update("size_bytes", size)
 	}
 
 	metrics.CloneJobsTotal.WithLabelValues("success", job.TriggerType).Inc()
@@ -713,54 +661,101 @@ func (w *CloneWorker) failJob(logger *zap.Logger, job *models.CloneJob, errMsg s
 
 	metrics.CloneJobsTotal.WithLabelValues("failed", job.TriggerType).Inc()
 
-	w.db.Model(job).Updates(map[string]interface{}{
+	w.db.Model(job).Updates(map[string]any{
 		"status":       "failed",
-		"completed_at": time.Now(),
+		"completed_at": time.Now().UTC(),
 		"output_log":   errMsg,
 	})
 
-	w.db.Model(&models.Repository{}).Where("id = ?", job.RepositoryID).Updates(map[string]interface{}{
+	w.db.Model(&models.Repository{}).Where("id = ?", job.RepositoryID).Updates(map[string]any{
 		"status":            "failed",
 		"last_clone_status": "failed",
 	})
 }
 
-// handleFailure handles job failure with retry logic.
-func (w *CloneWorker) handleFailure(logger *zap.Logger, repo models.Repository, _ *models.CloneJob, _ error) {
-	// Increment retry count
-	var repoData models.Repository
-	w.db.First(&repoData, repo.ID)
+// retryBackoffCap bounds the exponential retry backoff so a repository that has
+// failed many times is still retried roughly hourly rather than being pushed out
+// indefinitely.
+const retryBackoffCap = time.Hour
 
-	if repoData.RetryCount < w.config.RetryMaxAttempts {
-		// Schedule retry with exponential backoff
-		backoff := time.Duration(repoData.RetryCount+1) * w.config.RetryBaseDelay
-		w.db.Model(&repoData).Update("retry_count", repoData.RetryCount+1)
-
-		logger.Warn("scheduling retry",
-			zap.String("repo", repo.Name),
-			zap.Int("retry", repoData.RetryCount+1),
-			zap.Duration("backoff", backoff),
-		)
-
-		// Persist a real, PK-bearing job row before enqueuing. processJob updates
-		// the row by primary key, so an in-memory job with no ID (as before)
-		// silently no-ops and the retry never happens. Create it now (pending) so
-		// it is visible to the scheduler's dedup and recoverable on restart, then
-		// dispatch it after the backoff via a shutdown-aware, WaitGroup-tracked
-		// timer instead of an untracked time.AfterFunc.
-		retryJob := &models.CloneJob{
-			ID:           uuid.New(),
-			RepositoryID: repo.ID,
-			TriggerType:  "scheduled",
-			Status:       "pending",
-			CreatedAt:    time.Now(),
-		}
-		if err := w.db.Create(retryJob).Error; err != nil {
-			w.logger.Error("failed to persist retry clone job", zap.String("repo_id", repo.ID.String()), zap.Error(err))
-			return
-		}
-		w.enqueueAfter(retryJob, backoff)
+// retryBackoff returns the delay before the next attempt for a repository that has
+// already failed retryCount times: an exponential base*2^retryCount capped at
+// retryBackoffCap, plus up to 50% jitter so many repositories failing together do
+// not retry in lockstep (thundering herd).
+func (w *CloneWorker) retryBackoff(retryCount int) time.Duration {
+	base := w.config.RetryBaseDelay
+	if base <= 0 {
+		base = time.Minute
 	}
+	backoff := base
+	for i := 0; i < retryCount && backoff < retryBackoffCap; i++ {
+		backoff *= 2
+	}
+	if backoff > retryBackoffCap {
+		backoff = retryBackoffCap
+	}
+	// Full-ish jitter: add a random fraction up to half the backoff.
+	// #nosec G404 - retry-jitter timing is not security-sensitive; math/rand is fine.
+	jitter := time.Duration(rand.Int64N(int64(backoff)/2 + 1))
+	return backoff + jitter
+}
+
+// handleFailure applies retry backoff after a failed clone. It always records the
+// exponential-with-jitter next-eligible time (next_retry_at) so the scheduler
+// does not re-queue a hard-failing repository on every tick. Within the in-process
+// attempt budget it also schedules a fast retry job; once the budget is spent it
+// leaves further retries to the scheduler, which honors next_retry_at.
+func (w *CloneWorker) handleFailure(logger *zap.Logger, repo models.Repository, _ *models.CloneJob, _ error) {
+	var repoData models.Repository
+	if err := w.db.First(&repoData, repo.ID).Error; err != nil {
+		w.logger.Error("failed to load repository for retry backoff", zap.String("repo_id", repo.ID.String()), zap.Error(err))
+		return
+	}
+
+	backoff := w.retryBackoff(repoData.RetryCount)
+	nextRetryAt := time.Now().UTC().Add(backoff)
+
+	// Persist the incremented retry count and the next-eligible time together so
+	// the scheduler's backoff gate (next_retry_at) is always up to date, even once
+	// in-process retries are exhausted.
+	w.db.Model(&repoData).Updates(map[string]any{
+		"retry_count":   repoData.RetryCount + 1,
+		"next_retry_at": nextRetryAt,
+	})
+
+	logger.Warn("scheduling retry with backoff",
+		zap.String("repo", repo.Name),
+		zap.Int("retry", repoData.RetryCount+1),
+		zap.Duration("backoff", backoff),
+		zap.Time("next_retry_at", nextRetryAt),
+	)
+
+	if repoData.RetryCount >= w.config.RetryMaxAttempts {
+		// In-process attempt budget spent; the scheduler will re-attempt after
+		// next_retry_at, keeping a permanently-failing repo on the capped interval
+		// instead of hammering the origin every tick.
+		logger.Warn("in-process retry budget exhausted; scheduler will retry after backoff",
+			zap.String("repo", repo.Name), zap.Time("next_retry_at", nextRetryAt))
+		return
+	}
+
+	// Persist a real, PK-bearing job row before enqueuing. processJob updates the
+	// row by primary key, so an in-memory job with no ID silently no-ops and the
+	// retry never happens. Create it now (pending) so it is visible to the
+	// scheduler's dedup and recoverable on restart, then dispatch it after the
+	// backoff via a shutdown-aware, WaitGroup-tracked timer.
+	retryJob := &models.CloneJob{
+		ID:           uuid.New(),
+		RepositoryID: repo.ID,
+		TriggerType:  "scheduled",
+		Status:       "pending",
+		CreatedAt:    time.Now().UTC(),
+	}
+	if err := w.db.Create(retryJob).Error; err != nil {
+		w.logger.Error("failed to persist retry clone job", zap.String("repo_id", repo.ID.String()), zap.Error(err))
+		return
+	}
+	w.enqueueAfter(retryJob, backoff)
 }
 
 // progressDBInterval throttles how often clone progress is persisted to the DB.
@@ -796,113 +791,4 @@ func (p *CloneProgress) Write(b []byte) (n int, err error) {
 		p.db.Model(&models.CloneJob{}).Where("id = ?", p.jobID).Update("output_log", message)
 	}
 	return len(b), nil
-}
-
-// Scheduler handles scheduled clone jobs.
-type Scheduler struct {
-	db       *gorm.DB
-	worker   *CloneWorker
-	ticker   *time.Ticker
-	done     chan struct{}
-	stopOnce sync.Once
-	logger   *zap.Logger
-}
-
-// schedulerTickInterval is how often the scheduler evaluates repositories. It is
-// intentionally finer than the smallest allowed per-repo clone interval (5 min)
-// so a repo configured for 5-minute syncs is not delayed by up to a full extra
-// tick before its job is queued.
-const schedulerTickInterval = time.Minute
-
-// NewScheduler creates a new scheduler.
-func NewScheduler(worker *CloneWorker) *Scheduler {
-	return &Scheduler{
-		db:     database.GetDB(),
-		worker: worker,
-		ticker: time.NewTicker(schedulerTickInterval),
-		done:   make(chan struct{}),
-		logger: zap.L().Named("scheduler"),
-	}
-}
-
-// Start starts the scheduler.
-func (s *Scheduler) Start() {
-	s.logger.Info("starting scheduler")
-	go s.run()
-}
-
-// Stop stops the scheduler. Closing done (guarded by Once) is non-blocking and
-// safe even if Start was never called or Stop is called more than once — unlike
-// the previous unbuffered send, which could deadlock in both cases.
-func (s *Scheduler) Stop() {
-	s.logger.Info("stopping scheduler")
-	s.ticker.Stop()
-	s.stopOnce.Do(func() { close(s.done) })
-}
-
-// run is the main scheduler loop.
-func (s *Scheduler) run() {
-	for {
-		select {
-		case <-s.ticker.C:
-			s.scheduleCloneJobs()
-		case <-s.done:
-			return
-		}
-	}
-}
-
-// scheduleCloneJobs schedules clone jobs for all active repositories.
-func (s *Scheduler) scheduleCloneJobs() {
-	s.logger.Debug("checking for repositories to clone")
-
-	// Skip scheduling while maintenance mode is enabled.
-	var setting models.SystemSetting
-	if err := s.db.Where("key = ?", "maintenance_mode").First(&setting).Error; err == nil && setting.Value == "true" {
-		s.logger.Info("maintenance mode enabled, skipping scheduled clone jobs")
-		return
-	}
-
-	var repos []models.Repository
-	if err := s.db.Where("is_active = ? AND status != 'cloning'", true).Find(&repos).Error; err != nil {
-		s.logger.Error("failed to fetch repositories", zap.Error(err))
-		return
-	}
-
-	// Load the set of repositories that already have an unfinished job in a single
-	// query, rather than issuing one COUNT per repo each tick. Used below to avoid
-	// piling up duplicate clones into the same directory (a slow clone can span
-	// several ticks).
-	var busyIDs []uuid.UUID
-	s.db.Model(&models.CloneJob{}).
-		Where("status IN ?", []string{"pending", "running"}).
-		Distinct().
-		Pluck("repository_id", &busyIDs)
-	busy := make(map[uuid.UUID]struct{}, len(busyIDs))
-	for _, id := range busyIDs {
-		busy[id] = struct{}{}
-	}
-
-	now := time.Now()
-	for _, repo := range repos {
-		// Check if clone interval has elapsed
-		if repo.LastCloneAt == nil ||
-			now.Sub(*repo.LastCloneAt) >= time.Duration(repo.CloneIntervalMinutes)*time.Minute {
-
-			if _, inflight := busy[repo.ID]; inflight {
-				continue
-			}
-
-			job := &models.CloneJob{
-				ID:           uuid.New(),
-				RepositoryID: repo.ID,
-				TriggerType:  "scheduled",
-				Status:       "pending",
-				CreatedAt:    time.Now(),
-			}
-			s.db.Create(job)
-			s.worker.Enqueue(job)
-			s.logger.Debug("enqueued clone job", zap.String("repo", repo.Name))
-		}
-	}
 }

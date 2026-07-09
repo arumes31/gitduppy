@@ -35,7 +35,7 @@ func GetValidator() *validator.Validate {
 }
 
 // ValidateStruct validates a struct using go-playground/validator.
-func ValidateStruct(s interface{}) error {
+func ValidateStruct(s any) error {
 	if validate == nil {
 		validate = validator.New()
 	}

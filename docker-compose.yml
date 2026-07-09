@@ -46,10 +46,17 @@ services:
       # opt in below) never printed — see the README bootstrap section.
       - GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD=${BOOTSTRAP_ADMIN_PASSWORD:-}
       - GITMIRRORS_BOOTSTRAP_SHOW_PASSWORD=${BOOTSTRAP_SHOW_PASSWORD:-false}
+    # Container paths MUST match config.yaml's storage.* settings
+    # (base_path=/app/storage/repos, ssh_path=/app/storage/ssh,
+    # backup_path=/app/storage/backups). Earlier revisions mounted /app/repos,
+    # /app/keys and /app/backups, which the app never wrote to — mirrors landed
+    # in the container's ephemeral layer and were lost on recreation. Existing
+    # mirrors re-clone automatically on the next scheduler pass; SSH keys must
+    # be re-provisioned into ./data/gitduppy/keys.
     volumes:
-      - ./data/gitduppy/repos:/app/repos
-      - ./data/gitduppy/keys:/app/keys
-      - ./data/gitduppy/backups:/app/backups
+      - ./data/gitduppy/repos:/app/storage/repos
+      - ./data/gitduppy/keys:/app/storage/ssh
+      - ./data/gitduppy/backups:/app/storage/backups
       - ./config.yaml:/app/config.yaml:ro
     depends_on:
       postgres:

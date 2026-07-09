@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 // DeletedBranch represents a branch that was pruned (deleted online) but is kept in the paperbin.
@@ -21,4 +22,13 @@ type DeletedBranch struct {
 // TableName specifies the table name for the DeletedBranch model.
 func (DeletedBranch) TableName() string {
 	return "deleted_branches"
+}
+
+// BeforeCreate assigns a UUID primary key when one was not set explicitly (same
+// rationale as Tag.BeforeCreate).
+func (b *DeletedBranch) BeforeCreate(*gorm.DB) error {
+	if b.ID == uuid.Nil {
+		b.ID = uuid.New()
+	}
+	return nil
 }

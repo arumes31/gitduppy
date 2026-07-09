@@ -142,7 +142,7 @@ func (s *WebhookService) GetWebhookByID(_ context.Context, id uuid.UUID) (*model
 	var webhook models.WebhookConfig
 	if err := s.db.First(&webhook, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errors.New("webhook not found")
+			return nil, fmt.Errorf("%w: webhook", ErrNotFound)
 		}
 		return nil, err
 	}
@@ -172,8 +172,8 @@ func (s *WebhookService) CreateWebhook(_ context.Context, userID uuid.UUID, req 
 		IsActive:       req.IsActive,
 		RetryCount:     req.RetryCount,
 		TimeoutSeconds: req.TimeoutSeconds,
-		CreatedAt:      time.Now(),
-		UpdatedAt:      time.Now(),
+		CreatedAt:      time.Now().UTC(),
+		UpdatedAt:      time.Now().UTC(),
 	}
 
 	if webhook.RetryCount <= 0 {
@@ -230,7 +230,7 @@ func (s *WebhookService) UpdateWebhook(ctx context.Context, id uuid.UUID, req *U
 		webhook.TimeoutSeconds = *req.TimeoutSeconds
 	}
 
-	webhook.UpdatedAt = time.Now()
+	webhook.UpdatedAt = time.Now().UTC()
 	if err := s.db.Save(webhook).Error; err != nil {
 		return nil, err
 	}
@@ -245,13 +245,13 @@ func (s *WebhookService) DeleteWebhook(_ context.Context, id uuid.UUID) error {
 		return result.Error
 	}
 	if result.RowsAffected == 0 {
-		return errors.New("webhook not found")
+		return fmt.Errorf("%w: webhook", ErrNotFound)
 	}
 	return nil
 }
 
 // SendEvent sends a webhook event to all subscribed webhooks.
-func (s *WebhookService) SendEvent(_ context.Context, eventType string, payload map[string]interface{}) error {
+func (s *WebhookService) SendEvent(_ context.Context, eventType string, payload map[string]any) error {
 	// events is a JSONB array column, so the containment operand must be a JSON
 	// array literal (e.g. ["clone.failed"]). Passing a Go []string encodes a
 	// Postgres text[] instead, which errors with "invalid input syntax for type
@@ -266,18 +266,44 @@ func (s *WebhookService) SendEvent(_ context.Context, eventType string, payload 
 	}
 
 	for _, webhook := range webhooks {
+		// Deliveries are fire-and-forget and must outlive the triggering request, so
+		// they intentionally run detached from ctx; attemptDelivery uses a fresh
+		// context.Background with its own per-webhook timeout (see its comment).
+		//nolint:contextcheck // detached background delivery, not request-scoped
 		go s.deliverWebhook(webhook, eventType, payload)
 	}
 
 	return nil
 }
 
-// deliverWebhook delivers a webhook payload to a single webhook.
-func (s *WebhookService) deliverWebhook(webhook models.WebhookConfig, eventType string, payload map[string]interface{}) {
+// webhookMaxRetryDelay caps the exponential backoff between webhook delivery
+// attempts so a large configured retry count cannot schedule an unbounded sleep.
+const webhookMaxRetryDelay = 5 * time.Minute
+
+// webhookRetryDelay returns the backoff to wait after the given (1-based) failed
+// attempt using an exponential 5x schedule (1s, 5s, 25s, ...) capped at
+// webhookMaxRetryDelay.
+func webhookRetryDelay(attempt int) time.Duration {
+	d := time.Second
+	for i := 1; i < attempt; i++ {
+		d *= 5
+		if d >= webhookMaxRetryDelay {
+			return webhookMaxRetryDelay
+		}
+	}
+	return d
+}
+
+// deliverWebhook delivers a webhook payload to a single webhook, retrying failed
+// attempts with exponential backoff up to the webhook's configured attempt
+// budget. A single WebhookDelivery row tracks the delivery across every attempt:
+// its attempt count, HTTP status, response/error and status are updated in place,
+// and after the final failed attempt the row is left in the terminal "failed"
+// (permanently failed) state, visible via the deliveries listing.
+func (s *WebhookService) deliverWebhook(webhook models.WebhookConfig, eventType string, payload map[string]any) {
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
-		// Record marshal failure in delivery history so it is visible.
-		s.recordDelivery(webhook.ID, eventType, fmt.Sprintf("{\"marshal_error\": %q}", err.Error()), 0, "payload marshal failed: "+err.Error(), false, 1)
+		s.recordTerminalMarshalFailure(webhook.ID, eventType, err)
 		return
 	}
 
@@ -288,31 +314,59 @@ func (s *WebhookService) deliverWebhook(webhook models.WebhookConfig, eventType 
 	if retries < 1 {
 		retries = 3
 	}
+
+	// One row per delivery, created up front (status "pending") and updated on
+	// each attempt so the listing shows a single evolving record that ends in a
+	// terminal status rather than one row per attempt.
+	delivery := &models.WebhookDelivery{
+		ID:              uuid.New(),
+		WebhookConfigID: webhook.ID,
+		EventType:       eventType,
+		Payload:         string(payloadJSON),
+		Status:          "pending",
+		Success:         false,
+		AttemptNumber:   0,
+		DeliveredAt:     time.Now().UTC(),
+	}
+	if err := s.db.Create(delivery).Error; err != nil {
+		zap.L().Named("webhook-service").Error("failed to create webhook delivery record",
+			zap.String("webhook_id", webhook.ID.String()), zap.Error(err))
+		return
+	}
+
 	for attempt := 1; attempt <= retries; attempt++ {
-		success := s.attemptDelivery(webhook, eventType, payloadJSON, attempt)
-		if success {
-			break
+		httpStatus, detail, ok := s.attemptDelivery(webhook, eventType, payloadJSON, attempt)
+		// The row becomes terminal once an attempt succeeds or the budget is spent.
+		s.updateDelivery(delivery, attempt, httpStatus, detail, ok, ok || attempt == retries)
+		if ok {
+			return
 		}
-		time.Sleep(time.Duration(attempt) * time.Second)
+		if attempt < retries {
+			time.Sleep(webhookRetryDelay(attempt))
+		}
 	}
 }
 
-// attemptDelivery attempts a single webhook delivery.
-func (s *WebhookService) attemptDelivery(webhook models.WebhookConfig, eventType string, payloadJSON []byte, attempt int) bool {
-	// Create request. Floor the timeout: a stored 0 (or negative) would make
-	// context.WithTimeout an already-expired deadline, failing every delivery
-	// instantly, so fall back to the default 30s.
+// attemptDelivery attempts a single webhook delivery, returning the HTTP status
+// (0 when the request never completed), a human-readable status/error detail, and
+// whether it succeeded. It does not touch the DB; the caller records the outcome.
+func (s *WebhookService) attemptDelivery(webhook models.WebhookConfig, eventType string, payloadJSON []byte, attempt int) (httpStatus int, detail string, success bool) {
+	// Floor the timeout: a stored 0 (or negative) would make context.WithTimeout
+	// an already-expired deadline, failing every delivery instantly, so fall back
+	// to the default 30s.
 	timeoutSeconds := webhook.TimeoutSeconds
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 30
 	}
+	// context.Background is intentional here: deliveries run in a detached
+	// goroutine (see SendEvent) that outlives the triggering request, so the
+	// request context must not cancel them. The delivery's own timeout bounds it.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "POST", webhook.URL, bytes.NewBuffer(payloadJSON))
 	if err != nil {
-		s.recordDelivery(webhook.ID, eventType, string(payloadJSON), 0, err.Error(), false, attempt)
-		return false
+		return 0, err.Error(), false
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -320,7 +374,7 @@ func (s *WebhookService) attemptDelivery(webhook models.WebhookConfig, eventType
 	req.Header.Set("X-GitMirrors-Delivery-Attempt", strconv.Itoa(attempt))
 
 	// Add HMAC signature if a secret is configured (decrypt the at-rest secret
-	// first). If the stored secret cannot be decrypted, fail safe: record a failed
+	// first). If the stored secret cannot be decrypted, fail safe: report a failed
 	// delivery and do NOT send. Sending unsigned would silently downgrade a
 	// signature-protected webhook to an unauthenticated one for any receiver that
 	// only verifies when a signature is present.
@@ -328,26 +382,26 @@ func (s *WebhookService) attemptDelivery(webhook models.WebhookConfig, eventType
 	if decErr != nil {
 		zap.L().Named("webhook-service").Error("cannot decrypt webhook secret; skipping delivery (not sending unsigned)",
 			zap.String("webhook_id", webhook.ID.String()), zap.Error(decErr))
-		s.recordDelivery(webhook.ID, eventType, string(payloadJSON), 0, "webhook secret could not be decrypted", false, attempt)
-		return false
+		return 0, "webhook secret could not be decrypted", false
 	}
 	if secret != "" {
 		signature := s.generateHMACSignature(payloadJSON, secret)
 		req.Header.Set("X-GitMirrors-Signature", signature)
 	}
 
-	// Send request.
-	client := &http.Client{}
+	// Give the client an explicit timeout in addition to the request context so a
+	// zero-value client can never wait without bound (item 27). Match it to the
+	// per-webhook timeout (30s default; webhook delivery warrants a longer bound
+	// than the 10s used for other outbound calls).
+	client := &http.Client{Timeout: time.Duration(timeoutSeconds) * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		s.recordDelivery(webhook.ID, eventType, string(payloadJSON), 0, err.Error(), false, attempt)
-		return false
+		return 0, err.Error(), false
 	}
 	defer resp.Body.Close()
 
-	success := resp.StatusCode >= 200 && resp.StatusCode < 300
-	s.recordDelivery(webhook.ID, eventType, string(payloadJSON), resp.StatusCode, resp.Status, success, attempt)
-	return success
+	success = resp.StatusCode >= 200 && resp.StatusCode < 300
+	return resp.StatusCode, resp.Status, success
 }
 
 // generateHMACSignature generates an HMAC signature for the payload.
@@ -357,26 +411,66 @@ func (s *WebhookService) generateHMACSignature(payload []byte, secret string) st
 	return "sha256=" + hex.EncodeToString(h.Sum(nil))
 }
 
-// recordDelivery records a webhook delivery attempt.
-func (s *WebhookService) recordDelivery(webhookID uuid.UUID, eventType, payload string, httpStatus int, responseBody string, success bool, attempt int) {
-	delivery := &models.WebhookDelivery{
-		ID:              uuid.New(),
-		WebhookConfigID: webhookID,
-		EventType:       eventType,
-		Payload:         payload,
-		HTTPStatus:      &httpStatus,
-		ResponseBody:    responseBody,
-		Success:         success,
-		AttemptNumber:   attempt,
-		DeliveredAt:     time.Now(),
+// updateDelivery records the outcome of one attempt onto the delivery row,
+// moving it to a terminal status once the attempt succeeded ("success") or the
+// retry budget is exhausted ("failed"); otherwise it stays "pending".
+func (s *WebhookService) updateDelivery(delivery *models.WebhookDelivery, attempt, httpStatus int, detail string, success, terminal bool) {
+	status := "pending"
+	switch {
+	case success:
+		status = "success"
+	case terminal:
+		status = "failed"
 	}
-	s.db.Create(delivery)
+
+	delivery.AttemptNumber = attempt
+	delivery.HTTPStatus = &httpStatus
+	delivery.ResponseBody = detail
+	delivery.Success = success
+	delivery.Status = status
+	delivery.DeliveredAt = time.Now().UTC()
+
+	if err := s.db.Model(delivery).Updates(map[string]any{
+		"attempt_number": attempt,
+		"http_status":    httpStatus,
+		"response_body":  detail,
+		"success":        success,
+		"status":         status,
+		"delivered_at":   delivery.DeliveredAt,
+	}).Error; err != nil {
+		zap.L().Named("webhook-service").Error("failed to update webhook delivery record",
+			zap.String("delivery_id", delivery.ID.String()), zap.Error(err))
+	}
 
 	outcome := "failed"
 	if success {
 		outcome = "success"
 	}
 	metrics.WebhookDeliveriesTotal.WithLabelValues(outcome).Inc()
+}
+
+// recordTerminalMarshalFailure records a delivery that never left the process
+// because its payload could not be marshalled, as a single terminal "failed" row
+// so the failure is still visible in the deliveries listing.
+func (s *WebhookService) recordTerminalMarshalFailure(webhookID uuid.UUID, eventType string, marshalErr error) {
+	status := 0
+	delivery := &models.WebhookDelivery{
+		ID:              uuid.New(),
+		WebhookConfigID: webhookID,
+		EventType:       eventType,
+		Payload:         fmt.Sprintf("{\"marshal_error\": %q}", marshalErr.Error()),
+		HTTPStatus:      &status,
+		ResponseBody:    "payload marshal failed: " + marshalErr.Error(),
+		Success:         false,
+		Status:          "failed",
+		AttemptNumber:   1,
+		DeliveredAt:     time.Now().UTC(),
+	}
+	if err := s.db.Create(delivery).Error; err != nil {
+		zap.L().Named("webhook-service").Error("failed to record webhook marshal failure",
+			zap.String("webhook_id", webhookID.String()), zap.Error(err))
+	}
+	metrics.WebhookDeliveriesTotal.WithLabelValues("failed").Inc()
 }
 
 // GetWebhookDeliveries retrieves deliveries for a webhook.
@@ -400,13 +494,16 @@ func (s *WebhookService) TestWebhook(ctx context.Context, webhookID uuid.UUID) e
 		return err
 	}
 
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"event":      "webhook.test",
 		"message":    "This is a test webhook delivery",
 		"timestamp":  time.Now().UTC().Format(time.RFC3339),
 		"webhook_id": webhook.ID.String(),
 	}
 
+	// Fire-and-forget background delivery, deliberately detached from ctx; see
+	// deliverWebhook/attemptDelivery.
+	//nolint:contextcheck // detached background delivery, not request-scoped
 	go s.deliverWebhook(*webhook, "webhook.test", payload)
 	return nil
 }

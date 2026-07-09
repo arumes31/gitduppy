@@ -50,7 +50,8 @@ func (h *BackupHandler) Export(c *gin.Context) {
 
 	data, err := h.backupService.ExportData(c, exportFormat)
 	if err != nil {
-		response.InternalError(c, "Failed to export data: "+err.Error())
+		logServerError(c, err)
+		response.InternalError(c, "Failed to export data")
 		return
 	}
 
@@ -128,7 +129,8 @@ func (h *BackupHandler) DatabaseBackup(c *gin.Context) {
 
 	backupPath, err := h.backupService.DatabaseBackup(c)
 	if err != nil {
-		response.InternalError(c, "Failed to create database backup: "+err.Error())
+		logServerError(c, err)
+		response.InternalError(c, "Failed to create database backup")
 		return
 	}
 

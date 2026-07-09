@@ -52,7 +52,7 @@ func (h *APIKeyHandler) ListAPIKeys(c *gin.Context) {
 
 	keys, err := h.apiKeyService.ListAPIKeys(c, user.ID)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -80,7 +80,7 @@ func (h *APIKeyHandler) CreateAPIKey(c *gin.Context) {
 
 	resp, err := h.apiKeyService.CreateAPIKey(c, user.ID, &req)
 	if err != nil {
-		response.BadRequest(c, "CREATE_ERROR", err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -106,7 +106,7 @@ func (h *APIKeyHandler) DeleteAPIKey(c *gin.Context) {
 	}
 
 	if err := h.apiKeyService.DeleteAPIKey(c, id); err != nil {
-		response.BadRequest(c, "DELETE_ERROR", err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -125,7 +125,7 @@ func (h *APIKeyHandler) RevokeAPIKey(c *gin.Context) {
 	}
 
 	if err := h.apiKeyService.RevokeAPIKey(c, id); err != nil {
-		response.BadRequest(c, "REVOKE_ERROR", err.Error())
+		respondServiceError(c, err)
 		return
 	}
 

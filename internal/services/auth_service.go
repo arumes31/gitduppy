@@ -15,20 +15,61 @@ import (
 	"gorm.io/gorm"
 )
 
+// Account lockout policy for password logins. After maxFailedLoginAttempts
+// consecutive failures the account is locked with a progressive backoff: the
+// lock starts at baseLockoutDuration and doubles with each further failure,
+// capped at maxLockoutDuration. A successful login resets the counter and clears
+// the lock.
+const (
+	maxFailedLoginAttempts = 5
+	baseLockoutDuration    = 15 * time.Minute
+	maxLockoutDuration     = 24 * time.Hour
+)
+
+// AuthCacheInvalidator is the subset of the middleware auth cache this service
+// evicts from when a credential is revoked out-of-band of its natural TTL, so a
+// logout or password change is not masked by the cache. It is optional: a nil
+// invalidator simply falls back to TTL expiry. Kept as a local interface so the
+// service does not import the middleware package.
+type AuthCacheInvalidator interface {
+	Evict(credentialHash string)
+	EvictUser(userID uuid.UUID)
+}
+
 // AuthService handles authentication logic.
 type AuthService struct {
 	db              *gorm.DB
 	passwordService *crypto.PasswordService
 	sessionDuration time.Duration
+	auditService    *AuditService
+	authCache       AuthCacheInvalidator
 }
 
-// NewAuthService creates a new auth service.
-func NewAuthService(sessionDuration time.Duration) *AuthService {
+// NewAuthService creates a new auth service. auditService may be nil, in which
+// case security events are simply not recorded.
+func NewAuthService(sessionDuration time.Duration, auditService *AuditService) *AuthService {
 	return &AuthService{
 		db:              database.GetDB(),
 		passwordService: crypto.NewPasswordService(),
 		sessionDuration: sessionDuration,
+		auditService:    auditService,
 	}
+}
+
+// SetAuthCache wires the middleware auth cache so logout and password change evict
+// the affected cached credentials eagerly. Call once at startup.
+func (s *AuthService) SetAuthCache(cache AuthCacheInvalidator) {
+	s.authCache = cache
+}
+
+// audit records a security-relevant event, ignoring logging errors so an audit
+// failure never blocks the primary flow. It is a no-op when no audit service is
+// wired in.
+func (s *AuthService) audit(ctx context.Context, userID *uuid.UUID, action string, details any) {
+	if s.auditService == nil {
+		return
+	}
+	_ = s.auditService.Log(ctx, userID, nil, action, details, "", "")
 }
 
 // LoginRequest represents a login request.
@@ -46,7 +87,7 @@ type LoginResponse struct {
 }
 
 // Login authenticates a user and creates a session.
-func (s *AuthService) Login(_ context.Context, req *LoginRequest) (*LoginResponse, error) {
+func (s *AuthService) Login(ctx context.Context, req *LoginRequest) (*LoginResponse, error) {
 	// Find the user with a deterministic lookup: an exact username match takes
 	// precedence, falling back to an email match only when no username matches.
 	// A combined "username = ? OR email = ?" query could return whichever row
@@ -69,26 +110,67 @@ func (s *AuthService) Login(_ context.Context, req *LoginRequest) (*LoginRespons
 		return nil, errors.New("account is disabled")
 	}
 
-	// Verify password
-	if user.PasswordHash == nil || !s.passwordService.Verify(*user.PasswordHash, req.Password) {
+	// Reject a locked account BEFORE running bcrypt, so a locked-out attacker can
+	// neither authenticate nor use the endpoint as a bcrypt oracle. The client is
+	// told only "invalid username or password" (the lockout is not disclosed), but
+	// it is audited so operators can see the brute-force being throttled.
+	if user.LockedUntil != nil && user.LockedUntil.After(time.Now()) {
+		s.audit(ctx, &user.ID, "login.locked", map[string]any{
+			"username":      user.Username,
+			"locked_until":  user.LockedUntil,
+			"failed_before": user.FailedLoginAttempts,
+		})
 		return nil, errors.New("invalid username or password")
 	}
 
-	// Update last login
-	now := time.Now()
+	// Verify password
+	if user.PasswordHash == nil || !s.passwordService.Verify(*user.PasswordHash, req.Password) {
+		// Count the failure and, past the threshold, lock the account with a
+		// progressive backoff. Persist just the two affected columns to avoid a
+		// read-modify-write race clobbering other fields. The generic failure
+		// itself is audited (with client IP) by the caller as "auth.login_failed";
+		// only the lockout transition — which the caller cannot observe — is
+		// recorded here, as "login.locked".
+		user.FailedLoginAttempts++
+		updates := map[string]any{"failed_login_attempts": user.FailedLoginAttempts}
+		if user.FailedLoginAttempts >= maxFailedLoginAttempts {
+			lockedUntil := time.Now().UTC().Add(lockoutDuration(user.FailedLoginAttempts))
+			user.LockedUntil = &lockedUntil
+			updates["locked_until"] = lockedUntil
+			s.audit(ctx, &user.ID, "login.locked", map[string]any{
+				"username":     user.Username,
+				"locked_until": lockedUntil,
+				"failed_count": user.FailedLoginAttempts,
+			})
+		}
+		s.db.Model(&user).Updates(updates)
+		return nil, errors.New("invalid username or password")
+	}
+
+	// Successful login: clear any lockout state and record the last-login time.
+	now := time.Now().UTC()
 	user.LastLogin = &now
-	s.db.Save(&user)
+	user.FailedLoginAttempts = 0
+	user.LockedUntil = nil
+	s.db.Model(&user).Updates(map[string]any{
+		"last_login":            now,
+		"failed_login_attempts": 0,
+		"locked_until":          nil,
+	})
 
 	// Generate session token
 	sessionToken, err := s.GenerateSessionToken()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate session token: %w", err)
 	}
-	expiresAt := time.Now().Add(s.sessionDuration)
+	expiresAt := time.Now().UTC().Add(s.sessionDuration)
 
-	// Create session
+	// Create session. The raw token is returned to the caller (and set as the
+	// cookie) but only its SHA-256 hash is stored, so a database leak cannot yield
+	// usable session cookies. See the Session model note: pre-hash sessions stop
+	// matching after deploy and users must log in again once.
 	session := &models.Session{
-		Token:  sessionToken,
+		Token:  crypto.HashToken(sessionToken),
 		UserID: user.ID,
 		Data:   `{"auth_type":"password"}`,
 		Expiry: expiresAt,
@@ -104,20 +186,49 @@ func (s *AuthService) Login(_ context.Context, req *LoginRequest) (*LoginRespons
 	}, nil
 }
 
-// Logout invalidates a session.
-func (s *AuthService) Logout(_ context.Context, sessionToken string) error {
-	return s.db.Where("token = ?", sessionToken).Delete(&models.Session{}).Error
+// lockoutDuration returns the progressive lockout window for a given number of
+// consecutive failed attempts: baseLockoutDuration doubled once per failure past
+// the threshold, capped at maxLockoutDuration.
+func lockoutDuration(failedAttempts int) time.Duration {
+	shift := failedAttempts - maxFailedLoginAttempts
+	if shift < 0 {
+		shift = 0
+	}
+	// Cap the shift so the bit-shift below cannot overflow; baseLockoutDuration
+	// shifted by 10 already dwarfs maxLockoutDuration, so it is clamped anyway.
+	if shift > 10 {
+		shift = 10
+	}
+	d := baseLockoutDuration << uint(shift)
+	if d <= 0 || d > maxLockoutDuration {
+		return maxLockoutDuration
+	}
+	return d
 }
 
-// RefreshSession extends a session's expiry.
+// Logout invalidates a session. The stored key is the hash of the token, so the
+// raw cookie value is hashed before deleting. The same hash is evicted from the
+// auth cache so the just-deleted session cannot be served from cache for the
+// remainder of its TTL.
+func (s *AuthService) Logout(_ context.Context, sessionToken string) error {
+	tokenHash := crypto.HashToken(sessionToken)
+	err := s.db.Where("token = ?", tokenHash).Delete(&models.Session{}).Error
+	if err == nil && s.authCache != nil {
+		s.authCache.Evict(tokenHash)
+	}
+	return err
+}
+
+// RefreshSession extends a session's expiry. The raw cookie value is hashed
+// before lookup to match the stored (hashed) session key.
 func (s *AuthService) RefreshSession(_ context.Context, sessionToken string) (*models.Session, error) {
 	var session models.Session
-	if err := s.db.Where("token = ? AND expiry > ?", sessionToken, time.Now()).First(&session).Error; err != nil {
+	if err := s.db.Where("token = ? AND expiry > ?", crypto.HashToken(sessionToken), time.Now()).First(&session).Error; err != nil {
 		return nil, errors.New("invalid or expired session")
 	}
 
 	// Extend expiry
-	session.Expiry = time.Now().Add(s.sessionDuration)
+	session.Expiry = time.Now().UTC().Add(s.sessionDuration)
 	if err := s.db.Save(&session).Error; err != nil {
 		return nil, err
 	}
@@ -125,10 +236,11 @@ func (s *AuthService) RefreshSession(_ context.Context, sessionToken string) (*m
 	return &session, nil
 }
 
-// ValidateSession checks if a session is valid and returns the user.
+// ValidateSession checks if a session is valid and returns the user. The raw
+// cookie value is hashed before lookup to match the stored (hashed) session key.
 func (s *AuthService) ValidateSession(_ context.Context, sessionToken string) (*models.User, error) {
 	var session models.Session
-	if err := s.db.Where("token = ? AND expiry > ?", sessionToken, time.Now()).First(&session).Error; err != nil {
+	if err := s.db.Where("token = ? AND expiry > ?", crypto.HashToken(sessionToken), time.Now()).First(&session).Error; err != nil {
 		return nil, errors.New("invalid or expired session")
 	}
 
@@ -186,12 +298,23 @@ func (s *AuthService) ChangePassword(_ context.Context, userID uuid.UUID, oldPas
 	// including any attacker holding a stolen session cookie — otherwise the old
 	// sessions stay valid until natural expiry.
 	user.PasswordHash = &newHash
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Save(&user).Error; err != nil {
 			return err
 		}
 		return tx.Where("user_id = ?", userID).Delete(&models.Session{}).Error
-	})
+	}); err != nil {
+		return err
+	}
+
+	// Every session for this user was just deleted; evict all of the user's cached
+	// entries too so a stolen session (or a coincident lockout/deactivation) is not
+	// served from the auth cache for up to its TTL. Keyed by user id because the
+	// cache is keyed by credential hash, not user id.
+	if s.authCache != nil {
+		s.authCache.EvictUser(userID)
+	}
+	return nil
 }
 
 // GetUserByID retrieves a user by ID.

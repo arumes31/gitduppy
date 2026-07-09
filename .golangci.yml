@@ -4,10 +4,14 @@ run:
 linters:
   enable:
     - bodyclose
+    - contextcheck
+    - copyloopvar
     - dogsled
+    - errcheck
     - errchkjson
     - errname
     - errorlint
+    - gocritic
     - goheader
     - goprintffuncname
     - gosec
@@ -33,6 +37,13 @@ linters:
         - nilness
         - printf
         - unusedresult
+    gocritic:
+      # exitAfterDefer fires on cmd/server/main.go, where fatal startup errors use
+      # log.Fatalf after best-effort defers (logger.Sync, database.Close). Skipping
+      # that cleanup on a failed boot is intentional and idiomatic for an entrypoint,
+      # so disable just this one check rather than scatter per-line nolints.
+      disabled-checks:
+        - exitAfterDefer
     nakedret:
       max-func-lines: 30
   exclusions:

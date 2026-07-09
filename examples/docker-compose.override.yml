@@ -1,25 +1,27 @@
 # GitDuppy Docker Compose Override Example
 # This file demonstrates how to customize the default docker-compose.yml
-
-version: '3.8'
+# (place it next to docker-compose.yml as docker-compose.override.yml).
 
 services:
   # Override gitduppy service configuration
   gitduppy:
-    # Use a specific version instead of latest
-    image: gitduppy/gitduppy:v1.0.0
+    # Pin a specific released image instead of building locally
+    image: ghcr.io/arumes31/gitduppy:latest
 
-    # Mount custom configuration file
+    # Container paths must match config.yaml's storage.* settings
+    # (base_path=/app/storage/repos, ssh_path=/app/storage/ssh,
+    # backup_path=/app/storage/backups).
     volumes:
-      - ./config.yaml:/app/config.yaml
-      - ./data:/data
-      - ./logs:/var/log/gitduppy
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data/gitduppy/repos:/app/storage/repos
+      - ./data/gitduppy/keys:/app/storage/ssh
+      - ./data/gitduppy/backups:/app/storage/backups
 
-    # Custom environment variables
+    # Custom environment variables (env prefix is GITMIRRORS_, mapping to
+    # config keys with _ for . — e.g. server.port -> GITMIRRORS_SERVER_PORT)
     environment:
-      - CONFIG_FILE=/app/config.yaml
-      - GITDUPPY_SERVER_PORT=9090
-      - GITDUPPY_LOGGING_LEVEL=debug
+      - GITMIRRORS_SERVER_PORT=9090
+      - GITMIRRORS_SERVER_BASE_URL=https://git.example.com
 
     # Resource limits
     deploy:
@@ -31,9 +33,9 @@ services:
           memory: 256M
           cpus: '0.25'
 
-    # Health check
+    # Health check (adjust the port if you changed GITMIRRORS_SERVER_PORT)
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:9090/api/v1/health" ]
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/api/v1/health/ready" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -41,7 +43,7 @@ services:
 
   # Add external database instead of using the default postgres service
   # db:
-  #   image: postgres:14
+  #   image: postgres:16-alpine
   #   environment:
   #     - POSTGRES_DB=gitduppy
   #     - POSTGRES_USER=gitduppy
@@ -51,14 +53,15 @@ services:
   #   networks:
   #     - gitduppy-network
 
-  # Add Caddy reverse proxy for HTTPS
+  # Add Caddy reverse proxy for HTTPS (see deployments/caddy/Caddyfile).
+  # Caddy proxies WebSockets (the live log stream) automatically.
   caddy:
     image: caddy:2
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile
+      - ./deployments/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
