@@ -11,7 +11,11 @@ import (
 // and constant-work lookup; a slow KDF like bcrypt is neither required nor
 // desirable here. The output is always 64 lowercase hex characters.
 //
-// CodeQL [go/weak-sensitive-data-hashing] - SHA-256 hashes high-entropy random secrets (API/session tokens), not passwords, so a slow hashing algorithm is not required or desirable.
+// NOTE: CodeQL's go/weak-sensitive-data-hashing flags this SHA-256 use. It is a
+// reviewed false positive (the query targets password hashing; these inputs are
+// high-entropy tokens) and is dismissed in the Security tab — GitHub code
+// scanning does not honor in-source suppression comments, so this is only
+// documentation, not a suppression.
 func HashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])

@@ -314,6 +314,10 @@ func createDefaultAdmin() error {
 				return errors.New("admin password reset requested but no 'admin' user was updated")
 			}
 			if os.Getenv("GITMIRRORS_BOOTSTRAP_SHOW_PASSWORD") == "true" {
+				// Intentional operator opt-in (see the create path below for the full
+				// rationale). CodeQL go/clear-text-logging flags this reviewed
+				// exception; it is dismissed in the Security tab.
+				// #nosec G706 - Explicit operator opt-in to print the password to logs.
 				log.Printf("=== ADMIN PASSWORD RESET (username: admin) — new password: %q ===", bootstrapPassword) //nolint:gosec // intentional for admin bootstrap
 			} else {
 				log.Println("Admin password forcefully reset from GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD.")
@@ -357,7 +361,11 @@ func createDefaultAdmin() error {
 	case !generated:
 		log.Println("Default admin user created (username: admin) from GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD - change on first login")
 	case os.Getenv("GITMIRRORS_BOOTSTRAP_SHOW_PASSWORD") == "true":
-		// CodeQL [go/clear-text-logging] - Explicit operator opt-in to print the one-time generated bootstrap password.
+		// Intentional: the operator explicitly opted in to have the one-time
+		// generated bootstrap password printed once at startup. CodeQL's
+		// go/clear-text-logging flags this reviewed exception (dismissed in the
+		// Security tab; in-source CodeQL comments are not honored by code
+		// scanning). #nosec G706 below is honored by gosec.
 		// #nosec G706 - Explicit operator opt-in to print the password to logs.
 		log.Printf("=== INITIAL ADMIN CREATED (username: admin) — one-time generated password: %s — change it immediately after first login ===", bootstrapPassword)
 	default:
