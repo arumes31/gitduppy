@@ -3,15 +3,14 @@ package services
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/gitduppy/gitduppy/internal/database"
 	"github.com/gitduppy/gitduppy/internal/models"
+	"github.com/gitduppy/gitduppy/pkg/crypto"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
@@ -57,9 +56,9 @@ func (s *APIKeyService) CreateAPIKey(ctx context.Context, userID uuid.UUID, req 
 	}
 	key := "gm_" + base64.RawURLEncoding.EncodeToString(keyBytes)
 
-	// Hash the key for storage
-	hash := sha256.Sum256([]byte(key))
-	keyHash := hex.EncodeToString(hash[:])
+	// Hash the key for storage — the same helper the auth middleware uses to look
+	// this hash up, so the two sides can never drift.
+	keyHash := crypto.HashToken(key)
 	keyPrefix := key[:min(8, len(key))]
 
 	var expiresAt *time.Time
@@ -126,9 +125,8 @@ func (s *APIKeyService) RevokeAPIKey(ctx context.Context, id uuid.UUID) error {
 
 // ValidateAPIKey validates an API key and returns the associated user.
 func (s *APIKeyService) ValidateAPIKey(key string) (*models.User, error) {
-	// Hash the provided key
-	hash := sha256.Sum256([]byte(key))
-	keyHash := hex.EncodeToString(hash[:])
+	// Hash the provided key with the shared helper (matches the stored key_hash).
+	keyHash := crypto.HashToken(key)
 
 	// Find the API key in database
 	var apiKey models.APIKey
@@ -160,12 +158,24 @@ func (s *APIKeyService) ValidateAPIKey(key string) (*models.User, error) {
 
 // DeleteAPIKey permanently deletes an API key.
 func (s *APIKeyService) DeleteAPIKey(ctx context.Context, id uuid.UUID) error {
-	result := s.db.WithContext(ctx).Delete(&models.APIKey{}, id)
-	if result.Error != nil {
-		return result.Error
+	// Load the row first so we have its key_hash for a precise cache eviction (the
+	// auth cache is keyed by the stored key_hash), mirroring RevokeAPIKey.
+	var key models.APIKey
+	if err := s.db.WithContext(ctx).First(&key, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("%w: API key", ErrNotFound)
+		}
+		return err
 	}
-	if result.RowsAffected == 0 {
-		return fmt.Errorf("%w: API key", ErrNotFound)
+
+	if err := s.db.WithContext(ctx).Delete(&key).Error; err != nil {
+		return err
+	}
+
+	// Evict only after the delete succeeded so the key cannot linger in the cache
+	// past its row's deletion.
+	if s.authCache != nil {
+		s.authCache.Evict(key.KeyHash)
 	}
 	return nil
 }

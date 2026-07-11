@@ -491,11 +491,19 @@ func (h *BrowseHandler) GetCommit(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
 	defer cancel()
 
-	// Get commit metadata
-	metaOut, gerr := gitops.RunGitCommand(ctx, repo.StoragePath,
-		"log", "-1", "--format=%H|%s%n%b|%an|%ae|%aI|%P", sha)
-	if gerr != nil {
-		logServerError(c, gerr)
+	// Use show --stat for file stats and the full message. This also serves as
+	// the existence check: an error or empty output means the commit is unknown.
+	// Field-separate the metadata with \x1f (as in GetTree/GetCommits) so an
+	// author name containing "|" cannot shift the email/date fields, and terminate
+	// %B with an \x1e sentinel so the message body can be split from the --stat
+	// section without heuristics (a message may itself contain indented "|" lines,
+	// e.g. tables or path lists).
+	showOut, gerr := gitops.RunGitCommand(ctx, repo.StoragePath,
+		"show", "--stat", "--format=%H%x1f%an%x1f%ae%x1f%aI%n%B%x1e", sha)
+	if gerr != nil || strings.TrimSpace(showOut) == "" {
+		if gerr != nil {
+			logServerError(c, gerr)
+		}
 		response.NotFound(c, "Commit not found")
 		return
 	}
@@ -515,34 +523,21 @@ func (h *BrowseHandler) GetCommit(c *gin.Context) {
 	diffOut, _ := gitops.RunGitCommand(ctx, repo.StoragePath,
 		"show", "--unified=3", "--format=", sha)
 
-	// Parse metadata from show output
-	var commitSHA, author, email, date, fullMsg string
-	showLines := strings.Split(showOut, "\n")
-	if len(showLines) > 0 {
-		metaParts := strings.SplitN(showLines[0], "|", 4)
-		if len(metaParts) >= 4 {
-			commitSHA = metaParts[0]
-			author = metaParts[1]
-			email = metaParts[2]
-			date = metaParts[3]
-		}
-	}
+	// Split at the \x1e sentinel: everything before it is the metadata line plus
+	// the verbatim %B message body; everything after is the --stat section.
+	metaAndMsg, statsPart, _ := strings.Cut(showOut, "\x1e")
 
-	// Extract full message (lines between format line and diff stats)
-	msgLines := []string{}
-	inMsg := false
-	inStats := false
-	for _, l := range showLines[1:] {
-		if strings.HasPrefix(l, "diff --git") || strings.HasPrefix(l, " ") && strings.Contains(l, "|") {
-			inStats = true
-		}
-		if !inStats {
-			inMsg = true
-			msgLines = append(msgLines, l)
-		}
-		_ = inMsg
+	// Parse metadata from the first line, the message from the rest.
+	var commitSHA, author, email, date string
+	headerLine, msgPart, _ := strings.Cut(metaAndMsg, "\n")
+	metaParts := strings.SplitN(headerLine, "\x1f", 4)
+	if len(metaParts) >= 4 {
+		commitSHA = metaParts[0]
+		author = metaParts[1]
+		email = metaParts[2]
+		date = metaParts[3]
 	}
-	fullMsg = strings.TrimSpace(strings.Join(msgLines, "\n"))
+	fullMsg := strings.TrimSpace(msgPart)
 
 	// Parse file stats from `git show --stat`
 	type FileStat struct {
@@ -551,7 +546,7 @@ func (h *BrowseHandler) GetCommit(c *gin.Context) {
 		Deletions int    `json:"deletions"`
 	}
 	var fileStats []FileStat
-	for _, l := range showLines {
+	for _, l := range strings.Split(statsPart, "\n") {
 		// Lines like: " file.go | 10 ++"
 		l = strings.TrimSpace(l)
 		if strings.Contains(l, "|") && !strings.HasPrefix(l, "diff") {

@@ -2,7 +2,6 @@ package gitops
 
 import (
 	"context"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -82,6 +81,17 @@ func (w *CleanupWorker) run() {
 		case <-w.done:
 			return
 		}
+	}
+}
+
+// purge logs the outcome of a pre-scoped Delete: the error (errLabel) or the
+// affected-row count (successLabel), both through the configured zap pipeline.
+// Callers pass the *gorm.DB returned by w.db.Where(...).Delete(&model{}).
+func (w *CleanupWorker) purge(errLabel, successLabel string, result *gorm.DB) {
+	if result.Error != nil {
+		w.logger.Error("failed to cleanup "+errLabel, zap.Error(result.Error))
+	} else {
+		w.logger.Info("cleaned up "+successLabel, zap.Int64("count", result.RowsAffected))
 	}
 }
 

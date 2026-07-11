@@ -208,6 +208,9 @@ func (h *RepositoryHandler) UpdateRepository(c *gin.Context) {
 		return
 	}
 
+	// URL/auth_type validation lives in the service (applyUpdateFields), so
+	// non-handler callers cannot slip invalid values past it either; invalid
+	// input surfaces here as ErrValidation → 400 via respondServiceError.
 	repo, err := h.repoService.UpdateRepository(c, id, &req)
 	if err != nil {
 		respondServiceError(c, err)
