@@ -7,6 +7,11 @@ import (
 	"gorm.io/gorm"
 )
 
+// DefaultTagColor is the default color assigned to new tags. It is referenced
+// by the GORM default tag on Tag.Color and by the post-clone topic-tag creator
+// so both paths stay in sync.
+const DefaultTagColor = "#6366f1"
+
 // Tag represents a label that can be applied to repositories.
 type Tag struct {
 	ID        uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`

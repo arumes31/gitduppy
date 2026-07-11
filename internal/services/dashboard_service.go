@@ -12,6 +12,7 @@ import (
 	"github.com/gitduppy/gitduppy/internal/database"
 	"github.com/gitduppy/gitduppy/internal/metrics"
 	"github.com/gitduppy/gitduppy/internal/models"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -265,8 +266,11 @@ func (s *DashboardService) GetStats(ctx context.Context) (*DashboardStats, error
 		Select("COALESCE(SUM(size_bytes), 0) AS total, " +
 			"COUNT(*) FILTER (WHERE is_active) AS active_count, " +
 			"COUNT(*) FILTER (WHERE is_active AND size_bytes > 0) AS active_sized").
-		Scan(&sizeAgg).Error; err == nil &&
-		sizeAgg.ActiveCount > 0 && sizeAgg.ActiveCount == sizeAgg.ActiveSized {
+		Scan(&sizeAgg).Error; err != nil {
+		zap.L().Named("dashboard").Warn("repository size aggregate query failed, falling back to filesystem walk",
+			zap.Error(err))
+		stats.TotalStorageBytes = s.totalStorageBytes()
+	} else if sizeAgg.ActiveCount > 0 && sizeAgg.ActiveCount == sizeAgg.ActiveSized {
 		stats.TotalStorageBytes = sizeAgg.Total
 	} else {
 		stats.TotalStorageBytes = s.totalStorageBytes()

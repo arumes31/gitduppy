@@ -162,7 +162,7 @@ func (s *UserService) UpdateUser(ctx context.Context, id uuid.UUID, req *UpdateU
 	if req.Username != nil {
 		// Check if username is taken by another user
 		var existing models.User
-		if err := s.db.Where("username = ? AND id != ?", *req.Username, id).First(&existing).Error; err == nil {
+		if err := s.db.WithContext(ctx).Where("username = ? AND id != ?", *req.Username, id).First(&existing).Error; err == nil {
 			return nil, fmt.Errorf("%w: username already exists", ErrConflict)
 		}
 		user.Username = *req.Username
@@ -170,7 +170,7 @@ func (s *UserService) UpdateUser(ctx context.Context, id uuid.UUID, req *UpdateU
 	if req.Email != nil {
 		// Check if email is taken by another user
 		var existing models.User
-		if err := s.db.Where("email = ? AND id != ?", *req.Email, id).First(&existing).Error; err == nil {
+		if err := s.db.WithContext(ctx).Where("email = ? AND id != ?", *req.Email, id).First(&existing).Error; err == nil {
 			return nil, fmt.Errorf("%w: email already exists", ErrConflict)
 		}
 		user.Email = *req.Email
@@ -183,7 +183,7 @@ func (s *UserService) UpdateUser(ctx context.Context, id uuid.UUID, req *UpdateU
 	}
 
 	user.UpdatedAt = time.Now().UTC()
-	if err := s.db.Save(user).Error; err != nil {
+	if err := s.db.WithContext(ctx).Save(user).Error; err != nil {
 		return nil, err
 	}
 

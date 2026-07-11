@@ -175,7 +175,7 @@ func (w *CloneWorker) syncGitHubMetadata(ctx context.Context, logger *zap.Logger
 		// UI-created tags agree.
 		topicTags := make([]models.Tag, len(info.Topics))
 		for i, topic := range info.Topics {
-			topicTags[i] = models.Tag{ID: uuid.New(), Name: topic, Color: "#6366f1"}
+			topicTags[i] = models.Tag{ID: uuid.New(), Name: topic, Color: models.DefaultTagColor}
 		}
 		if err := tx.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "name"}},

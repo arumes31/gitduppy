@@ -212,24 +212,29 @@ func (s *CloneService) GetRepositoryLogs(_ context.Context, repoID uuid.UUID, li
 	return logs, err
 }
 
-// CancelCloneJob cancels a running clone job.
+// CancelCloneJob cancels a running or pending clone job atomically.
 func (s *CloneService) CancelCloneJob(_ context.Context, id uuid.UUID) error {
-	var job models.CloneJob
-	if err := s.db.First(&job, id).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+	result := s.db.Model(&models.CloneJob{}).
+		Where("id = ? AND status IN ?", id, []string{"running", "pending"}).
+		Updates(map[string]any{
+			"status":       "cancelled",
+			"completed_at": time.Now().UTC(),
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		// Distinguish "does not exist" from "exists but not cancellable".
+		var count int64
+		if err := s.db.Model(&models.CloneJob{}).Where("id = ?", id).Count(&count).Error; err != nil {
+			return err
+		}
+		if count == 0 {
 			return fmt.Errorf("%w: clone job", ErrNotFound)
 		}
-		return err
-	}
-
-	if job.Status != "running" && job.Status != "pending" {
 		return fmt.Errorf("%w: can only cancel running or pending jobs", ErrValidation)
 	}
-
-	return s.db.Model(&job).Updates(map[string]any{
-		"status":       "cancelled",
-		"completed_at": time.Now().UTC(),
-	}).Error
+	return nil
 }
 
 // GetRecentJobs retrieves recent clone jobs.

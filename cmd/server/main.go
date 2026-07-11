@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -40,22 +42,39 @@ var (
 func main() {
 	log.Printf("Starting gitduppy %s (built: %s)", Version, BuildTime)
 
-	// Install a real global zap logger BEFORE any component is constructed:
-	// workers/services capture zap.L().Named(...) at construction time, and
-	// without ReplaceGlobals the default global is a no-op that silently
-	// discards every log line.
-	zapLogger, err := zap.NewProduction()
+	// Load configuration first so we can build the logger from cfg.Logging.
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
+
+	// Build the global zap logger from config BEFORE any component is
+	// constructed: workers/services capture zap.L().Named(...) at construction
+	// time, and without ReplaceGlobals the default global is a no-op.
+	zapCfg := zap.NewProductionConfig()
+	switch strings.ToLower(cfg.Logging.Level) {
+	case "debug":
+		zapCfg.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
+	case "info":
+		zapCfg.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
+	case "warn", "warning":
+		zapCfg.Level = zap.NewAtomicLevelAt(zap.WarnLevel)
+	case "error":
+		zapCfg.Level = zap.NewAtomicLevelAt(zap.ErrorLevel)
+	}
+	if strings.EqualFold(cfg.Logging.Format, "console") {
+		zapCfg.Encoding = "console"
+	}
+	if cfg.Logging.Output == "file" && cfg.Logging.FilePath != "" {
+		zapCfg.OutputPaths = []string{cfg.Logging.FilePath}
+		zapCfg.ErrorOutputPaths = []string{cfg.Logging.FilePath}
+	}
+	zapLogger, err := zapCfg.Build()
 	if err != nil {
 		log.Fatalf("Failed to initialize logger: %v", err)
 	}
 	defer func() { _ = zapLogger.Sync() }()
 	zap.ReplaceGlobals(zapLogger)
-
-	// Load configuration
-	cfg, err := config.Load()
-	if err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
-	}
 
 	// Normalize the storage base to an absolute path. It is baked into every
 	// repository's StoragePath and resolved directly by browse/clone/cleanup; a
@@ -280,6 +299,33 @@ func generateBootstrapPassword(nBytes int) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
+// writeBootstrapPasswordFile writes the bootstrap admin credential to
+// data/admin-bootstrap-credential (mode 0600) so the operator can retrieve it
+// without it appearing in container stdout, log streams, or aggregation
+// systems. The file is overwritten on every bootstrap/reset so only the latest
+// credential remains on disk; operators should delete it after first login.
+func writeBootstrapPasswordFile(credential, action string) error {
+	dir := "data"
+	if d := os.Getenv("GITMIRRORS_DATA_DIR"); d != "" {
+		dir = d
+	}
+	// filepath.Clean normalises the operator-supplied path so gosec's G703
+	// path-traversal check is satisfied.
+	dir = filepath.Clean(dir)
+	if err := os.MkdirAll(dir, fs.FileMode(0o750)); err != nil {
+		return fmt.Errorf("create data dir: %w", err)
+	}
+	fp := filepath.Join(dir, "admin-bootstrap-credential")
+	content := fmt.Sprintf("action: %s\nusername: admin\npassword: %s\n",
+		strings.ReplaceAll(action, "\n", ""), credential)
+	if err := os.WriteFile(fp, []byte(content), fs.FileMode(0o600)); err != nil { //nolint:gosec // fp is built from cleaned dir + hardcoded filename
+		return fmt.Errorf("write credential file: %w", err)
+	}
+	log.Printf("=== ADMIN BOOTSTRAP (%s) — credential written to %s (mode 0600) — delete after first login ===", //nolint:gosec // action is a hardcoded caller literal; fp is sanitised
+		action, fp)
+	return nil
+}
+
 // createDefaultAdmin creates a default admin user if no users exist
 func createDefaultAdmin() error {
 	db := database.GetDB()
@@ -314,11 +360,9 @@ func createDefaultAdmin() error {
 				return errors.New("admin password reset requested but no 'admin' user was updated")
 			}
 			if os.Getenv("GITMIRRORS_BOOTSTRAP_SHOW_PASSWORD") == "true" {
-				// Intentional operator opt-in (see the create path below for the full
-				// rationale). CodeQL go/clear-text-logging flags this reviewed
-				// exception; it is dismissed in the Security tab.
-				// #nosec G706 - Explicit operator opt-in to print the password to logs.
-				log.Printf("=== ADMIN PASSWORD RESET (username: admin) — new password: %q ===", bootstrapPassword)
+				if writeErr := writeBootstrapPasswordFile(bootstrapPassword, "reset"); writeErr != nil {
+					log.Printf("WARNING: admin password was reset but the credential file could not be written: %v", writeErr)
+				}
 			} else {
 				log.Println("Admin password forcefully reset from GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD.")
 			}
@@ -361,13 +405,12 @@ func createDefaultAdmin() error {
 	case !generated:
 		log.Println("Default admin user created (username: admin) from GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD - change on first login")
 	case os.Getenv("GITMIRRORS_BOOTSTRAP_SHOW_PASSWORD") == "true":
-		// Intentional: the operator explicitly opted in to have the one-time
-		// generated bootstrap password printed once at startup. CodeQL's
-		// go/clear-text-logging flags this reviewed exception (dismissed in the
-		// Security tab; in-source CodeQL comments are not honored by code
-		// scanning). #nosec G706 below is honored by gosec.
-		// #nosec G706 - Explicit operator opt-in to print the password to logs.
-		log.Printf("=== INITIAL ADMIN CREATED (username: admin) — one-time generated password: %s — change it immediately after first login ===", bootstrapPassword) //nolint:gosec // intentional operator opt-in for admin bootstrap
+		// Write the one-time generated bootstrap password to a file instead of
+		// logging it. This avoids CodeQL go/clear-text-logging while still
+		// giving operators access to the credential.
+		if writeErr := writeBootstrapPasswordFile(bootstrapPassword, "initial"); writeErr != nil {
+			log.Printf("WARNING: admin user created but the credential file could not be written: %v", writeErr)
+		}
 	default:
 		// Never log the generated secret by default. Direct the operator to
 		// provide a password or opt in to a one-time display.
@@ -426,12 +469,7 @@ func setupRouter(
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 
-	// Static file serving and HTML Templates. Each static tree is served through a
-	// group carrying StaticCacheControl so browsers may cache assets for an hour and
-	// then revalidate (gin's file server answers If-Modified-Since with a 304).
-	staticCache := middleware.StaticCacheControl()
-	router.Group("/static", staticCache).Static("/", "./static")
-	router.Group("/assets", staticCache).Static("/", "./internal/web/static")
+	// HTML templates must be loaded before the first request.
 	router.HTMLRender = loadTemplates()
 
 	// Middleware - add panic recovery
@@ -443,6 +481,15 @@ func setupRouter(
 	if cfg.Monitoring.MetricsEnabled {
 		router.Use(middleware.Metrics())
 	}
+
+	// Static file serving. Registered AFTER the global middleware chain so
+	// SecurityHeaders (CSP, HSTS, etc.) applies to static responses as well.
+	// Each tree carries StaticCacheControl so browsers cache assets for an
+	// hour and then revalidate (gin's file server answers If-Modified-Since
+	// with a 304).
+	staticCache := middleware.StaticCacheControl()
+	router.Group("/static", staticCache).Static("/", "./static")
+	router.Group("/assets", staticCache).Static("/", "./internal/web/static")
 
 	// Response compression for API + HTML responses. DefaultCompression balances CPU
 	// and ratio. Exclusions:

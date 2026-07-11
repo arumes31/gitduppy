@@ -442,11 +442,13 @@ func (s *WebhookService) updateDelivery(delivery *models.WebhookDelivery, attemp
 			zap.String("delivery_id", delivery.ID.String()), zap.Error(err))
 	}
 
-	outcome := "failed"
-	if success {
-		outcome = "success"
+	if terminal {
+		outcome := "failed"
+		if success {
+			outcome = "success"
+		}
+		metrics.WebhookDeliveriesTotal.WithLabelValues(outcome).Inc()
 	}
-	metrics.WebhookDeliveriesTotal.WithLabelValues(outcome).Inc()
 }
 
 // recordTerminalMarshalFailure records a delivery that never left the process

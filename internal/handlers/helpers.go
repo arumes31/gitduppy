@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"errors"
+	"path"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gitduppy/gitduppy/internal/services"
@@ -60,12 +62,16 @@ func respondServiceError(c *gin.Context, err error) {
 
 // logServerError records the full error server-side, tagged with the request
 // method and path, so operators can diagnose failures that clients only ever see
-// as a generic 500. It uses the zap global logger, matching the structured
+// as a generic 500. The path is sanitised to prevent log injection from
+// user-controlled input. It uses the zap global logger, matching the structured
 // logging used elsewhere (internal/gitops).
 func logServerError(c *gin.Context, err error) {
+	// Sanitise the request path: clean traversal sequences, strip control
+	// characters (including newlines) so an attacker cannot forge log entries.
+	safePath := sanitiseLogValue(c.Request.URL.Path)
 	zap.L().Named("handlers").Error("request failed",
 		zap.String("method", c.Request.Method),
-		zap.String("path", c.Request.URL.Path),
+		zap.String("path", safePath),
 		zap.Error(err),
 	)
 }
@@ -88,4 +94,20 @@ func clampLimit(raw string, def, maxLimit int) int {
 		v = maxLimit
 	}
 	return v
+}
+
+// sanitiseLogValue cleans a user-controlled string before it is written to a
+// log entry. It applies path.Clean to normalise traversal sequences and strips
+// control characters (newlines, carriage returns, tabs, etc.) so an attacker
+// cannot forge extra log lines or inject terminal escape sequences.
+func sanitiseLogValue(raw string) string {
+	cleaned := path.Clean(raw)
+	var b strings.Builder
+	b.Grow(len(cleaned))
+	for _, r := range cleaned {
+		if r >= 0x20 && r != 0x7f {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }

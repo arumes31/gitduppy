@@ -34,7 +34,8 @@ DELETE FROM sessions;
 
 -- +goose Down
 
--- Clear hashed sessions before narrowing, otherwise 64-char values would not fit
--- back into varchar(43).
-DELETE FROM sessions;
-ALTER TABLE sessions ALTER COLUMN token TYPE varchar(43);
+-- Clear hashed sessions (64-char hex values) so a rollback restarts with a
+-- clean sessions table. Do NOT narrow the column back to varchar(43) — that
+-- would take an exclusive lock and break fresh databases that were created
+-- with GORM AutoMigrate's varchar(64) declaration.
+DELETE FROM sessions WHERE LENGTH(token) = 64;

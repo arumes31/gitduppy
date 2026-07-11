@@ -15,7 +15,7 @@ type Session struct {
 	// crypto.HashToken). NOTE: because the stored value changed from the raw token
 	// to its hash, any sessions created before this change stop matching and every
 	// user must log in again once after deploy.
-	Token  string    `gorm:"size:64;primaryKey" json:"token"`
+	Token  string    `gorm:"size:64;primaryKey" json:"-"`
 	UserID uuid.UUID `gorm:"type:uuid;not null;index" json:"user_id"`
 	Data   string    `gorm:"type:text;not null" json:"-"`
 	Expiry time.Time `json:"expiry"`

@@ -202,7 +202,7 @@ func (m *AuthMiddleware) validateSession(ctx context.Context, token string) (*mo
 
 	// Find the session in database
 	var session models.Session
-	if err := db.WithContext(ctx).Where("token = ? AND expiry > ?", tokenHash, time.Now()).First(&session).Error; err != nil {
+	if err := db.WithContext(ctx).Where("token = ? AND expiry > ?", tokenHash, time.Now().UTC()).First(&session).Error; err != nil {
 		return nil, err
 	}
 
