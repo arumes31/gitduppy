@@ -289,10 +289,12 @@ func (s *DashboardService) GetStats(ctx context.Context) (*DashboardStats, error
 		Clones   int64
 		Failures int64
 	}
-	db.Model(&models.CloneJob{}).
+	if err := db.Model(&models.CloneJob{}).
 		Select("COUNT(*) FILTER (WHERE created_at >= ?) AS clones, "+
 			"COUNT(*) FILTER (WHERE status = 'failed' AND completed_at >= ?) AS failures", last24h, last24h).
-		Scan(&recentAgg)
+		Scan(&recentAgg).Error; err != nil {
+		return nil, err
+	}
 	stats.RecentActivity.ClonesLast24h = recentAgg.Clones
 	stats.RecentActivity.FailuresLast24h = recentAgg.Failures
 	db.Model(&models.Repository{}).Where("created_at >= ?", last7d).Count(&stats.RecentActivity.NewReposLast7d)

@@ -224,8 +224,12 @@ func (s *UserService) DeleteUser(ctx context.Context, id uuid.UUID) error {
 
 // SetUserStatus enables or disables a user.
 func (s *UserService) SetUserStatus(ctx context.Context, id uuid.UUID, isActive bool) error {
-	if err := s.db.WithContext(ctx).Model(&models.User{}).Where("id = ?", id).Update("is_active", isActive).Error; err != nil {
-		return err
+	result := s.db.WithContext(ctx).Model(&models.User{}).Where("id = ?", id).Update("is_active", isActive)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("%w: user", ErrNotFound)
 	}
 	// Evict cached credentials so a disabled user stops being authenticated
 	// immediately instead of after the cache TTL.

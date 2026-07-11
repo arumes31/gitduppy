@@ -486,8 +486,10 @@ func (h *BrowseHandler) GetCommit(c *gin.Context) {
 
 	// Use show --stat for file stats and the full message. This also serves as
 	// the existence check: an error or empty output means the commit is unknown.
+	// Field-separate the metadata with \x1f (as in GetTree/GetCommits) so an
+	// author name containing "|" cannot shift the email/date fields.
 	showOut, gerr := gitops.RunGitCommand(ctx, repo.StoragePath,
-		"show", "--stat", "--format=%H|%an|%ae|%aI%n%B", sha)
+		"show", "--stat", "--format=%H%x1f%an%x1f%ae%x1f%aI%n%B", sha)
 	if gerr != nil || strings.TrimSpace(showOut) == "" {
 		if gerr != nil {
 			logServerError(c, gerr)
@@ -504,7 +506,7 @@ func (h *BrowseHandler) GetCommit(c *gin.Context) {
 	var commitSHA, author, email, date, fullMsg string
 	showLines := strings.Split(showOut, "\n")
 	if len(showLines) > 0 {
-		metaParts := strings.SplitN(showLines[0], "|", 4)
+		metaParts := strings.SplitN(showLines[0], "\x1f", 4)
 		if len(metaParts) >= 4 {
 			commitSHA = metaParts[0]
 			author = metaParts[1]
