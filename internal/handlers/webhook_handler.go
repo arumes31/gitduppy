@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -251,10 +252,17 @@ func (h *WebhookHandler) ReceiveWebhook(c *gin.Context) {
 		return
 	}
 
-	// Try to find matching webhook by URL or custom headers.
+	// Try to find matching webhook by URL or custom headers. Only a genuine
+	// zero-match is a 404; a database failure is a server fault and must not be
+	// disguised as not-found.
 	webhook, provider, matchErr := h.findMatchingWebhook(c, body)
 	if matchErr != nil {
-		response.NotFound(c, "No matching webhook found")
+		if errors.Is(matchErr, errNoWebhookMatch) {
+			response.NotFound(c, "No matching webhook found")
+			return
+		}
+		logServerError(c, matchErr)
+		response.InternalError(c, "Failed to match webhook")
 		return
 	}
 
@@ -304,10 +312,15 @@ func (h *WebhookHandler) findMatchingWebhook(c *gin.Context, body []byte) (*mode
 	return h.matchProvider(providerGeneric, body)
 }
 
+// errNoWebhookMatch distinguishes "no configured webhook matched the payload"
+// from a database failure, so the receive endpoint can 404 the former and 500
+// the latter instead of masking DB errors as not-found.
+var errNoWebhookMatch = errors.New("no matching webhook found")
+
 func (h *WebhookHandler) matchProvider(provider string, body []byte) (*models.WebhookConfig, string, error) {
 	var webhooks []models.WebhookConfig
 	if err := h.webhookService.DB().Where("provider = ? AND is_active = ?", provider, true).Find(&webhooks).Error; err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("listing webhooks for provider %s: %w", provider, err)
 	}
 	var matches []*models.WebhookConfig
 	for i := range webhooks {
@@ -320,7 +333,7 @@ func (h *WebhookHandler) matchProvider(provider string, body []byte) (*models.We
 		return matches[i].CreatedAt.After(matches[j].CreatedAt)
 	})
 	if len(matches) == 0 {
-		return nil, "", fmt.Errorf("no matching webhook found for provider %s", provider)
+		return nil, "", fmt.Errorf("%w for provider %s", errNoWebhookMatch, provider)
 	}
 	if len(matches) > 1 {
 		log.Printf("Warning: Multiple webhooks matched for provider %s", provider)

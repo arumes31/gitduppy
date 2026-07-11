@@ -15,6 +15,7 @@ import (
 	"github.com/gitduppy/gitduppy/internal/database"
 	"github.com/gitduppy/gitduppy/internal/models"
 	"github.com/gitduppy/gitduppy/pkg/crypto"
+	"github.com/gitduppy/gitduppy/pkg/validator"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
@@ -327,12 +328,20 @@ func (s *RepositoryService) applyUpdateFields(repo *models.Repository, req *Upda
 		repo.Name = *req.Name
 	}
 	if req.URL != nil {
+		if !validator.ValidateGitURL(*req.URL) {
+			return fmt.Errorf("%w: invalid git repository URL", ErrValidation)
+		}
 		repo.URL = *req.URL
 	}
 	if req.Branch != nil {
 		repo.Branch = *req.Branch
 	}
 	if req.AuthType != nil {
+		switch *req.AuthType {
+		case "none", "https", "ssh", "token":
+		default:
+			return fmt.Errorf("%w: auth_type must be one of none, https, ssh, token", ErrValidation)
+		}
 		repo.AuthType = *req.AuthType
 	}
 	if req.Credentials != nil {

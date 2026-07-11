@@ -208,21 +208,9 @@ func (h *RepositoryHandler) UpdateRepository(c *gin.Context) {
 		return
 	}
 
-	// Validate updatable fields the same way CreateRepository does, since the
-	// service binds pointer fields without re-checking them.
-	if req.URL != nil && !validator.ValidateGitURL(*req.URL) {
-		response.BadRequest(c, "INVALID_URL", "Invalid git repository URL")
-		return
-	}
-	if req.AuthType != nil {
-		switch *req.AuthType {
-		case "none", "https", "ssh", "token":
-		default:
-			response.BadRequest(c, "VALIDATION_ERROR", "Invalid auth_type: must be one of none, https, ssh, token")
-			return
-		}
-	}
-
+	// URL/auth_type validation lives in the service (applyUpdateFields), so
+	// non-handler callers cannot slip invalid values past it either; invalid
+	// input surfaces here as ErrValidation → 400 via respondServiceError.
 	repo, err := h.repoService.UpdateRepository(c, id, &req)
 	if err != nil {
 		respondServiceError(c, err)

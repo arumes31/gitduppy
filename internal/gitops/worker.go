@@ -433,7 +433,12 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 		// back to pending when it is still deferrable, and skip the re-enqueue when
 		// the conditional update matched nothing (RowsAffected == 0).
 		deferred := w.db.Model(job).Where("status <> ?", "cancelled").Update("status", "pending")
-		if deferred.Error == nil && deferred.RowsAffected == 0 {
+		if deferred.Error != nil {
+			// Still re-enqueue: the deferral itself only failed to persist, and the
+			// retry re-runs the same conditional update.
+			logger.Error("failed to defer clone job to pending",
+				zap.String("job_id", job.ID.String()), zap.Error(deferred.Error))
+		} else if deferred.RowsAffected == 0 {
 			logger.Info("clone job was cancelled while queued, not re-enqueuing", zap.String("job_id", job.ID.String()))
 			return
 		}
@@ -462,7 +467,12 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 		"output_log": "",
 		"exit_code":  nil,
 	})
-	if started.Error == nil && started.RowsAffected == 0 {
+	if started.Error != nil {
+		// Proceed with the clone anyway: the status row is cosmetic relative to the
+		// work itself, and the terminal-status update at the end retries the write.
+		logger.Error("failed to mark clone job running",
+			zap.String("job_id", job.ID.String()), zap.Error(started.Error))
+	} else if started.RowsAffected == 0 {
 		logger.Info("clone job was cancelled while queued, skipping", zap.String("job_id", job.ID.String()))
 		return
 	}
