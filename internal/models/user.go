@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 // User represents an application user with authentication details.
@@ -20,13 +21,31 @@ type User struct {
 	OAuthProvider *string    `gorm:"size:50;column:oauth_provider" json:"oauth_provider,omitempty"`
 	OAuthSubject  *string    `gorm:"size:255;column:oauth_subject" json:"-"`
 	LastLogin     *time.Time `json:"last_login,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	// FailedLoginAttempts counts consecutive failed password logins; it is reset
+	// to zero on any successful login. The zero value (no failures) is the default
+	// for both new and pre-existing rows, so no data migration is needed.
+	FailedLoginAttempts int `gorm:"not null;default:0" json:"-"`
+	// LockedUntil, when non-nil and in the future, blocks password logins until it
+	// elapses (progressive lockout after repeated failures). Nil means not locked;
+	// it is cleared on a successful login.
+	LockedUntil *time.Time `json:"-"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 // TableName specifies the table name for the User model.
 func (User) TableName() string {
 	return "users"
+}
+
+// BeforeCreate assigns a UUID primary key when one was not set explicitly (same
+// rationale as Tag.BeforeCreate: GORM's create helpers can build rows with no
+// call site to set the ID).
+func (u *User) BeforeCreate(*gorm.DB) error {
+	if u.ID == uuid.Nil {
+		u.ID = uuid.New()
+	}
+	return nil
 }
 
 // IsAdmin returns true if the user has admin role.

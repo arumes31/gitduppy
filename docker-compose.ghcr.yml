@@ -1,4 +1,4 @@
-version: '3.8'
+# The top-level `version` key is obsolete under the Compose Spec and is omitted.
 
 services:
   gitduppy:
@@ -29,11 +29,26 @@ services:
       - GITMIRRORS_OAUTH_GITLAB_CLIENT_SECRET=${OAUTH2_GITLAB_CLIENT_SECRET:-}
       - GITMIRRORS_OAUTH_GOOGLE_CLIENT_ID=${OAUTH2_GOOGLE_CLIENT_ID:-}
       - GITMIRRORS_OAUTH_GOOGLE_CLIENT_SECRET=${OAUTH2_GOOGLE_CLIENT_SECRET:-}
+    # Container paths MUST match config.yaml's storage.* settings
+    # (base_path=/app/storage/repos, ssh_path=/app/storage/ssh,
+    # backup_path=/app/storage/backups). Earlier revisions mounted /app/repos,
+    # /app/keys and /app/backups, which the app never wrote to — mirrors landed
+    # in the container's ephemeral layer and were lost on recreation. Existing
+    # mirrors re-clone automatically on the next scheduler pass; SSH keys must
+    # be re-provisioned into ./data/gitduppy/keys.
     volumes:
-      - ./data/gitduppy/repos:/app/repos
-      - ./data/gitduppy/keys:/app/keys
-      - ./data/gitduppy/backups:/app/backups
+      - ./data/gitduppy/repos:/app/storage/repos
+      - ./data/gitduppy/keys:/app/storage/ssh
+      - ./data/gitduppy/backups:/app/storage/backups
       - ./config.yaml:/app/config.yaml:ro
+    # Hardening: block privilege escalation (compatible with the entrypoint's
+    # root -> appuser drop) and keep git's scratch space off the volumes. Once
+    # this deployment is verified, `read_only: true` can be added as in
+    # docker-compose.prod.yml.
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
     depends_on:
       postgres:
         condition: service_healthy

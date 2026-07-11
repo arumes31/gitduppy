@@ -73,7 +73,9 @@ func (h *BrowseHandler) openRepo(c *gin.Context) (*gogit.Repository, *models.Rep
 	}
 	gitRepo, err := gogit.PlainOpen(repo.StoragePath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("repository not cloned yet or path invalid: %w", err)
+		// Deliberately drop the underlying go-git error: it embeds the on-disk
+		// storage path. The message stays user-actionable without leaking internals.
+		return nil, nil, fmt.Errorf("repository not cloned yet or path invalid")
 	}
 	return gitRepo, repo, nil
 }
@@ -81,12 +83,19 @@ func (h *BrowseHandler) openRepo(c *gin.Context) (*gogit.Repository, *models.Rep
 // resolveRef resolves a ref string (branch/tag/commit SHA) to a commit hash.
 func resolveRef(gitRepo *gogit.Repository, ref string) (*plumbing.Hash, error) {
 	if ref == "" || ref == "HEAD" {
-		head, err := gitRepo.Head()
-		if err != nil {
-			return nil, err
+		if head, err := gitRepo.Head(); err == nil {
+			h := head.Hash()
+			return &h, nil
 		}
-		h := head.Hash()
-		return &h, nil
+		// HEAD is unavailable: bare mirrors are frequently cloned without a
+		// worktree HEAD, and detached/empty HEAD states also fail here. Fall back
+		// to the first branch (preferring the conventional default names) so
+		// browsing still works instead of erroring. Only error when the repository
+		// genuinely has no branches.
+		if h, ok := firstBranchHash(gitRepo); ok {
+			return &h, nil
+		}
+		return nil, fmt.Errorf("repository has no HEAD and no branches")
 	}
 	// Try branch
 	if branchRef, err := gitRepo.Reference(plumbing.NewBranchReferenceName(ref), true); err == nil {
@@ -104,6 +113,43 @@ func resolveRef(gitRepo *gogit.Repository, ref string) (*plumbing.Hash, error) {
 		return &h, nil
 	}
 	return nil, fmt.Errorf("ref %q not found", ref)
+}
+
+// firstBranchHash returns the hash of a fallback branch when HEAD is unresolvable.
+// It prefers the conventional default branches ('main', then 'master') and
+// otherwise returns the first branch iterated. ok is false only when the
+// repository has no branches at all.
+func firstBranchHash(gitRepo *gogit.Repository) (plumbing.Hash, bool) {
+	iter, err := gitRepo.Branches()
+	if err != nil {
+		return plumbing.Hash{}, false
+	}
+	defer iter.Close()
+
+	var first, mainRef, masterRef *plumbing.Reference
+	_ = iter.ForEach(func(ref *plumbing.Reference) error {
+		if first == nil {
+			first = ref
+		}
+		switch ref.Name().Short() {
+		case "main":
+			mainRef = ref
+		case "master":
+			masterRef = ref
+		}
+		return nil
+	})
+
+	switch {
+	case mainRef != nil:
+		return mainRef.Hash(), true
+	case masterRef != nil:
+		return masterRef.Hash(), true
+	case first != nil:
+		return first.Hash(), true
+	default:
+		return plumbing.Hash{}, false
+	}
 }
 
 // GetRefs handles GET /api/v1/repos/:id/refs
@@ -163,13 +209,15 @@ func (h *BrowseHandler) GetTree(c *gin.Context) {
 
 	commit, err := gitRepo.CommitObject(*hash)
 	if err != nil {
-		response.InternalError(c, "Failed to get commit: "+err.Error())
+		logServerError(c, err)
+		response.InternalError(c, "Failed to read commit")
 		return
 	}
 
 	tree, err := commit.Tree()
 	if err != nil {
-		response.InternalError(c, "Failed to get tree: "+err.Error())
+		logServerError(c, err)
+		response.InternalError(c, "Failed to read tree")
 		return
 	}
 
@@ -208,7 +256,11 @@ func (h *BrowseHandler) GetTree(c *gin.Context) {
 			dirs = append(dirs, te)
 		}
 	}
-	entries := append(dirs, files...)
+	// Build a fresh slice rather than append(dirs, files...) so files never
+	// aliases into dirs' backing array (appendAssign).
+	entries := make([]TreeEntry, 0, len(dirs)+len(files))
+	entries = append(entries, dirs...)
+	entries = append(entries, files...)
 
 	// Use git log --format to get last commit per file — fast CLI approach
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
@@ -386,7 +438,8 @@ func (h *BrowseHandler) GetCommits(c *gin.Context) {
 		"--format=%H%x1f%s%x1f%an%x1f%ae%x1f%aI",
 	)
 	if gerr != nil {
-		response.InternalError(c, "Failed to get commit log: "+gerr.Error())
+		logServerError(c, gerr)
+		response.InternalError(c, "Failed to read commit log")
 		return
 	}
 
@@ -442,7 +495,8 @@ func (h *BrowseHandler) GetCommit(c *gin.Context) {
 	metaOut, gerr := gitops.RunGitCommand(ctx, repo.StoragePath,
 		"log", "-1", "--format=%H|%s%n%b|%an|%ae|%aI|%P", sha)
 	if gerr != nil {
-		response.NotFound(c, "Commit not found: "+gerr.Error())
+		logServerError(c, gerr)
+		response.NotFound(c, "Commit not found")
 		return
 	}
 

@@ -155,6 +155,27 @@ GitDuppy includes a full web interface accessible at `http://localhost:7659` aft
 | Commit Detail | `/repos/:id/commit/:sha` | Single commit with full line-by-line diff |
 | Settings | `/config` | Application configuration |
 
+## Database migrations
+
+GitDuppy manages its schema in two layers that run in order at startup:
+
+1. **GORM AutoMigrate** owns the *base* tables and columns. It is derived directly
+   from the model structs in `internal/models` and creates/updates tables to match
+   them on every boot.
+2. **goose SQL migrations** (embedded from `internal/database/migrations`) own the
+   *constraints, indexes and data fixes* layered on top — CHECK constraints,
+   `ON DELETE CASCADE` foreign keys, unique/trigram/hot-path indexes, etc. They run
+   right after AutoMigrate via `goose.Up`.
+
+Every migration is written idempotently (`IF NOT EXISTS` / guarded `DO` blocks with
+`pg_constraint` lookups, `ADD CONSTRAINT ... NOT VALID`), so it is safe on both fresh
+and pre-existing databases and can run on every boot. A migration failure is fatal:
+the server refuses to start rather than run with a half-applied schema.
+
+Going forward, add new integrity constraints, indexes and data backfills as a new
+numbered file in `internal/database/migrations/` (e.g. `0002_*.sql`) rather than
+relying on AutoMigrate.
+
 ## Contributing
 
 Contributions are welcome! Please follow these steps:

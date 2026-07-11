@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 // WebhookConfig represents a webhook configuration for sending notifications.
@@ -34,7 +35,19 @@ func (WebhookConfig) TableName() string {
 	return "webhook_configs"
 }
 
-// WebhookDelivery represents a single webhook delivery attempt.
+// BeforeCreate assigns a UUID primary key when one was not set explicitly (same
+// rationale as Tag.BeforeCreate).
+func (w *WebhookConfig) BeforeCreate(*gorm.DB) error {
+	if w.ID == uuid.Nil {
+		w.ID = uuid.New()
+	}
+	return nil
+}
+
+// WebhookDelivery tracks the delivery of a single webhook event across all of
+// its attempts. One row is created per event and updated in place on each retry;
+// Status records the terminal outcome ("pending" while retrying, "success" once
+// delivered, "failed" once the retry budget is exhausted).
 type WebhookDelivery struct {
 	ID              uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`
 	WebhookConfigID uuid.UUID `gorm:"type:uuid;not null;index" json:"webhook_config_id"`
@@ -43,6 +56,7 @@ type WebhookDelivery struct {
 	HTTPStatus      *int      `json:"http_status,omitempty"`
 	ResponseBody    string    `gorm:"type:text" json:"response_body,omitempty"`
 	Success         bool      `gorm:"default:false" json:"success"`
+	Status          string    `gorm:"size:20;not null;default:'pending'" json:"status"`
 	AttemptNumber   int       `gorm:"default:1" json:"attempt_number"`
 	DeliveredAt     time.Time `json:"delivered_at"`
 
@@ -53,4 +67,13 @@ type WebhookDelivery struct {
 // TableName specifies the table name for the WebhookDelivery model.
 func (WebhookDelivery) TableName() string {
 	return "webhook_deliveries"
+}
+
+// BeforeCreate assigns a UUID primary key when one was not set explicitly (same
+// rationale as Tag.BeforeCreate).
+func (d *WebhookDelivery) BeforeCreate(*gorm.DB) error {
+	if d.ID == uuid.Nil {
+		d.ID = uuid.New()
+	}
+	return nil
 }

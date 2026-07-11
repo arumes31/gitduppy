@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/gitduppy/gitduppy/internal/database"
@@ -92,7 +93,7 @@ func (s *CloneService) GetCloneJobByID(_ context.Context, id uuid.UUID) (*models
 	var job models.CloneJob
 	if err := s.db.Preload("Repository").Preload("CloneLogs").First(&job, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errors.New("clone job not found")
+			return nil, fmt.Errorf("%w: clone job", ErrNotFound)
 		}
 		return nil, err
 	}
@@ -105,7 +106,7 @@ func (s *CloneService) CreateCloneJob(_ context.Context, repoID uuid.UUID, trigg
 	var repo models.Repository
 	if err := s.db.First(&repo, repoID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errors.New("repository not found")
+			return nil, fmt.Errorf("%w: repository", ErrNotFound)
 		}
 		return nil, err
 	}
@@ -147,7 +148,7 @@ func (s *CloneService) CreateCloneJob(_ context.Context, repoID uuid.UUID, trigg
 
 // UpdateCloneJobStatus updates the status of a clone job.
 func (s *CloneService) UpdateCloneJobStatus(_ context.Context, id uuid.UUID, status string, outputLog string, exitCode *int) error {
-	updates := map[string]interface{}{
+	updates := map[string]any{
 		"status": status,
 	}
 	if outputLog != "" {
@@ -158,11 +159,11 @@ func (s *CloneService) UpdateCloneJobStatus(_ context.Context, id uuid.UUID, sta
 	}
 
 	if status == "running" {
-		now := time.Now()
+		now := time.Now().UTC()
 		updates["started_at"] = now
 	}
 	if status == "success" || status == "failed" || status == "cancelled" {
-		now := time.Now()
+		now := time.Now().UTC()
 		updates["completed_at"] = now
 	}
 
@@ -171,7 +172,7 @@ func (s *CloneService) UpdateCloneJobStatus(_ context.Context, id uuid.UUID, sta
 
 // UpdateCloneJobProgress updates the progress of a clone job.
 func (s *CloneService) UpdateCloneJobProgress(_ context.Context, id uuid.UUID, percent int, message string) error {
-	return s.db.Model(&models.CloneJob{}).Where("id = ?", id).Updates(map[string]interface{}{
+	return s.db.Model(&models.CloneJob{}).Where("id = ?", id).Updates(map[string]any{
 		"progress_percent": percent,
 		"output_log":       message,
 	}).Error
@@ -211,21 +212,29 @@ func (s *CloneService) GetRepositoryLogs(_ context.Context, repoID uuid.UUID, li
 	return logs, err
 }
 
-// CancelCloneJob cancels a running clone job.
+// CancelCloneJob cancels a running or pending clone job atomically.
 func (s *CloneService) CancelCloneJob(_ context.Context, id uuid.UUID) error {
-	var job models.CloneJob
-	if err := s.db.First(&job, id).Error; err != nil {
-		return err
+	result := s.db.Model(&models.CloneJob{}).
+		Where("id = ? AND status IN ?", id, []string{"running", "pending"}).
+		Updates(map[string]any{
+			"status":       "cancelled",
+			"completed_at": time.Now().UTC(),
+		})
+	if result.Error != nil {
+		return result.Error
 	}
-
-	if job.Status != "running" && job.Status != "pending" {
-		return errors.New("can only cancel running or pending jobs")
+	if result.RowsAffected == 0 {
+		// Distinguish "does not exist" from "exists but not cancellable".
+		var count int64
+		if err := s.db.Model(&models.CloneJob{}).Where("id = ?", id).Count(&count).Error; err != nil {
+			return err
+		}
+		if count == 0 {
+			return fmt.Errorf("%w: clone job", ErrNotFound)
+		}
+		return fmt.Errorf("%w: can only cancel running or pending jobs", ErrValidation)
 	}
-
-	return s.db.Model(&job).Updates(map[string]interface{}{
-		"status":       "cancelled",
-		"completed_at": time.Now(),
-	}).Error
+	return nil
 }
 
 // GetRecentJobs retrieves recent clone jobs.
@@ -235,6 +244,10 @@ func (s *CloneService) GetRecentJobs(_ context.Context, limit int) ([]models.Clo
 	}
 
 	var jobs []models.CloneJob
-	err := s.db.Preload("Repository").Order("created_at DESC").Limit(limit).Find(&jobs).Error
+	// Omit the preloaded repository's encrypted credentials blob (never serialized,
+	// never needed by the recent-jobs view) so the preload query stays lean.
+	err := s.db.
+		Preload("Repository", func(db *gorm.DB) *gorm.DB { return db.Omit("EncryptedCredentials") }).
+		Order("created_at DESC").Limit(limit).Find(&jobs).Error
 	return jobs, err
 }

@@ -25,6 +25,18 @@ var trustProxyHeaders bool
 // the server sits behind a trusted reverse proxy.
 func SetTrustProxyHeaders(v bool) { trustProxyHeaders = v }
 
+// cookieSecure forces the Secure flag on the session cookie regardless of how
+// the current request arrived. It is driven by config (security.cookie_secure)
+// and set once at startup via SetCookieSecure.
+//
+//nolint:gochecknoglobals
+var cookieSecure bool
+
+// SetCookieSecure sets whether the session cookie is always marked Secure. The
+// value comes from security.cookie_secure (which defaults to the base_url
+// scheme). Call at startup.
+func SetCookieSecure(v bool) { cookieSecure = v }
+
 // requestIsHTTPS reports whether the request reached us over TLS, either
 // directly, or via a terminating proxy that set X-Forwarded-Proto (only trusted
 // when proxy headers are enabled).
@@ -36,10 +48,16 @@ func requestIsHTTPS(c *gin.Context) bool {
 }
 
 // setSessionCookie sets the session cookie with hardened flags: HttpOnly always,
-// SameSite=Lax to blunt CSRF, and Secure whenever the request arrived over HTTPS.
+// SameSite=Lax to blunt CSRF, Path=/, and Secure driven by config
+// (security.cookie_secure). The per-request HTTPS check is OR'd in as a floor so
+// a cookie set over a genuine TLS connection is always Secure even if the config
+// value is left off — the flag can only ever be added, never removed. The same
+// helper is used for login, the OAuth callback, and the logout deletion cookie
+// so all three carry identical flags.
 func setSessionCookie(c *gin.Context, token string, maxAge int) {
 	c.SetSameSite(http.SameSiteLaxMode)
-	c.SetCookie("session", token, maxAge, "/", "", requestIsHTTPS(c), true)
+	secure := cookieSecure || requestIsHTTPS(c)
+	c.SetCookie("session", token, maxAge, "/", "", secure, true)
 }
 
 // AuthHandler handles authentication requests.
@@ -58,7 +76,7 @@ func NewAuthHandler(authService *services.AuthService, auditService *services.Au
 
 // audit records a security-relevant action, ignoring logging errors so an audit
 // failure never blocks the primary request.
-func (h *AuthHandler) audit(c *gin.Context, userID *uuid.UUID, action string, details map[string]interface{}) {
+func (h *AuthHandler) audit(c *gin.Context, userID *uuid.UUID, action string, details map[string]any) {
 	if h.auditService == nil {
 		return
 	}
@@ -91,7 +109,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		RememberMe: req.RememberMe,
 	})
 	if err != nil {
-		h.audit(c, nil, "auth.login_failed", map[string]interface{}{"username": req.Username})
+		h.audit(c, nil, "auth.login_failed", map[string]any{"username": req.Username})
 		response.Unauthorized(c, err.Error())
 		return
 	}
@@ -106,7 +124,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	setSessionCookie(c, resp.SessionToken, maxAge)
 
 	if resp.User != nil {
-		h.audit(c, &resp.User.ID, "auth.login", map[string]interface{}{"username": resp.User.Username})
+		h.audit(c, &resp.User.ID, "auth.login", map[string]any{"username": resp.User.Username})
 	}
 
 	response.SuccessWithMessage(c, "Login successful", gin.H{
@@ -128,7 +146,8 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 	setSessionCookie(c, "", -1)
 
 	if logoutErr != nil {
-		response.InternalError(c, "Failed to invalidate session: "+logoutErr.Error())
+		logServerError(c, logoutErr)
+		response.InternalError(c, "Failed to invalidate session")
 		return
 	}
 
@@ -167,8 +186,20 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 		return
 	}
 
+	// Re-issue the cookie so its Max-Age tracks the renewed server-side expiry;
+	// otherwise the browser keeps the original (shorter) lifetime and the client
+	// is signed out despite the session being extended. Same raw token, same
+	// hardened flags as at login.
+	maxAge := int(time.Until(session.Expiry).Seconds())
+	if maxAge < 0 {
+		maxAge = 0
+	}
+	setSessionCookie(c, sessionToken, maxAge)
+
+	// Return the caller's own raw token (from the cookie), never session.Token —
+	// which now holds the at-rest SHA-256 hash, not a usable token.
 	response.Success(c, gin.H{
-		"session_token": session.Token,
+		"session_token": sessionToken,
 		"expires_at":    session.Expiry,
 	})
 }

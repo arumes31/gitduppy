@@ -14,10 +14,15 @@ import (
 	"github.com/gitduppy/gitduppy/internal/middleware"
 	"github.com/gitduppy/gitduppy/internal/models"
 	"github.com/gitduppy/gitduppy/internal/services"
+	"github.com/gitduppy/gitduppy/pkg/crypto"
 	"github.com/gitduppy/gitduppy/pkg/response"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 )
+
+// oauthExchangeTimeout bounds the OAuth authorization-code -> token exchange so a
+// slow or hung provider cannot block the callback request.
+const oauthExchangeTimeout = 15 * time.Second
 
 // OAuthHandler handles OAuth2/OIDC requests.
 type OAuthHandler struct {
@@ -164,7 +169,11 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 
 	// Exchange code for token
 	code := c.Query("code")
-	token, err := oauthConfig.Exchange(c.Request.Context(), code)
+	// Bound the token exchange with an explicit timeout so a slow or hung provider
+	// cannot block the request for its full lifetime.
+	exCtx, exCancel := context.WithTimeout(c.Request.Context(), oauthExchangeTimeout)
+	defer exCancel()
+	token, err := oauthConfig.Exchange(exCtx, code)
 	if err != nil {
 		response.BadRequest(c, "OAUTH_ERROR", "Failed to exchange code for token: "+err.Error())
 		return
@@ -200,26 +209,31 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 	// Create or update user from OAuth data
 	user, err := h.oauthService.CreateOrUpdateUserFromOAuth(c, oauthProvider, subject, email, username)
 	if err != nil {
-		response.InternalError(c, "Failed to create/update user: "+err.Error())
+		logServerError(c, err)
+		response.InternalError(c, "Failed to create or update user")
 		return
 	}
 
 	// Create session
 	sessionToken, err := h.authService.GenerateSessionToken()
 	if err != nil {
-		response.InternalError(c, "Failed to generate session token: "+err.Error())
+		logServerError(c, err)
+		response.InternalError(c, "Failed to generate session token")
 		return
 	}
-	expiresAt := time.Now().Add(h.authService.SessionDuration())
+	expiresAt := time.Now().UTC().Add(h.authService.SessionDuration())
 
+	// Store only the SHA-256 hash of the token at rest (the raw token goes to the
+	// cookie), matching the password-login path and the hashed session lookup.
 	session := &models.Session{
-		Token:  sessionToken,
+		Token:  crypto.HashToken(sessionToken),
 		UserID: user.ID,
 		Data:   `{"auth_type":"oauth","provider":"` + string(oauthProvider) + `"}`,
 		Expiry: expiresAt,
 	}
 	if err := h.authService.DB().Create(session).Error; err != nil {
-		response.InternalError(c, "Failed to create session: "+err.Error())
+		logServerError(c, err)
+		response.InternalError(c, "Failed to create session")
 		return
 	}
 
@@ -301,7 +315,11 @@ func (h *OAuthHandler) LinkCallback(c *gin.Context) {
 	}
 
 	code := c.Query("code")
-	token, err := oauthConfig.Exchange(c.Request.Context(), code)
+	// Bound the token exchange with an explicit timeout so a slow or hung provider
+	// cannot block the request for its full lifetime.
+	exCtx, exCancel := context.WithTimeout(c.Request.Context(), oauthExchangeTimeout)
+	defer exCancel()
+	token, err := oauthConfig.Exchange(exCtx, code)
 	if err != nil {
 		response.BadRequest(c, "OAUTH_ERROR", "Failed to exchange code for token: "+err.Error())
 		return
@@ -343,7 +361,8 @@ func (h *OAuthHandler) UnlinkAccount(c *gin.Context) {
 	user.OAuthProvider = nil
 	user.OAuthSubject = nil
 	if err := h.authService.DB().Save(user).Error; err != nil {
-		response.InternalError(c, "Failed to unlink OAuth account: "+err.Error())
+		logServerError(c, err)
+		response.InternalError(c, "Failed to unlink OAuth account")
 		return
 	}
 
@@ -418,7 +437,11 @@ func (h *OAuthHandler) ManifestCallback(c *gin.Context) {
 	req.Header.Set("User-Agent", "GitDuppy")
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	resp, err := http.DefaultClient.Do(req)
+	// Use a client with an explicit timeout rather than http.DefaultClient (item
+	// 27); the request context already carries a 30s deadline, and this matches it
+	// so a hung connection cannot outlive it.
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		c.Redirect(http.StatusFound, "/config?error=failed_to_contact_github")
 		return

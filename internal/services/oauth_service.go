@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -19,6 +20,10 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
+
+// oauthHTTPTimeout bounds outbound OAuth provider HTTP calls (user/email/repo
+// APIs and token exchanges) so a slow or hung provider cannot pin a request.
+const oauthHTTPTimeout = 15 * time.Second
 
 // OAuthService handles OAuth2/OIDC authentication.
 type OAuthService struct {
@@ -363,7 +368,7 @@ func (s *OAuthService) getGoogleEmail(ctx context.Context, token *oauth2.Token) 
 		return "", "", fmt.Errorf("failed to verify id token: %w", err)
 	}
 
-	var claims map[string]interface{}
+	var claims map[string]any
 	if err := idToken.Claims(&claims); err != nil {
 		return "", "", fmt.Errorf("failed to extract claims: %w", err)
 	}
@@ -386,8 +391,12 @@ func (s *OAuthService) getGoogleEmail(ctx context.Context, token *oauth2.Token) 
 	return email, subject, nil
 }
 
-// getHTTPClient returns an HTTP client with the given token.
+// getHTTPClient returns an HTTP client that authenticates with the given token.
+// The base client carries an explicit timeout (propagated onto the oauth2 client)
+// so outbound provider API calls (GitHub/GitLab user + repo listing) cannot hang
+// without bound when a request context has no deadline of its own.
 func (s *OAuthService) getHTTPClient(ctx context.Context, token *oauth2.Token) *http.Client {
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Timeout: oauthHTTPTimeout})
 	return oauth2.NewClient(ctx, oauth2.StaticTokenSource(token))
 }
 

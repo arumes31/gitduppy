@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/gitduppy/gitduppy/internal/database"
@@ -46,7 +47,7 @@ type CreateAPIKeyResponse struct {
 // CreateAPIKey creates a new API key.
 func (s *APIKeyService) CreateAPIKey(ctx context.Context, userID uuid.UUID, req *CreateAPIKeyRequest) (*CreateAPIKeyResponse, error) {
 	if req.ExpiresInDays < 0 {
-		return nil, errors.New("expires_in_days must not be negative")
+		return nil, fmt.Errorf("%w: expires_in_days must not be negative", ErrValidation)
 	}
 
 	// Generate random key
@@ -63,7 +64,7 @@ func (s *APIKeyService) CreateAPIKey(ctx context.Context, userID uuid.UUID, req 
 
 	var expiresAt *time.Time
 	if req.ExpiresInDays > 0 {
-		exp := time.Now().Add(time.Duration(req.ExpiresInDays) * 24 * time.Hour)
+		exp := time.Now().UTC().Add(time.Duration(req.ExpiresInDays) * 24 * time.Hour)
 		expiresAt = &exp
 	}
 
@@ -75,7 +76,7 @@ func (s *APIKeyService) CreateAPIKey(ctx context.Context, userID uuid.UUID, req 
 		Name:      req.Name,
 		IsActive:  true,
 		ExpiresAt: expiresAt,
-		CreatedAt: time.Now(),
+		CreatedAt: time.Now().UTC(),
 	}
 
 	if err := s.db.WithContext(ctx).Create(apiKey).Error; err != nil {
@@ -104,7 +105,7 @@ func (s *APIKeyService) GetAPIKeyByID(ctx context.Context, id uuid.UUID) (*model
 	var key models.APIKey
 	if err := s.db.WithContext(ctx).First(&key, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errors.New("API key not found")
+			return nil, fmt.Errorf("%w: API key", ErrNotFound)
 		}
 		return nil, err
 	}
@@ -118,7 +119,7 @@ func (s *APIKeyService) RevokeAPIKey(ctx context.Context, id uuid.UUID) error {
 		return result.Error
 	}
 	if result.RowsAffected == 0 {
-		return errors.New("API key not found")
+		return fmt.Errorf("%w: API key", ErrNotFound)
 	}
 	return nil
 }
@@ -141,7 +142,7 @@ func (s *APIKeyService) ValidateAPIKey(key string) (*models.User, error) {
 	}
 
 	// Update last used
-	s.db.Model(&apiKey).Update("last_used_at", time.Now())
+	s.db.Model(&apiKey).Update("last_used_at", time.Now().UTC())
 
 	// Get the user
 	var user models.User
@@ -164,7 +165,7 @@ func (s *APIKeyService) DeleteAPIKey(ctx context.Context, id uuid.UUID) error {
 		return result.Error
 	}
 	if result.RowsAffected == 0 {
-		return errors.New("API key not found")
+		return fmt.Errorf("%w: API key", ErrNotFound)
 	}
 	return nil
 }

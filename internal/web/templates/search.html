@@ -64,11 +64,12 @@ async function performGlobalSearch(event) {
     list.innerHTML = '';
 
     try {
-        const res = await fetch(`/api/v1/search?q=${encodeURIComponent(query)}`);
-        const data = await res.json();
+        // Route through the shared apiCall wrapper for structured errors,
+        // 401->login handling, rate-limit backoff, and short-TTL GET caching.
+        const data = await apiCall(`/api/v1/search?q=${encodeURIComponent(query)}`);
 
         loading.style.display = 'none';
-        
+
         if (!data.data || data.data.length === 0) {
             empty.style.display = 'block';
             return;
@@ -113,7 +114,10 @@ async function performGlobalSearch(event) {
         lucide.createIcons();
     } catch (e) {
         loading.style.display = 'none';
-        showToast('Search request failed: ' + e.message, 'error');
+        // apiCall already surfaced a toast; also show an inline, retryable error
+        // state (with the structured message) so the results area isn't blank.
+        container.style.display = 'flex';
+        renderError(list, e.message || 'Search request failed', () => performGlobalSearch({ preventDefault() {} }));
     } finally {
         searchBtn.disabled = false;
     }

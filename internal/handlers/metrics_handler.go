@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"database/sql"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gitduppy/gitduppy/internal/database"
 	"github.com/gitduppy/gitduppy/internal/metrics"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -18,9 +20,25 @@ type MetricsHandler struct {
 func NewMetricsHandler() *MetricsHandler {
 	registry := prometheus.NewRegistry()
 	metrics.Register(registry)
+	// Expose the database connection-pool stats, read live on each scrape.
+	registry.MustRegister(metrics.NewDBStatsCollector(dbPoolStats))
 	return &MetricsHandler{
 		registry: registry,
 	}
+}
+
+// dbPoolStats reports the current database connection-pool statistics for the
+// Prometheus collector, or ok=false when the pool is not available.
+func dbPoolStats() (sql.DBStats, bool) {
+	db := database.GetDB()
+	if db == nil {
+		return sql.DBStats{}, false
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return sql.DBStats{}, false
+	}
+	return sqlDB.Stats(), true
 }
 
 // GetRegistry returns the Prometheus registry.

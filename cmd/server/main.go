@@ -12,9 +12,11 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/render"
 	"github.com/gitduppy/gitduppy/internal/config"
@@ -26,6 +28,7 @@ import (
 	"github.com/gitduppy/gitduppy/internal/services"
 	"github.com/gitduppy/gitduppy/pkg/crypto"
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -38,11 +41,43 @@ var (
 func main() {
 	log.Printf("Starting gitduppy %s (built: %s)", Version, BuildTime)
 
-	// Load configuration
+	// Load configuration first so we can build the logger from cfg.Logging.
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
+
+	// Build the global zap logger from config BEFORE any component is
+	// constructed: workers/services capture zap.L().Named(...) at construction
+	// time, and without ReplaceGlobals the default global is a no-op.
+	zapCfg := zap.NewProductionConfig()
+	switch strings.ToLower(cfg.Logging.Level) {
+	case "debug":
+		zapCfg.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
+	case "info":
+		zapCfg.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
+	case "warn", "warning":
+		zapCfg.Level = zap.NewAtomicLevelAt(zap.WarnLevel)
+	case "error":
+		zapCfg.Level = zap.NewAtomicLevelAt(zap.ErrorLevel)
+	}
+	if strings.EqualFold(cfg.Logging.Format, "console") {
+		zapCfg.Encoding = "console"
+	}
+	if cfg.Logging.Output == "file" && cfg.Logging.FilePath != "" {
+		zapCfg.OutputPaths = []string{cfg.Logging.FilePath}
+		zapCfg.ErrorOutputPaths = []string{cfg.Logging.FilePath}
+	}
+	zapLogger, err := zapCfg.Build()
+	if err != nil {
+		log.Fatalf("Failed to initialize logger: %v", err)
+	}
+	defer func() { _ = zapLogger.Sync() }()
+	zap.ReplaceGlobals(zapLogger)
+	// Route the standard library's log package (used for startup/shutdown lines
+	// and any dependency that logs via std log) through the configured zap sink so
+	// all output shares one format, level, and destination.
+	zap.RedirectStdLog(zapLogger)
 
 	// Normalize the storage base to an absolute path. It is baked into every
 	// repository's StoragePath and resolved directly by browse/clone/cleanup; a
@@ -65,6 +100,13 @@ func main() {
 		log.Fatalf("Failed to run migrations: %v", err)
 	}
 
+	// Apply the goose SQL migrations (constraints, indexes, data fixes) after
+	// AutoMigrate has provisioned the base tables. Fail loudly: a half-applied
+	// schema must stop the boot rather than run with missing integrity guarantees.
+	if err := database.RunSQLMigrations(); err != nil {
+		log.Fatalf("Failed to apply SQL migrations: %v", err)
+	}
+
 	// Normalize legacy repository storage paths to the current canonical form so
 	// upgrades from builds that stored base-relative paths keep resolving on disk.
 	if err := database.MigrateStoragePaths(cfg.Storage.BasePath); err != nil {
@@ -82,14 +124,15 @@ func main() {
 		log.Fatalf("Failed to initialize encryption service: %v", err)
 	}
 
-	// Initialize services
-	authService := services.NewAuthService(cfg.Security.SessionDuration)
+	// Initialize services. auditService is created before authService so login
+	// security events (e.g. account lockout) can be recorded from the auth layer.
+	auditService := services.NewAuditService()
+	authService := services.NewAuthService(cfg.Security.SessionDuration, auditService)
 	userService := services.NewUserService()
 	repoService := services.NewRepositoryService(encryptionService, cfg.Storage.BasePath)
 	cloneService := services.NewCloneService()
 	apiKeyService := services.NewAPIKeyService()
 	webhookService := services.NewWebhookService(cloneService, encryptionService)
-	auditService := services.NewAuditService()
 	tagService := services.NewTagService()
 	dashboardService := services.NewDashboardService(cfg.Storage.BasePath)
 
@@ -141,27 +184,37 @@ func main() {
 	// when trusted proxies are configured; otherwise a direct client could spoof them.
 	handlers.SetTrustProxyHeaders(len(cfg.Server.TrustedProxies) > 0)
 
+	// Drive the session cookie's Secure flag from config (defaults to the base_url
+	// scheme). This applies to login, the OAuth callback, and logout uniformly.
+	handlers.SetCookieSecure(cfg.Security.CookieSecure)
+
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(authService, auditService)
 	userHandler := handlers.NewUserHandler(userService)
-	repoHandler := handlers.NewRepositoryHandler(repoService, cloneService, tagService, auditService)
+	repoHandler := handlers.NewRepositoryHandler(repoService, cloneService, tagService, auditService, database.GetDB())
 	cloneHandler := handlers.NewCloneHandler(cloneService)
 	apiKeyHandler := handlers.NewAPIKeyHandler(apiKeyService)
 	webhookHandler := handlers.NewWebhookHandler(webhookService)
 	tagHandler := handlers.NewTagHandler(tagService)
 	dashboardHandler := handlers.NewDashboardHandler(dashboardService, cloneService)
-	healthHandler := handlers.NewHealthHandler(Version, BuildTime)
+	healthHandler := handlers.NewHealthHandler(Version, BuildTime, database.GetDB())
 	healthHandler.SetQueueDepthProvider(cloneWorker.QueueDepth)
 	oauthHandler := handlers.NewOAuthHandler(oauthService, authService)
 	backupHandler := handlers.NewBackupHandler(backupService)
 	configHandler := handlers.NewConfigHandler(configService)
 	gitHealthHandler := handlers.NewGitHealthHandler(healthService)
 	metricsHandler := handlers.NewMetricsHandler()
-	webHandler := handlers.NewWebHandler()
+	webHandler := handlers.NewWebHandler(Version)
 	browseHandler := handlers.NewBrowseHandler(repoService)
 
-	// Initialize middleware
-	authMiddleware := middleware.NewAuthMiddleware()
+	// Initialize middleware. The auth middleware gets the DB handle explicitly
+	// (database.GetDB() is ready here, after Connect) rather than reaching for the
+	// global inside its request-path validators.
+	authMiddleware := middleware.NewAuthMiddleware(database.GetDB())
+	defer authMiddleware.Stop()
+	// Let the auth service evict the middleware's in-memory auth cache on logout /
+	// password change so a revoked credential is not honored for the cache TTL.
+	authService.SetAuthCache(authMiddleware.Cache())
 	corsConfig := middleware.DefaultCORSConfig()
 	// NewRateLimiter takes a refill rate in requests-per-SECOND, so convert the
 	// configured per-minute budget; burst stays at one minute's worth of tokens.
@@ -283,7 +336,13 @@ func createDefaultAdmin() error {
 				return errors.New("admin password reset requested but no 'admin' user was updated")
 			}
 			if os.Getenv("GITMIRRORS_BOOTSTRAP_SHOW_PASSWORD") == "true" {
-				log.Printf("=== ADMIN PASSWORD RESET (username: admin) — new password: %q ===", bootstrapPassword) //nolint:gosec // intentional for admin bootstrap
+				// Intentional operator opt-in: print the reset password on stdout
+				// only when explicitly requested. Preferred over persisting it to a
+				// file (which would keep the secret on disk). CodeQL
+				// go/clear-text-logging flags this reviewed exception (dismissed in
+				// the Security tab; in-source CodeQL comments are not honored).
+				// #nosec G706 - Explicit operator opt-in to print the password to logs.
+				log.Printf("=== ADMIN PASSWORD RESET (username: admin) — new password: %q ===", bootstrapPassword)
 			} else {
 				log.Println("Admin password forcefully reset from GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD.")
 			}
@@ -326,7 +385,11 @@ func createDefaultAdmin() error {
 	case !generated:
 		log.Println("Default admin user created (username: admin) from GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD - change on first login")
 	case os.Getenv("GITMIRRORS_BOOTSTRAP_SHOW_PASSWORD") == "true":
-		// CodeQL [go/clear-text-logging] - Explicit operator opt-in to print the one-time generated bootstrap password.
+		// Intentional operator opt-in: print the one-time generated password once
+		// at startup only when explicitly requested. Preferred over persisting it
+		// to a file (which would keep the secret on disk). CodeQL
+		// go/clear-text-logging flags this reviewed exception (dismissed in the
+		// Security tab; in-source CodeQL comments are not honored by code scanning).
 		// #nosec G706 - Explicit operator opt-in to print the password to logs.
 		log.Printf("=== INITIAL ADMIN CREATED (username: admin) — one-time generated password: %s — change it immediately after first login ===", bootstrapPassword)
 	default:
@@ -387,9 +450,7 @@ func setupRouter(
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 
-	// Static file serving and HTML Templates
-	router.Static("/static", "./static")
-	router.Static("/assets", "./internal/web/static")
+	// HTML templates must be loaded before the first request.
 	router.HTMLRender = loadTemplates()
 
 	// Middleware - add panic recovery
@@ -401,6 +462,37 @@ func setupRouter(
 	if cfg.Monitoring.MetricsEnabled {
 		router.Use(middleware.Metrics())
 	}
+
+	// Static file serving. Registered AFTER the global middleware chain so
+	// SecurityHeaders (CSP, HSTS, etc.) applies to static responses as well.
+	// Each tree carries StaticCacheControl so browsers cache assets for an
+	// hour and then revalidate (gin's file server answers If-Modified-Since
+	// with a 304).
+	staticCache := middleware.StaticCacheControl()
+	router.Group("/static", staticCache).Static("/", "./static")
+	router.Group("/assets", staticCache).Static("/", "./internal/web/static")
+
+	// Response compression for API + HTML responses. DefaultCompression balances CPU
+	// and ratio. Exclusions:
+	//   - the Prometheus metrics path: scrapers negotiate their own encoding and the
+	//     text exposition format is cheap; compressing it just burns CPU;
+	//   - the live log WebSocket (/logs/stream): a hijacked/upgraded connection must
+	//     not be wrapped by the gzip writer (gzip also self-excludes Connection:
+	//     Upgrade, but the explicit rule documents the intent);
+	//   - the repo archive download (already a compressed .zip/.tar.gz — re-gzipping
+	//     wastes CPU for no gain);
+	//   - the two ETag-cached read endpoints (repositories list, dashboard overview):
+	//     they are served with conditional-request 304s by the ETag middleware, whose
+	//     empty-body 304 path must not be wrapped by the gzip writer.
+	router.Use(gzip.Gzip(gzip.DefaultCompression,
+		gzip.WithExcludedPaths([]string{cfg.Monitoring.MetricsPath}),
+		gzip.WithExcludedPathsRegexs([]string{
+			`^/api/v1/repositories/[^/]+/logs/stream$`,
+			`^/api/v1/repos(?:itories)?/[^/]+/download$`,
+			`^/api/v1/repositories$`,
+			`^/api/v1/dashboard/overview$`,
+		}),
+	))
 
 	// Prometheus metrics endpoint (no auth required)
 	if cfg.Monitoring.MetricsEnabled {
@@ -434,17 +526,6 @@ func setupRouter(
 	// API v1 group
 	v1 := router.Group("/api/v1")
 	{
-		// Browse routes (authenticated)
-		browseGroup := v1.Group("/repos")
-		browseGroup.Use(authMiddleware.Middleware())
-		{
-			browseGroup.GET("/:id/refs", browseHandler.GetRefs)
-			browseGroup.GET("/:id/tree", browseHandler.GetTree)
-			browseGroup.GET("/:id/blob", browseHandler.GetBlob)
-			browseGroup.GET("/:id/commits", browseHandler.GetCommits)
-			browseGroup.GET("/:id/commit/:sha", browseHandler.GetCommit)
-			browseGroup.GET("/:id/download", browseHandler.DownloadRepo)
-		}
 		// Auth routes
 		auth := v1.Group("/auth")
 		{
@@ -487,7 +568,9 @@ func setupRouter(
 		repos := v1.Group("/repositories")
 		repos.Use(authMiddleware.Middleware())
 		{
-			repos.GET("", repoHandler.ListRepositories)
+			// ETag-cached: the list is polled by the UI, so an unchanged list costs
+			// only a 304. Excluded from gzip (see the gzip exclusions above).
+			repos.GET("", middleware.ETag(), repoHandler.ListRepositories)
 			repos.POST("", repoHandler.CreateRepository)
 			repos.GET("/paperbin", repoHandler.GetPaperbin)
 			repos.GET("/:id", repoHandler.GetRepository)
@@ -502,6 +585,17 @@ func setupRouter(
 			repos.GET("/:id/logs", repoHandler.GetRepositoryLogs)
 			repos.GET("/:id/logs/stream", repoHandler.StreamRepositoryLogs)
 			repos.GET("/:id/jobs", cloneHandler.ListRepositoryJobs)
+
+			// Canonical git-browse routes (the deprecated /api/v1/repos alias was
+			// removed in Phase 6 once the frontend migrated to this /repositories
+			// prefix). Same :id param name as the rest of the group, so there is no
+			// gin route conflict.
+			repos.GET("/:id/refs", browseHandler.GetRefs)
+			repos.GET("/:id/tree", browseHandler.GetTree)
+			repos.GET("/:id/blob", browseHandler.GetBlob)
+			repos.GET("/:id/commits", browseHandler.GetCommits)
+			repos.GET("/:id/commit/:sha", browseHandler.GetCommit)
+			repos.GET("/:id/download", browseHandler.DownloadRepo)
 		}
 
 		// Clone job routes
@@ -568,6 +662,10 @@ func setupRouter(
 			dashboard.GET("/recent-jobs", dashboardHandler.GetRecentJobs)
 			dashboard.GET("/timeline", dashboardHandler.GetTimeline)
 			dashboard.GET("/paperbin-quota", dashboardHandler.GetPaperbinQuota)
+			// Combined single-request payload for the dashboard view. ETag-cached so
+			// frequent polling that finds nothing changed costs only a 304. Inherits
+			// the "dashboard:" rate-limit tier via its path prefix.
+			dashboard.GET("/overview", middleware.ETag(), dashboardHandler.GetOverview)
 		}
 
 		// Backup routes
@@ -601,7 +699,7 @@ func setupRouter(
 // CustomHTMLRenderer is a custom HTML renderer for Gin that prevents template block collisions.
 type CustomHTMLRenderer map[string]*template.Template
 
-func (r CustomHTMLRenderer) Instance(name string, data interface{}) render.Render {
+func (r CustomHTMLRenderer) Instance(name string, data any) render.Render {
 	return render.HTML{
 		Template: r[name],
 		Name:     name,

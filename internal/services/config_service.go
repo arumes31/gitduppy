@@ -197,8 +197,8 @@ func (s *ConfigService) setSettingTx(ctx context.Context, tx *gorm.DB, key, valu
 		Value:       storeValue,
 		IsEncrypted: isEncrypted,
 		Description: description,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		CreatedAt:   time.Now().UTC(),
+		UpdatedAt:   time.Now().UTC(),
 	}
 
 	// Use FirstOrCreate logic or Update
@@ -210,11 +210,11 @@ func (s *ConfigService) setSettingTx(ctx context.Context, tx *gorm.DB, key, valu
 		return err
 	}
 
-	return tx.WithContext(ctx).Model(&existing).Updates(map[string]interface{}{
+	return tx.WithContext(ctx).Model(&existing).Updates(map[string]any{
 		"value":        storeValue,
 		"is_encrypted": isEncrypted,
 		"description":  description,
-		"updated_at":   time.Now(),
+		"updated_at":   time.Now().UTC(),
 	}).Error
 }
 

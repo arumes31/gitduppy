@@ -1,4 +1,4 @@
-version: '3.8'
+# The top-level `version` key is obsolete under the Compose Spec and is omitted.
 
 services:
   gitduppy:
@@ -29,11 +29,34 @@ services:
       - GITMIRRORS_OAUTH_GITLAB_CLIENT_SECRET=${OAUTH2_GITLAB_CLIENT_SECRET:-}
       - GITMIRRORS_OAUTH_GOOGLE_CLIENT_ID=${OAUTH2_GOOGLE_CLIENT_ID:-}
       - GITMIRRORS_OAUTH_GOOGLE_CLIENT_SECRET=${OAUTH2_GOOGLE_CLIENT_SECRET:-}
+    # Container paths MUST match config.yaml's storage.* settings
+    # (base_path=/app/storage/repos, ssh_path=/app/storage/ssh,
+    # backup_path=/app/storage/backups). Earlier revisions mounted /app/repos,
+    # /app/keys and /app/backups, which the app never wrote to — mirrors landed
+    # in the container's ephemeral layer and were lost on recreation. Existing
+    # mirrors re-clone automatically on the next scheduler pass; SSH keys must
+    # be re-provisioned into ./data/gitduppy/keys.
     volumes:
-      - ./data/gitduppy/repos:/app/repos
-      - ./data/gitduppy/keys:/app/keys
-      - ./data/gitduppy/backups:/app/backups
+      - ./data/gitduppy/repos:/app/storage/repos
+      - ./data/gitduppy/keys:/app/storage/ssh
+      - ./data/gitduppy/backups:/app/storage/backups
       - ./config.yaml:/app/config.yaml:ro
+    # --- Container hardening (production) ------------------------------------
+    # Block privilege escalation via setuid binaries. Compatible with the
+    # entrypoint's root -> appuser drop, which lowers privileges rather than
+    # raising them (su-exec runs before any workload).
+    security_opt:
+      - no-new-privileges:true
+    # Give git an ephemeral, non-persistent scratch area for its temp files and
+    # keep it off the persistent volumes. Also required for the read-only root
+    # filesystem below.
+    tmpfs:
+      - /tmp
+    # Immutable root filesystem: every writable path the app needs is a bind
+    # mount (/app/storage/*) or tmpfs (/tmp), so nothing can modify the image at
+    # runtime. Safe now that the mounts above align with config.yaml's storage
+    # paths.
+    read_only: true
     depends_on:
       postgres:
         condition: service_healthy

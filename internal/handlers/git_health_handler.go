@@ -5,7 +5,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gitduppy/gitduppy/internal/services"
-	"github.com/gitduppy/gitduppy/pkg/response"
 )
 
 // GitHealthHandler handles git server health check requests.
@@ -24,7 +23,7 @@ func NewGitHealthHandler(healthService *services.HealthService) *GitHealthHandle
 func (h *GitHealthHandler) GetGitServerHealth(c *gin.Context) {
 	healthChecks, err := h.healthService.GetLatestHealthChecks(c)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		respondServiceError(c, err)
 		return
 	}
 

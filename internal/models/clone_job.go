@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 // CloneJob represents a single clone/fetch operation for a repository.
@@ -18,6 +19,7 @@ type CloneJob struct {
 	StartedAt       *time.Time `json:"started_at,omitempty"`
 	CompletedAt     *time.Time `json:"completed_at,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 
 	// Relations
 	Repository *Repository `gorm:"foreignKey:RepositoryID" json:"repository,omitempty"`
@@ -27,4 +29,13 @@ type CloneJob struct {
 // TableName specifies the table name for the CloneJob model.
 func (CloneJob) TableName() string {
 	return "clone_jobs"
+}
+
+// BeforeCreate assigns a UUID primary key when one was not set explicitly (same
+// rationale as Tag.BeforeCreate).
+func (j *CloneJob) BeforeCreate(*gorm.DB) error {
+	if j.ID == uuid.Nil {
+		j.ID = uuid.New()
+	}
+	return nil
 }

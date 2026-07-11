@@ -98,7 +98,7 @@ func (h *WebhookHandler) ListWebhooks(c *gin.Context) {
 
 	webhooks, total, err := h.webhookService.ListWebhooks(c, filter)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -146,7 +146,7 @@ func (h *WebhookHandler) CreateWebhook(c *gin.Context) {
 
 	webhook, err := h.webhookService.CreateWebhook(c, user.ID, &req)
 	if err != nil {
-		response.BadRequest(c, "CREATE_ERROR", err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -172,7 +172,7 @@ func (h *WebhookHandler) UpdateWebhook(c *gin.Context) {
 
 	webhook, err := h.webhookService.UpdateWebhook(c, id, &req)
 	if err != nil {
-		response.BadRequest(c, "UPDATE_ERROR", err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -191,7 +191,7 @@ func (h *WebhookHandler) DeleteWebhook(c *gin.Context) {
 	}
 
 	if deleteErr := h.webhookService.DeleteWebhook(c, id); deleteErr != nil {
-		response.BadRequest(c, "DELETE_ERROR", deleteErr.Error())
+		respondServiceError(c, deleteErr)
 		return
 	}
 
@@ -209,10 +209,10 @@ func (h *WebhookHandler) GetWebhookDeliveries(c *gin.Context) {
 		return
 	}
 
-	limit := validator.ParseInt(c.Query("limit"), 50)
+	limit := parseLimitParam(c, "limit", 50, maxPerPage)
 	deliveries, delivErr := h.webhookService.GetWebhookDeliveries(c, id, limit)
 	if delivErr != nil {
-		response.InternalError(c, delivErr.Error())
+		respondServiceError(c, delivErr)
 		return
 	}
 
@@ -231,7 +231,7 @@ func (h *WebhookHandler) TestWebhook(c *gin.Context) {
 	}
 
 	if testErr := h.webhookService.TestWebhook(c, id); testErr != nil {
-		response.BadRequest(c, "TEST_ERROR", testErr.Error())
+		respondServiceError(c, testErr)
 		return
 	}
 
@@ -282,7 +282,8 @@ func (h *WebhookHandler) ReceiveWebhook(c *gin.Context) {
 
 	// Trigger clone jobs for matching repositories.
 	if triggerErr := h.triggerCloneJobs(c, webhook, body); triggerErr != nil {
-		response.InternalError(c, "Failed to trigger clone jobs: "+triggerErr.Error())
+		logServerError(c, triggerErr)
+		response.InternalError(c, "Failed to trigger clone jobs")
 		return
 	}
 
@@ -553,8 +554,8 @@ func (h *WebhookHandler) verifySignature(c *gin.Context, secret string, body []b
 }
 
 // parseWebhookPayload parses the webhook payload based on provider.
-func (h *WebhookHandler) parseWebhookPayload(_ string, body []byte) (map[string]interface{}, error) {
-	var payload map[string]interface{}
+func (h *WebhookHandler) parseWebhookPayload(_ string, body []byte) (map[string]any, error) {
+	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, err
 	}

@@ -60,7 +60,7 @@ func (s *BackupService) ExportData(_ context.Context, format ExportFormat) ([]by
 	}
 
 	// Create export structure
-	exportData := map[string]interface{}{
+	exportData := map[string]any{
 		"repositories": repos,
 		"tags":         tags,
 		"webhooks":     webhooks,
@@ -80,7 +80,7 @@ func (s *BackupService) ExportData(_ context.Context, format ExportFormat) ([]by
 
 // ImportData imports configuration data.
 func (s *BackupService) ImportData(_ context.Context, data []byte, format ExportFormat) error {
-	var importData map[string]interface{}
+	var importData map[string]any
 
 	switch format {
 	case JSONFormat:
@@ -97,7 +97,7 @@ func (s *BackupService) ImportData(_ context.Context, data []byte, format Export
 
 	// Import repositories
 	if reposData, ok := importData["repositories"]; ok {
-		if repos, ok := reposData.([]interface{}); ok {
+		if repos, ok := reposData.([]any); ok {
 			for range repos {
 				// Convert to Repository model and save
 				// This is a simplified implementation - in practice, you'd need
@@ -109,7 +109,7 @@ func (s *BackupService) ImportData(_ context.Context, data []byte, format Export
 
 	// Import tags
 	if tagsData, ok := importData["tags"]; ok {
-		if tags, ok := tagsData.([]interface{}); ok {
+		if tags, ok := tagsData.([]any); ok {
 			for range tags {
 				// Convert to Tag model and save
 				continue
@@ -119,7 +119,7 @@ func (s *BackupService) ImportData(_ context.Context, data []byte, format Export
 
 	// Import webhooks
 	if webhooksData, ok := importData["webhooks"]; ok {
-		if webhooks, ok := webhooksData.([]interface{}); ok {
+		if webhooks, ok := webhooksData.([]any); ok {
 			for range webhooks {
 				// Convert to WebhookConfig model and save
 				continue

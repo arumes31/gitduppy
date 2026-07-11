@@ -7,11 +7,17 @@ import (
 )
 
 // WebHandler handles web UI requests.
-type WebHandler struct{}
+type WebHandler struct {
+	// version is the build version string, injected into every rendered page as
+	// `.version` so the base template can append ?v=<version> to the app.js/CSS
+	// references and bust browser caches on each deploy.
+	version string
+}
 
-// NewWebHandler creates a new web handler.
-func NewWebHandler() *WebHandler {
-	return &WebHandler{}
+// NewWebHandler creates a new web handler. version is the build version used for
+// static-asset cache busting in templates.
+func NewWebHandler(version string) *WebHandler {
+	return &WebHandler{version: version}
 }
 
 // Index redirects to dashboard.
@@ -27,7 +33,8 @@ func (h *WebHandler) Login(c *gin.Context) {
 		return
 	}
 	c.HTML(http.StatusOK, "login.html", gin.H{
-		"title": "Login - GitDuppy",
+		"title":   "Login - GitDuppy",
+		"version": h.version,
 	})
 }
 
@@ -35,8 +42,9 @@ func (h *WebHandler) Login(c *gin.Context) {
 func (h *WebHandler) Dashboard(c *gin.Context) {
 	user, _ := c.Get("user")
 	c.HTML(http.StatusOK, "dashboard.html", gin.H{
-		"title": "Dashboard - GitDuppy",
-		"user":  user,
+		"title":   "Dashboard - GitDuppy",
+		"user":    user,
+		"version": h.version,
 	})
 }
 
@@ -44,8 +52,9 @@ func (h *WebHandler) Dashboard(c *gin.Context) {
 func (h *WebHandler) Config(c *gin.Context) {
 	user, _ := c.Get("user")
 	c.HTML(http.StatusOK, "config.html", gin.H{
-		"title": "Settings - GitDuppy",
-		"user":  user,
+		"title":   "Settings - GitDuppy",
+		"user":    user,
+		"version": h.version,
 	})
 }
 
@@ -53,8 +62,9 @@ func (h *WebHandler) Config(c *gin.Context) {
 func (h *WebHandler) RepoList(c *gin.Context) {
 	user, _ := c.Get("user")
 	c.HTML(http.StatusOK, "repos.html", gin.H{
-		"title": "Repositories - GitDuppy",
-		"user":  user,
+		"title":   "Repositories - GitDuppy",
+		"user":    user,
+		"version": h.version,
 	})
 }
 
@@ -62,9 +72,10 @@ func (h *WebHandler) RepoList(c *gin.Context) {
 func (h *WebHandler) RepoDetail(c *gin.Context) {
 	user, _ := c.Get("user")
 	c.HTML(http.StatusOK, "repo_detail.html", gin.H{
-		"title":  "Browse Repository - GitDuppy",
-		"user":   user,
-		"repoID": c.Param("id"),
+		"title":   "Browse Repository - GitDuppy",
+		"user":    user,
+		"repoID":  c.Param("id"),
+		"version": h.version,
 	})
 }
 
@@ -72,10 +83,11 @@ func (h *WebHandler) RepoDetail(c *gin.Context) {
 func (h *WebHandler) RepoCommit(c *gin.Context) {
 	user, _ := c.Get("user")
 	c.HTML(http.StatusOK, "repo_commit.html", gin.H{
-		"title":  "Commit - GitDuppy",
-		"user":   user,
-		"repoID": c.Param("id"),
-		"sha":    c.Param("sha"),
+		"title":   "Commit - GitDuppy",
+		"user":    user,
+		"repoID":  c.Param("id"),
+		"sha":     c.Param("sha"),
+		"version": h.version,
 	})
 }
 
@@ -83,7 +95,8 @@ func (h *WebHandler) RepoCommit(c *gin.Context) {
 func (h *WebHandler) Search(c *gin.Context) {
 	user, _ := c.Get("user")
 	c.HTML(http.StatusOK, "search.html", gin.H{
-		"title": "Search - GitDuppy",
-		"user":  user,
+		"title":   "Search - GitDuppy",
+		"user":    user,
+		"version": h.version,
 	})
 }

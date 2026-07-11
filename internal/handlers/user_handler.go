@@ -52,7 +52,7 @@ func (h *UserHandler) ListUsers(c *gin.Context) {
 
 	users, total, err := h.userService.ListUsers(c, filter)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -95,7 +95,7 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 
 	user, err := h.userService.CreateUser(c, &req)
 	if err != nil {
-		response.BadRequest(c, "CREATE_ERROR", err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -117,7 +117,7 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 
 	user, err := h.userService.UpdateUser(c, id, &req)
 	if err != nil {
-		response.BadRequest(c, "UPDATE_ERROR", err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -132,7 +132,7 @@ func (h *UserHandler) DeleteUser(c *gin.Context) {
 	}
 
 	if err := h.userService.DeleteUser(c, id); err != nil {
-		response.BadRequest(c, "DELETE_ERROR", err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -155,7 +155,7 @@ func (h *UserHandler) SetUserStatus(c *gin.Context) {
 	}
 
 	if err := h.userService.SetUserStatus(c, id, req.IsActive); err != nil {
-		response.BadRequest(c, "UPDATE_ERROR", err.Error())
+		respondServiceError(c, err)
 		return
 	}
 

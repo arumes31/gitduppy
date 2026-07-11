@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 // HealthCheck represents a health check result for external services.
@@ -19,4 +20,13 @@ type HealthCheck struct {
 // TableName specifies the table name for the HealthCheck model.
 func (HealthCheck) TableName() string {
 	return "health_checks"
+}
+
+// BeforeCreate assigns a UUID primary key when one was not set explicitly (same
+// rationale as Tag.BeforeCreate).
+func (h *HealthCheck) BeforeCreate(*gorm.DB) error {
+	if h.ID == uuid.Nil {
+		h.ID = uuid.New()
+	}
+	return nil
 }

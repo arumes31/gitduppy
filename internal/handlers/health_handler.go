@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gitduppy/gitduppy/internal/database"
 	"github.com/gitduppy/gitduppy/internal/gitops"
 	"github.com/gitduppy/gitduppy/pkg/response"
+	"gorm.io/gorm"
 )
 
 // HealthHandler handles health check requests.
@@ -17,14 +17,18 @@ type HealthHandler struct {
 	buildTime    string
 	startTime    time.Time
 	queueDepthFn func() int
+	db           *gorm.DB
 }
 
-// NewHealthHandler creates a new health handler.
-func NewHealthHandler(version, buildTime string) *HealthHandler {
+// NewHealthHandler creates a new health handler. The *gorm.DB is injected so the
+// readiness/health probes use the handle wired at startup instead of reaching
+// for the database.GetDB() global.
+func NewHealthHandler(version, buildTime string, db *gorm.DB) *HealthHandler {
 	return &HealthHandler{
 		version:   version,
 		buildTime: buildTime,
 		startTime: time.Now(),
+		db:        db,
 	}
 }
 
@@ -36,12 +40,12 @@ func (h *HealthHandler) SetQueueDepthProvider(fn func() int) {
 
 // GetHealth handles GET /api/v1/health.
 func (h *HealthHandler) GetHealth(c *gin.Context) {
-	db := database.GetDB()
+	db := h.db
 	dbStatus := "disconnected"
 	var poolStats gin.H
 	if db != nil {
 		sqlDB, err := db.DB()
-		if err == nil && sqlDB.Ping() == nil {
+		if err == nil && sqlDB.PingContext(c.Request.Context()) == nil {
 			dbStatus = "connected"
 			st := sqlDB.Stats()
 			poolStats = gin.H{
@@ -97,7 +101,7 @@ func (h *HealthHandler) GetHealthLive(c *gin.Context) {
 
 // GetHealthReady handles GET /api/v1/health/ready.
 func (h *HealthHandler) GetHealthReady(c *gin.Context) {
-	db := database.GetDB()
+	db := h.db
 	if db == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"status": "not ready",
@@ -115,7 +119,7 @@ func (h *HealthHandler) GetHealthReady(c *gin.Context) {
 		return
 	}
 
-	if err := sqlDB.Ping(); err != nil {
+	if err := sqlDB.PingContext(c.Request.Context()); err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"status": "not ready",
 			"reason": "database not reachable",

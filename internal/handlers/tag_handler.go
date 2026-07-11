@@ -24,7 +24,7 @@ func NewTagHandler(tagService *services.TagService) *TagHandler {
 func (h *TagHandler) ListTags(c *gin.Context) {
 	tags, err := h.tagService.ListTags(c)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -67,7 +67,7 @@ func (h *TagHandler) CreateTag(c *gin.Context) {
 
 	tag, err := h.tagService.CreateTag(c, &req)
 	if err != nil {
-		response.BadRequest(c, "CREATE_ERROR", err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -89,7 +89,7 @@ func (h *TagHandler) UpdateTag(c *gin.Context) {
 
 	tag, err := h.tagService.UpdateTag(c, id, &req)
 	if err != nil {
-		response.BadRequest(c, "UPDATE_ERROR", err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -104,7 +104,7 @@ func (h *TagHandler) DeleteTag(c *gin.Context) {
 	}
 
 	if err := h.tagService.DeleteTag(c, id); err != nil {
-		response.BadRequest(c, "DELETE_ERROR", err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -120,7 +120,7 @@ func (h *TagHandler) GetRepositoryTags(c *gin.Context) {
 
 	tags, err := h.tagService.GetRepositoryTags(c, repoID)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -143,7 +143,7 @@ func (h *TagHandler) AddTagToRepository(c *gin.Context) {
 	}
 
 	if err := h.tagService.AddTagToRepository(c, repoID, req.TagID); err != nil {
-		response.BadRequest(c, "ADD_ERROR", err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -163,7 +163,7 @@ func (h *TagHandler) RemoveTagFromRepository(c *gin.Context) {
 	}
 
 	if err := h.tagService.RemoveTagFromRepository(c, repoID, tagID); err != nil {
-		response.BadRequest(c, "REMOVE_ERROR", err.Error())
+		respondServiceError(c, err)
 		return
 	}
 
@@ -186,7 +186,7 @@ func (h *TagHandler) SetRepositoryTags(c *gin.Context) {
 	}
 
 	if err := h.tagService.SetRepositoryTags(c, repoID, req.TagIDs); err != nil {
-		response.BadRequest(c, "UPDATE_ERROR", err.Error())
+		respondServiceError(c, err)
 		return
 	}
 

@@ -3,6 +3,7 @@ package middleware
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -105,11 +106,30 @@ func TestSecurityHeaders(t *testing.T) {
 			t.Errorf("%s = %q, want %q", h, got, want)
 		}
 	}
-	if w.Header().Get("Content-Security-Policy") == "" {
-		t.Error("missing CSP header")
+
+	// HSTS must be present and carry the configured max-age.
+	if hsts := w.Header().Get("Strict-Transport-Security"); !strings.Contains(hsts, "max-age=100") {
+		t.Errorf("HSTS = %q, want it to contain max-age=100", hsts)
 	}
-	if w.Header().Get("Strict-Transport-Security") == "" {
-		t.Error("missing HSTS header")
+
+	// CSP must be present and lock down the key directives.
+	csp := w.Header().Get("Content-Security-Policy")
+	if csp == "" {
+		t.Fatal("missing CSP header")
+	}
+	for _, directive := range []string{
+		"default-src 'self'",
+		"script-src 'self' 'unsafe-inline'",
+		"style-src 'self' 'unsafe-inline'",
+		"img-src 'self' data:",
+		"connect-src 'self'",
+		"frame-ancestors 'none'",
+		"base-uri 'self'",
+		"form-action 'self'",
+	} {
+		if !strings.Contains(csp, directive) {
+			t.Errorf("CSP %q missing directive %q", csp, directive)
+		}
 	}
 }
 

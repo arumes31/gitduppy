@@ -106,10 +106,14 @@ func (s *RepositoryService) ListRepositories(_ context.Context, filter *Reposito
 		query = query.Order("name ASC")
 	}
 
-	// Get paginated results
+	// Get paginated results. Omit the encrypted credentials blob from the SELECT:
+	// it is a heavy text column that is never serialized (json:"-") and never used
+	// by the list view, so pulling it for every row on every list request is pure
+	// overhead. Applied only to this list query — single-repository reads still
+	// load it (the clone path needs to decrypt it).
 	offset := (filter.Page - 1) * filter.PerPage
 	var repos []models.Repository
-	err := query.Offset(offset).Limit(filter.PerPage).Find(&repos).Error
+	err := query.Omit("EncryptedCredentials").Offset(offset).Limit(filter.PerPage).Find(&repos).Error
 	return repos, total, err
 }
 
@@ -118,7 +122,7 @@ func (s *RepositoryService) GetRepositoryByID(_ context.Context, id uuid.UUID) (
 	var repo models.Repository
 	if err := s.db.Preload("Tags").Preload("CreatedByUser").First(&repo, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errors.New("repository not found")
+			return nil, fmt.Errorf("%w: repository", ErrNotFound)
 		}
 		return nil, err
 	}
@@ -230,7 +234,7 @@ func (s *RepositoryService) UpsertGitHubMirror(ctx context.Context, userID uuid.
 			if encErr != nil {
 				return false, encErr
 			}
-			s.db.Model(&existing).Updates(map[string]interface{}{
+			s.db.Model(&existing).Updates(map[string]any{
 				"auth_type":             "token",
 				"encrypted_credentials": enc,
 			})
@@ -291,7 +295,7 @@ func (s *RepositoryService) UpdateRepository(ctx context.Context, id uuid.UUID, 
 		return nil, err
 	}
 
-	repo.UpdatedAt = time.Now()
+	repo.UpdatedAt = time.Now().UTC()
 
 	// Use a transaction so Save and tag replacement are atomic.
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -352,7 +356,7 @@ func (s *RepositoryService) applyUpdateFields(repo *models.Repository, req *Upda
 	}
 	if req.CloneIntervalMinutes != nil {
 		if *req.CloneIntervalMinutes < 5 {
-			return fmt.Errorf("clone_interval_minutes must be at least 5")
+			return fmt.Errorf("%w: clone_interval_minutes must be at least 5", ErrValidation)
 		}
 		repo.CloneIntervalMinutes = *req.CloneIntervalMinutes
 	}
@@ -497,7 +501,7 @@ func (s *RepositoryService) SetRepositoryStatus(_ context.Context, id uuid.UUID,
 		return result.Error
 	}
 	if result.RowsAffected == 0 {
-		return errors.New("repository not found")
+		return fmt.Errorf("%w: repository", ErrNotFound)
 	}
 	return nil
 }

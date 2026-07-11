@@ -9,6 +9,7 @@ import (
 	"hash/fnv"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -25,7 +26,7 @@ import (
 const maxMediaBytes = 100 << 20 // 100 MB
 
 type cacheEntry struct {
-	value      interface{}
+	value      any
 	expiration time.Time
 }
 
@@ -108,7 +109,7 @@ type RepositoryInfo struct {
 	Visibility  string // "public" or "private"
 }
 
-func (f *GitHubMetadataFetcher) getCache(key string) (interface{}, bool) {
+func (f *GitHubMetadataFetcher) getCache(key string) (any, bool) {
 	val, ok := f.cache.Load(key)
 	if !ok {
 		return nil, false
@@ -121,7 +122,7 @@ func (f *GitHubMetadataFetcher) getCache(key string) (interface{}, bool) {
 	return entry.value, true
 }
 
-func (f *GitHubMetadataFetcher) setCache(key string, val interface{}, ttl time.Duration) {
+func (f *GitHubMetadataFetcher) setCache(key string, val any, ttl time.Duration) {
 	f.cache.Store(key, cacheEntry{
 		value:      val,
 		expiration: time.Now().Add(ttl),
@@ -334,22 +335,60 @@ func (f *GitHubMetadataFetcher) fetchPaginatedJSON(ctx context.Context, owner, r
 	return os.WriteFile(filePath, data, 0o600)
 }
 
+// candidateMediaURLRe finds URL-shaped tokens in a JSON payload. It deliberately
+// does NOT try to validate the host in the pattern itself — host allow-listing is
+// done programmatically in isArchivableGitHubMediaURL. A host-matching regex here
+// would be brittle and unanchored (the go/regex/missing-regexp-anchor hazard),
+// and host validation matters for security below, so it must not live in a regex.
+var candidateMediaURLRe = regexp.MustCompile(`https?://[^\s"'<>\\)]+`)
+
+// isArchivableGitHubMediaURL reports whether raw points at first-party GitHub
+// media that is safe to fetch with the caller's token. This is a security
+// control, not just tidiness: archiveMedia sends the GitHub token in the
+// Authorization header, so a URL on an attacker-influenced host (media links are
+// taken from issue/PR JSON that users control) could exfiltrate that token. Only
+// exact github.com asset paths and the *.githubusercontent.com CDN are allowed.
+func isArchivableGitHubMediaURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	// Require HTTPS: the Authorization token is attached to this request, so it
+	// must never travel over cleartext HTTP. First-party GitHub media is always
+	// served over HTTPS anyway.
+	if u.Scheme != "https" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "github.com" {
+		return strings.HasPrefix(u.Path, "/assets/") || strings.HasPrefix(u.Path, "/user-attachments/assets/")
+	}
+	return host == "githubusercontent.com" || strings.HasSuffix(host, ".githubusercontent.com")
+}
+
 // archiveMedia scans JSON bytes for external GitHub media URLs, downloads them, and rewrites URLs locally.
 func (f *GitHubMetadataFetcher) archiveMedia(ctx context.Context, backupDir string, token string, jsonBytes []byte) []byte {
 	mediaDir := filepath.Join(backupDir, "media")
 
-	// Match user attachments, images, and raw user content domains from GitHub
-	// CodeQL [go/regex/missing-regexp-anchor] - This regex is used for extracting media URLs from JSON payloads for archiving, not for validation or access control. Anchors are not appropriate here.
-	re := regexp.MustCompile(`https?://(?:github\.com/assets/|github\.com/user-attachments/assets/|[\w.-]+\.githubusercontent\.com/[a-zA-Z0-9-_./~%#?&=]+)`)
-	matches := re.FindAll(jsonBytes, -1)
+	matches := candidateMediaURLRe.FindAll(jsonBytes, -1)
 	if len(matches) == 0 {
 		return jsonBytes
 	}
 
-	// Deduplicate matches
-	uniqueURLs := make(map[string]bool)
+	// Deduplicate, keeping only first-party GitHub media hosts. The map is keyed by
+	// the raw matched token (what we replace in the JSON) and holds the cleaned URL
+	// (what we fetch). Off-allowlist hosts are dropped here so the token below is
+	// never sent to a user-influenced host.
+	uniqueURLs := make(map[string]string)
 	for _, match := range matches {
-		uniqueURLs[string(match)] = true
+		raw := string(match)
+		cleanURL := strings.Trim(strings.ReplaceAll(raw, `\"`, ""), `"'`)
+		if isArchivableGitHubMediaURL(cleanURL) {
+			uniqueURLs[raw] = cleanURL
+		}
+	}
+	if len(uniqueURLs) == 0 {
+		return jsonBytes
 	}
 
 	// Create media directory
@@ -360,15 +399,11 @@ func (f *GitHubMetadataFetcher) archiveMedia(ctx context.Context, backupDir stri
 
 	jsonStr := string(jsonBytes)
 
-	for urlStr := range uniqueURLs {
+	for urlStr, cleanURL := range uniqueURLs {
 		// Check context cancellation
 		if ctx.Err() != nil {
 			break
 		}
-
-		// Clean URL from escaped quotes if matched inside JSON string raw matches
-		cleanURL := strings.ReplaceAll(urlStr, `\"`, "")
-		cleanURL = strings.Trim(cleanURL, `"'`)
 
 		// Determine filename
 		hash := sha256.Sum256([]byte(cleanURL))

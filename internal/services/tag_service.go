@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/gitduppy/gitduppy/internal/database"
@@ -35,7 +36,7 @@ func (s *TagService) GetTagByID(ctx context.Context, id uuid.UUID) (*models.Tag,
 	var tag models.Tag
 	if err := s.db.WithContext(ctx).First(&tag, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errors.New("tag not found")
+			return nil, fmt.Errorf("%w: tag", ErrNotFound)
 		}
 		return nil, err
 	}
@@ -47,7 +48,7 @@ func (s *TagService) GetTagByName(ctx context.Context, name string) (*models.Tag
 	var tag models.Tag
 	if err := s.db.WithContext(ctx).Where("name = ?", name).First(&tag).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errors.New("tag not found")
+			return nil, fmt.Errorf("%w: tag", ErrNotFound)
 		}
 		return nil, err
 	}
@@ -69,14 +70,14 @@ func (s *TagService) CreateTag(ctx context.Context, req *CreateTagRequest) (*mod
 			return nil, err
 		}
 	} else {
-		return nil, errors.New("tag name already exists")
+		return nil, fmt.Errorf("%w: tag name already exists", ErrConflict)
 	}
 
 	tag := &models.Tag{
 		ID:        uuid.New(),
 		Name:      req.Name,
 		Color:     req.Color,
-		CreatedAt: time.Now(),
+		CreatedAt: time.Now().UTC(),
 	}
 
 	if err := s.db.WithContext(ctx).Create(tag).Error; err != nil {
@@ -107,7 +108,7 @@ func (s *TagService) UpdateTag(ctx context.Context, id uuid.UUID, req *UpdateTag
 				return nil, err
 			}
 		} else {
-			return nil, errors.New("tag name already exists")
+			return nil, fmt.Errorf("%w: tag name already exists", ErrConflict)
 		}
 		tag.Name = *req.Name
 	}
@@ -129,7 +130,7 @@ func (s *TagService) DeleteTag(ctx context.Context, id uuid.UUID) error {
 		return result.Error
 	}
 	if result.RowsAffected == 0 {
-		return errors.New("tag not found")
+		return fmt.Errorf("%w: tag", ErrNotFound)
 	}
 	return nil
 }
@@ -142,7 +143,7 @@ func (s *TagService) AddTagToRepository(ctx context.Context, repoID, tagID uuid.
 	var existing models.RepositoryTag
 	err := s.db.WithContext(ctx).Where("repository_id = ? AND tag_id = ?", repoID, tagID).First(&existing).Error
 	if err == nil {
-		return errors.New("tag already assigned to repository")
+		return fmt.Errorf("%w: tag already assigned to repository", ErrConflict)
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
@@ -152,7 +153,7 @@ func (s *TagService) AddTagToRepository(ctx context.Context, repoID, tagID uuid.
 		ID:           uuid.New(),
 		RepositoryID: repoID,
 		TagID:        tagID,
-		CreatedAt:    time.Now(),
+		CreatedAt:    time.Now().UTC(),
 	}
 
 	return s.db.WithContext(ctx).Create(repoTag).Error
@@ -165,7 +166,7 @@ func (s *TagService) RemoveTagFromRepository(ctx context.Context, repoID, tagID 
 		return result.Error
 	}
 	if result.RowsAffected == 0 {
-		return errors.New("tag not assigned to repository")
+		return fmt.Errorf("%w: tag not assigned to repository", ErrNotFound)
 	}
 	return nil
 }
@@ -194,7 +195,7 @@ func (s *TagService) SetRepositoryTags(ctx context.Context, repoID uuid.UUID, ta
 				ID:           uuid.New(),
 				RepositoryID: repoID,
 				TagID:        tagID,
-				CreatedAt:    time.Now(),
+				CreatedAt:    time.Now().UTC(),
 			}
 			if err := tx.Create(repoTag).Error; err != nil {
 				return err
