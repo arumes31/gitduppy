@@ -293,18 +293,18 @@ func (h *WebhookHandler) ReceiveWebhook(c *gin.Context) {
 // findMatchingWebhook finds a webhook that matches the incoming request.
 func (h *WebhookHandler) findMatchingWebhook(c *gin.Context, body []byte) (*models.WebhookConfig, string, error) {
 	if c.GetHeader("X-GitHub-Event") != "" {
-		return h.matchProvider(c, providerGitHub, body, h.matchesGitHubWebhook)
+		return h.matchProvider(providerGitHub, body)
 	}
 	if c.GetHeader("X-Gitlab-Event") != "" {
-		return h.matchProvider(c, providerGitLab, body, h.matchesGitLabWebhook)
+		return h.matchProvider(providerGitLab, body)
 	}
 	if c.GetHeader("X-Event-Key") != "" {
-		return h.matchProvider(c, providerBitbucket, body, h.matchesBitbucketWebhook)
+		return h.matchProvider(providerBitbucket, body)
 	}
-	return h.matchProvider(c, providerGeneric, body, h.matchesGenericWebhook)
+	return h.matchProvider(providerGeneric, body)
 }
 
-func (h *WebhookHandler) matchProvider(c *gin.Context, provider string, body []byte, matchFunc func(*models.WebhookConfig, *gin.Context, []byte) bool) (*models.WebhookConfig, string, error) {
+func (h *WebhookHandler) matchProvider(provider string, body []byte) (*models.WebhookConfig, string, error) {
 	var webhooks []models.WebhookConfig
 	if err := h.webhookService.DB().Where("provider = ? AND is_active = ?", provider, true).Find(&webhooks).Error; err != nil {
 		return nil, "", err
@@ -312,7 +312,7 @@ func (h *WebhookHandler) matchProvider(c *gin.Context, provider string, body []b
 	var matches []*models.WebhookConfig
 	for i := range webhooks {
 		wh := &webhooks[i]
-		if matchFunc(wh, c, body) {
+		if h.matchWebhookByRepoURL(wh, body) {
 			matches = append(matches, wh)
 		}
 	}
@@ -326,32 +326,6 @@ func (h *WebhookHandler) matchProvider(c *gin.Context, provider string, body []b
 		log.Printf("Warning: Multiple webhooks matched for provider %s", provider)
 	}
 	return matches[0], provider, nil
-}
-
-// matchesGitHubWebhook checks if the request matches a GitHub webhook.
-func (h *WebhookHandler) matchesGitHubWebhook(wh *models.WebhookConfig, c *gin.Context, body []byte) bool {
-	if c.GetHeader("X-GitHub-Event") == "" {
-		return false
-	}
-	return h.matchWebhookByRepoURL(wh, body)
-}
-
-// matchesGitLabWebhook checks if the request matches a GitLab webhook.
-func (h *WebhookHandler) matchesGitLabWebhook(wh *models.WebhookConfig, c *gin.Context, body []byte) bool {
-	if c.GetHeader("X-Gitlab-Event") == "" {
-		return false
-	}
-	return h.matchWebhookByRepoURL(wh, body)
-}
-
-// matchesBitbucketWebhook checks if the request matches a Bitbucket webhook.
-func (h *WebhookHandler) matchesBitbucketWebhook(wh *models.WebhookConfig, _ *gin.Context, body []byte) bool {
-	return h.matchWebhookByRepoURL(wh, body)
-}
-
-// matchesGenericWebhook checks if the request matches a generic webhook.
-func (h *WebhookHandler) matchesGenericWebhook(wh *models.WebhookConfig, _ *gin.Context, body []byte) bool {
-	return h.matchWebhookByRepoURL(wh, body)
 }
 
 // matchWebhookByRepoURL matches incoming webhook payload's repository URL
@@ -380,7 +354,7 @@ func (h *WebhookHandler) matchWebhookByRepoURL(wh *models.WebhookConfig, body []
 		}
 
 		if wh.URLPattern != "" {
-			if !containsFold(repoURL, wh.URLPattern) {
+			if !strings.Contains(strings.ToLower(repoURL), strings.ToLower(wh.URLPattern)) {
 				return false
 			}
 		}
@@ -477,39 +451,6 @@ func normalizeRepoURL(raw string) string {
 		}
 	}
 	return strings.TrimSuffix(s, "/")
-}
-
-// containsFold is a case-insensitive strings.Contains.
-func containsFold(s, substr string) bool {
-	if len(substr) == 0 {
-		return true
-	}
-	return containsFoldSimple(s, substr)
-}
-
-func containsFoldSimple(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if equalFold(s[i:i+len(substr)], substr) {
-			return true
-		}
-	}
-	return false
-}
-
-func equalFold(a, b string) bool {
-	for i := 0; i < len(a); i++ {
-		ca, cb := a[i], b[i]
-		if ca >= 'A' && ca <= 'Z' {
-			ca += 'a' - 'A'
-		}
-		if cb >= 'A' && cb <= 'Z' {
-			cb += 'a' - 'A'
-		}
-		if ca != cb {
-			return false
-		}
-	}
-	return true
 }
 
 // verifySignature verifies the HMAC signature of the webhook.

@@ -11,21 +11,25 @@ import (
 	"gorm.io/gorm"
 )
 
-// reapOrphanedJobs marks clone jobs left behind by a previous process as failed,
-// then recovers recently queued pending jobs. It runs once at worker startup.
+// reapOrphanedJobs marks stale running clone jobs left behind by a previous
+// process as failed, then recovers ALL pending jobs. It runs once at worker
+// startup.
 //
-// Orphans are jobs that no live worker could still own: a "running" job whose
+// Orphans are "running" jobs that no live worker could still own: those whose
 // started_at is NULL or older than the clone timeout (a live worker would have
-// timed out by then), and a "pending" job created before the same cutoff. These
-// are marked "failed" with "orphaned by restart" rather than left to linger as
-// permanent running/pending rows (which would also pin the scheduler's busy-set
-// and block the repository from ever being re-queued). Requeue is not needed —
-// the scheduler re-creates jobs for eligible repositories on its normal interval.
+// timed out by then). These are marked "failed" with "orphaned by restart"
+// rather than left to linger as permanent running rows (which would also pin the
+// scheduler's busy-set and block the repository from ever being re-queued).
 //
-// The stale threshold (rather than reaping ALL running/pending at boot) preserves
-// multi-replica safety: a co-running instance's freshly created or in-flight jobs
-// are left untouched. Recent pending jobs (queued moments before this restart, or
-// by a peer) are instead re-enqueued so they are not stranded.
+// Pending jobs are never failed here: nothing else dispatches an existing pending
+// row, and the scheduler skips repos that already have a pending job, so a
+// pending job that is not re-enqueued is silently stranded forever. Every pending
+// job (regardless of age) therefore goes through the recover/re-enqueue path
+// below.
+//
+// The stale threshold on running jobs (rather than reaping ALL running at boot)
+// preserves multi-replica safety: a co-running instance's in-flight jobs are left
+// untouched.
 func (w *CloneWorker) reapOrphanedJobs() {
 	if w.db == nil {
 		return
@@ -39,8 +43,7 @@ func (w *CloneWorker) reapOrphanedJobs() {
 	staleBefore := time.Now().Add(-timeout - time.Minute)
 
 	reaped := w.db.Model(&models.CloneJob{}).
-		Where("(status = ? AND (started_at IS NULL OR started_at < ?)) OR (status = ? AND created_at < ?)",
-			"running", staleBefore, "pending", staleBefore).
+		Where("status = ? AND (started_at IS NULL OR started_at < ?)", "running", staleBefore).
 		Updates(map[string]any{
 			"status":       "failed",
 			"completed_at": time.Now().UTC(),
@@ -53,9 +56,9 @@ func (w *CloneWorker) reapOrphanedJobs() {
 			zap.Int64("count", reaped.RowsAffected))
 	}
 
-	// Recover pending jobs that are recent enough not to have been reaped so a
-	// restart does not strand them (nothing else will dispatch an existing pending
-	// row, and the scheduler skips repos that already have a pending job).
+	// Recover every pending job so a restart does not strand it (nothing else will
+	// dispatch an existing pending row, and the scheduler skips repos that already
+	// have a pending job).
 	var jobs []models.CloneJob
 	if err := w.db.Where("status = ?", "pending").Order("created_at asc").Find(&jobs).Error; err != nil {
 		w.logger.Error("failed to load pending jobs for requeue", zap.Error(err))

@@ -429,7 +429,14 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 	if !ok {
 		logger.Info("repository already being processed, deferring job",
 			zap.String("job_id", job.ID.String()), zap.String("path", repoPath))
-		w.db.Model(job).Update("status", "pending")
+		// Do not resurrect a job that was cancelled while queued: only defer it
+		// back to pending when it is still deferrable, and skip the re-enqueue when
+		// the conditional update matched nothing (RowsAffected == 0).
+		deferred := w.db.Model(job).Where("status <> ?", "cancelled").Update("status", "pending")
+		if deferred.Error == nil && deferred.RowsAffected == 0 {
+			logger.Info("clone job was cancelled while queued, not re-enqueuing", zap.String("job_id", job.ID.String()))
+			return
+		}
 		w.enqueueAfter(job, 5*time.Second)
 		return
 	}
@@ -442,14 +449,23 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 		metrics.CloneQueueDepth.Set(float64(w.QueueDepth()))
 	}()
 
-	// Update job status to running
+	// Update job status to running, but only if it was not cancelled while queued.
+	// CancelCloneJob atomically flips pending/running rows to 'cancelled'; if that
+	// already happened this transition matches no rows and we abort rather than
+	// resurrect the job. Cancellation is honored at the status level here, not by
+	// killing an in-flight git process. The deferred unlock, metrics and inflight
+	// cleanup still run on this early return.
 	now := time.Now().UTC()
-	w.db.Model(job).Updates(map[string]any{
+	started := w.db.Model(job).Where("status <> ?", "cancelled").Updates(map[string]any{
 		"status":     "running",
 		"started_at": now,
 		"output_log": "",
 		"exit_code":  nil,
 	})
+	if started.Error == nil && started.RowsAffected == 0 {
+		logger.Info("clone job was cancelled while queued, skipping", zap.String("job_id", job.ID.String()))
+		return
+	}
 
 	// Decrypt credentials
 	var creds *crypto.CredentialsPayload
@@ -630,7 +646,9 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 	// it instead of surfacing a spurious failure.
 	if err != nil && w.ctx.Err() != nil {
 		logger.Info("clone interrupted by shutdown, requeuing job", zap.String("job_id", job.ID.String()))
-		w.db.Model(job).Updates(map[string]any{"status": "pending", "started_at": nil})
+		// A job cancelled mid-run keeps its 'cancelled' status instead of being
+		// resurrected to pending on the next start.
+		w.db.Model(job).Where("status <> ?", "cancelled").Updates(map[string]any{"status": "pending", "started_at": nil})
 		return
 	}
 
@@ -658,8 +676,11 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 		return
 	}
 
-	// Update job status to success
-	w.db.Model(job).Updates(map[string]any{
+	// Update job status to success, unless it was cancelled mid-run: a job
+	// cancelled while the git process was in flight keeps its 'cancelled' status
+	// (cancellation is honored at the status level, not by killing the process, so
+	// the git operation is allowed to finish).
+	w.db.Model(job).Where("status <> ?", "cancelled").Updates(map[string]any{
 		"status":           "success",
 		"completed_at":     time.Now().UTC(),
 		"progress_percent": 100,
@@ -693,7 +714,10 @@ func (w *CloneWorker) failJob(logger *zap.Logger, job *models.CloneJob, errMsg s
 
 	metrics.CloneJobsTotal.WithLabelValues("failed", job.TriggerType).Inc()
 
-	w.db.Model(job).Updates(map[string]any{
+	// Do not overwrite a job that was cancelled mid-run: cancellation is honored at
+	// the status level (the in-flight git process is allowed to finish), so a
+	// 'cancelled' row must keep that terminal status rather than flip to 'failed'.
+	w.db.Model(job).Where("status <> ?", "cancelled").Updates(map[string]any{
 		"status":       "failed",
 		"completed_at": time.Now().UTC(),
 		"output_log":   errMsg,
