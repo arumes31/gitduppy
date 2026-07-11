@@ -213,12 +213,8 @@ func main() {
 	authMiddleware := middleware.NewAuthMiddleware(database.GetDB())
 	defer authMiddleware.Stop()
 	// Let the auth service evict the middleware's in-memory auth cache on logout /
-	// password change so a revoked credential is not honored for the cache TTL. The
-	// user and API-key services share the same cache so a status change, update,
-	// deletion, or key revocation also takes effect immediately.
+	// password change so a revoked credential is not honored for the cache TTL.
 	authService.SetAuthCache(authMiddleware.Cache())
-	userService.SetAuthCache(authMiddleware.Cache())
-	apiKeyService.SetAuthCache(authMiddleware.Cache())
 	corsConfig := middleware.DefaultCORSConfig()
 	// NewRateLimiter takes a refill rate in requests-per-SECOND, so convert the
 	// configured per-minute budget; burst stays at one minute's worth of tokens.
@@ -492,7 +488,7 @@ func setupRouter(
 		gzip.WithExcludedPaths([]string{cfg.Monitoring.MetricsPath}),
 		gzip.WithExcludedPathsRegexs([]string{
 			`^/api/v1/repositories/[^/]+/logs/stream$`,
-			`^/api/v1/repositories/[^/]+/download$`,
+			`^/api/v1/repos(?:itories)?/[^/]+/download$`,
 			`^/api/v1/repositories$`,
 			`^/api/v1/dashboard/overview$`,
 		}),
