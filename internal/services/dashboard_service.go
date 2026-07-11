@@ -51,25 +51,31 @@ func NewDashboardService(basePath string) *DashboardService {
 	}
 }
 
-// totalStorageBytes returns the on-disk size of the storage tree without ever
-// blocking the request: it returns the last cached value immediately and, when
-// that value is stale (or unset), kicks off a single background walk to refresh
-// it. The expensive filepath.Walk never runs while storageMu is held, and the
-// request never waits on it, so a cancelled request context is moot here.
-// The first dashboard load reports 0 until the initial background walk lands.
-func (s *DashboardService) totalStorageBytes() int64 {
+// cachedStorageSizes returns the last computed (total, paperbin) on-disk sizes
+// without ever blocking the request: it returns the cached values immediately
+// and, when they are stale (or unset), kicks off a single background walk to
+// refresh them. The expensive filepath.Walk never runs while storageMu is held,
+// and the request never waits on it, so a cancelled request context is moot
+// here. Both report 0 until the initial background walk lands.
+func (s *DashboardService) cachedStorageSizes() (total, paperbin int64) {
 	if s.basePath == "" {
-		return 0
+		return 0, 0
 	}
 	s.storageMu.Lock()
-	cached := s.storageBytes
+	total, paperbin = s.storageBytes, s.paperbinBytes
 	stale := s.storageAt.IsZero() || time.Since(s.storageAt) >= storageSizeTTL
 	if stale && !s.storageRefreshing {
 		s.storageRefreshing = true
 		go s.refreshStorage()
 	}
 	s.storageMu.Unlock()
-	return cached
+	return total, paperbin
+}
+
+// totalStorageBytes returns the cached on-disk size of the whole storage tree.
+func (s *DashboardService) totalStorageBytes() int64 {
+	total, _ := s.cachedStorageSizes()
+	return total
 }
 
 // refreshStorage walks the storage tree once off the request path and updates
@@ -85,23 +91,10 @@ func (s *DashboardService) refreshStorage() {
 	s.storageMu.Unlock()
 }
 
-// paperbinSizeBytes returns the cached on-disk size of paperbin contents without
-// blocking the request, kicking off the shared background storage refresh when
-// the cached value is stale. Like totalStorageBytes it reports 0 until the first
-// background walk lands.
+// paperbinSizeBytes returns the cached on-disk size of paperbin contents.
 func (s *DashboardService) paperbinSizeBytes() int64 {
-	if s.basePath == "" {
-		return 0
-	}
-	s.storageMu.Lock()
-	cached := s.paperbinBytes
-	stale := s.storageAt.IsZero() || time.Since(s.storageAt) >= storageSizeTTL
-	if stale && !s.storageRefreshing {
-		s.storageRefreshing = true
-		go s.refreshStorage()
-	}
-	s.storageMu.Unlock()
-	return cached
+	_, paperbin := s.cachedStorageSizes()
+	return paperbin
 }
 
 // scanStorage walks root once, returning the total size in bytes of all files
@@ -292,8 +285,18 @@ func (s *DashboardService) GetStats(ctx context.Context) (*DashboardStats, error
 	last24h := now.Add(-24 * time.Hour)
 	last7d := now.Add(-7 * 24 * time.Hour)
 
-	db.Model(&models.CloneJob{}).Where("created_at >= ?", last24h).Count(&stats.RecentActivity.ClonesLast24h)
-	db.Model(&models.CloneJob{}).Where("status = 'failed' AND completed_at >= ?", last24h).Count(&stats.RecentActivity.FailuresLast24h)
+	var recentAgg struct {
+		Clones   int64
+		Failures int64
+	}
+	if err := db.Model(&models.CloneJob{}).
+		Select("COUNT(*) FILTER (WHERE created_at >= ?) AS clones, "+
+			"COUNT(*) FILTER (WHERE status = 'failed' AND completed_at >= ?) AS failures", last24h, last24h).
+		Scan(&recentAgg).Error; err != nil {
+		return nil, err
+	}
+	stats.RecentActivity.ClonesLast24h = recentAgg.Clones
+	stats.RecentActivity.FailuresLast24h = recentAgg.Failures
 	db.Model(&models.Repository{}).Where("created_at >= ?", last7d).Count(&stats.RecentActivity.NewReposLast7d)
 
 	// Status breakdowns were computed above in the grouped scans.
