@@ -298,7 +298,7 @@ func (h *BrowseHandler) GetTree(c *gin.Context) {
 				return
 			}
 			sha := parts[0]
-			entries[i].LastCommit = sha[:min(7, len(sha))]
+			entries[i].LastCommit = sha[:minInt(7, len(sha))]
 			entries[i].LastMessage = parts[1]
 			entries[i].LastAuthor = parts[2]
 			if t, perr := time.Parse(time.RFC3339, parts[4]); perr == nil {
@@ -393,6 +393,13 @@ func (h *BrowseHandler) GetBlob(c *gin.Context) {
 	response.Success(c, resp)
 }
 
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // GetCommits handles GET /api/v1/repos/:id/commits?ref=main&limit=30
 func (h *BrowseHandler) GetCommits(c *gin.Context) {
 	gitRepo, repo, err := h.openRepo(c)
@@ -453,7 +460,7 @@ func (h *BrowseHandler) GetCommits(c *gin.Context) {
 		}
 		commits = append(commits, CommitEntry{
 			SHA:         sha,
-			ShortSHA:    sha[:min(7, len(sha))],
+			ShortSHA:    sha[:minInt(7, len(sha))],
 			Message:     parts[1],
 			Author:      parts[2],
 			AuthorEmail: parts[3],
@@ -484,19 +491,25 @@ func (h *BrowseHandler) GetCommit(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
 	defer cancel()
 
-	// Use show --stat for file stats and the full message. This also serves as
-	// the existence check: an error or empty output means the commit is unknown.
-	// Field-separate the metadata with \x1f (as in GetTree/GetCommits) so an
-	// author name containing "|" cannot shift the email/date fields.
-	showOut, gerr := gitops.RunGitCommand(ctx, repo.StoragePath,
-		"show", "--stat", "--format=%H%x1f%an%x1f%ae%x1f%aI%n%B", sha)
-	if gerr != nil || strings.TrimSpace(showOut) == "" {
-		if gerr != nil {
-			logServerError(c, gerr)
-		}
+	// Get commit metadata
+	metaOut, gerr := gitops.RunGitCommand(ctx, repo.StoragePath,
+		"log", "-1", "--format=%H|%s%n%b|%an|%ae|%aI|%P", sha)
+	if gerr != nil {
+		logServerError(c, gerr)
 		response.NotFound(c, "Commit not found")
 		return
 	}
+
+	// Parse: first line is hash|subject\nbody|author|email|date|parents
+	lines := strings.SplitN(strings.TrimSpace(metaOut), "\n", 2)
+	if len(lines) == 0 {
+		response.NotFound(c, "Commit not found")
+		return
+	}
+
+	// Use show --stat for file stats and the full message
+	showOut, _ := gitops.RunGitCommand(ctx, repo.StoragePath,
+		"show", "--stat", "--format=%H|%an|%ae|%aI%n%B", sha)
 
 	// Get the actual diff (unified)
 	diffOut, _ := gitops.RunGitCommand(ctx, repo.StoragePath,
@@ -506,7 +519,7 @@ func (h *BrowseHandler) GetCommit(c *gin.Context) {
 	var commitSHA, author, email, date, fullMsg string
 	showLines := strings.Split(showOut, "\n")
 	if len(showLines) > 0 {
-		metaParts := strings.SplitN(showLines[0], "\x1f", 4)
+		metaParts := strings.SplitN(showLines[0], "|", 4)
 		if len(metaParts) >= 4 {
 			commitSHA = metaParts[0]
 			author = metaParts[1]
@@ -517,14 +530,17 @@ func (h *BrowseHandler) GetCommit(c *gin.Context) {
 
 	// Extract full message (lines between format line and diff stats)
 	msgLines := []string{}
+	inMsg := false
 	inStats := false
 	for _, l := range showLines[1:] {
 		if strings.HasPrefix(l, "diff --git") || strings.HasPrefix(l, " ") && strings.Contains(l, "|") {
 			inStats = true
 		}
 		if !inStats {
+			inMsg = true
 			msgLines = append(msgLines, l)
 		}
+		_ = inMsg
 	}
 	fullMsg = strings.TrimSpace(strings.Join(msgLines, "\n"))
 

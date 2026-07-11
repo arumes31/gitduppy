@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -400,23 +399,7 @@ func (f *GitHubMetadataFetcher) archiveMedia(ctx context.Context, backupDir stri
 
 	jsonStr := string(jsonBytes)
 
-	// Replace longer URLs before shorter ones. When one captured URL is a strict
-	// prefix of another, a naive map-iteration order could rewrite the shorter URL
-	// first and corrupt the longer one, so process keys sorted by descending length
-	// (lexicographic tie-break for determinism).
-	sortedURLs := make([]string, 0, len(uniqueURLs))
-	for urlStr := range uniqueURLs {
-		sortedURLs = append(sortedURLs, urlStr)
-	}
-	sort.Slice(sortedURLs, func(i, j int) bool {
-		if len(sortedURLs[i]) != len(sortedURLs[j]) {
-			return len(sortedURLs[i]) > len(sortedURLs[j])
-		}
-		return sortedURLs[i] < sortedURLs[j]
-	})
-
-	for _, urlStr := range sortedURLs {
-		cleanURL := uniqueURLs[urlStr]
+	for urlStr, cleanURL := range uniqueURLs {
 		// Check context cancellation
 		if ctx.Err() != nil {
 			break
