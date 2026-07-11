@@ -353,7 +353,10 @@ func isArchivableGitHubMediaURL(raw string) bool {
 	if err != nil {
 		return false
 	}
-	if u.Scheme != "http" && u.Scheme != "https" {
+	// Require HTTPS: the Authorization token is attached to this request, so it
+	// must never travel over cleartext HTTP. First-party GitHub media is always
+	// served over HTTPS anyway.
+	if u.Scheme != "https" {
 		return false
 	}
 	host := strings.ToLower(u.Hostname())

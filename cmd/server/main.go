@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
-	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -75,6 +74,10 @@ func main() {
 	}
 	defer func() { _ = zapLogger.Sync() }()
 	zap.ReplaceGlobals(zapLogger)
+	// Route the standard library's log package (used for startup/shutdown lines
+	// and any dependency that logs via std log) through the configured zap sink so
+	// all output shares one format, level, and destination.
+	zap.RedirectStdLog(zapLogger)
 
 	// Normalize the storage base to an absolute path. It is baked into every
 	// repository's StoragePath and resolved directly by browse/clone/cleanup; a
@@ -299,33 +302,6 @@ func generateBootstrapPassword(nBytes int) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// writeBootstrapPasswordFile writes the bootstrap admin credential to
-// data/admin-bootstrap-credential (mode 0600) so the operator can retrieve it
-// without it appearing in container stdout, log streams, or aggregation
-// systems. The file is overwritten on every bootstrap/reset so only the latest
-// credential remains on disk; operators should delete it after first login.
-func writeBootstrapPasswordFile(credential, action string) error {
-	dir := "data"
-	if d := os.Getenv("GITMIRRORS_DATA_DIR"); d != "" {
-		dir = d
-	}
-	// filepath.Clean normalises the operator-supplied path so gosec's G703
-	// path-traversal check is satisfied.
-	dir = filepath.Clean(dir)
-	if err := os.MkdirAll(dir, fs.FileMode(0o750)); err != nil {
-		return fmt.Errorf("create data dir: %w", err)
-	}
-	fp := filepath.Join(dir, "admin-bootstrap-credential")
-	content := fmt.Sprintf("action: %s\nusername: admin\npassword: %s\n",
-		strings.ReplaceAll(action, "\n", ""), credential)
-	if err := os.WriteFile(fp, []byte(content), fs.FileMode(0o600)); err != nil { //nolint:gosec // fp is built from cleaned dir + hardcoded filename
-		return fmt.Errorf("write credential file: %w", err)
-	}
-	log.Printf("=== ADMIN BOOTSTRAP (%s) — credential written to %s (mode 0600) — delete after first login ===", //nolint:gosec // action is a hardcoded caller literal; fp is sanitised
-		action, fp)
-	return nil
-}
-
 // createDefaultAdmin creates a default admin user if no users exist
 func createDefaultAdmin() error {
 	db := database.GetDB()
@@ -360,9 +336,13 @@ func createDefaultAdmin() error {
 				return errors.New("admin password reset requested but no 'admin' user was updated")
 			}
 			if os.Getenv("GITMIRRORS_BOOTSTRAP_SHOW_PASSWORD") == "true" {
-				if writeErr := writeBootstrapPasswordFile(bootstrapPassword, "reset"); writeErr != nil {
-					log.Printf("WARNING: admin password was reset but the credential file could not be written: %v", writeErr)
-				}
+				// Intentional operator opt-in: print the reset password on stdout
+				// only when explicitly requested. Preferred over persisting it to a
+				// file (which would keep the secret on disk). CodeQL
+				// go/clear-text-logging flags this reviewed exception (dismissed in
+				// the Security tab; in-source CodeQL comments are not honored).
+				// #nosec G706 - Explicit operator opt-in to print the password to logs.
+				log.Printf("=== ADMIN PASSWORD RESET (username: admin) — new password: %q ===", bootstrapPassword)
 			} else {
 				log.Println("Admin password forcefully reset from GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD.")
 			}
@@ -405,12 +385,13 @@ func createDefaultAdmin() error {
 	case !generated:
 		log.Println("Default admin user created (username: admin) from GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD - change on first login")
 	case os.Getenv("GITMIRRORS_BOOTSTRAP_SHOW_PASSWORD") == "true":
-		// Write the one-time generated bootstrap password to a file instead of
-		// logging it. This avoids CodeQL go/clear-text-logging while still
-		// giving operators access to the credential.
-		if writeErr := writeBootstrapPasswordFile(bootstrapPassword, "initial"); writeErr != nil {
-			log.Printf("WARNING: admin user created but the credential file could not be written: %v", writeErr)
-		}
+		// Intentional operator opt-in: print the one-time generated password once
+		// at startup only when explicitly requested. Preferred over persisting it
+		// to a file (which would keep the secret on disk). CodeQL
+		// go/clear-text-logging flags this reviewed exception (dismissed in the
+		// Security tab; in-source CodeQL comments are not honored by code scanning).
+		// #nosec G706 - Explicit operator opt-in to print the password to logs.
+		log.Printf("=== INITIAL ADMIN CREATED (username: admin) — one-time generated password: %s — change it immediately after first login ===", bootstrapPassword)
 	default:
 		// Never log the generated secret by default. Direct the operator to
 		// provide a password or opt in to a one-time display.
