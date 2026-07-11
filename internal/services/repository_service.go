@@ -389,7 +389,7 @@ func (s *RepositoryService) DeleteRepository(_ context.Context, id uuid.UUID) er
 	}
 
 	// Compress local folder and move to paperbin
-	paperbinPath := repo.PaperbinPath()
+	paperbinPath := filepath.Join(filepath.Dir(repo.StoragePath), "paperbin", repo.ID.String())
 	tarGzPath := paperbinPath + ".tar.gz"
 
 	if _, err := os.Stat(repo.StoragePath); err == nil {
@@ -428,7 +428,7 @@ func (s *RepositoryService) RestoreRepository(_ context.Context, id uuid.UUID) e
 	}
 
 	// Decompress local folder back from paperbin
-	paperbinPath := repo.PaperbinPath()
+	paperbinPath := filepath.Join(filepath.Dir(repo.StoragePath), "paperbin", repo.ID.String())
 	tarGzPath := paperbinPath + ".tar.gz"
 
 	if _, err := os.Stat(tarGzPath); err == nil {
@@ -485,7 +485,7 @@ func (s *RepositoryService) PermanentDeleteRepository(_ context.Context, id uuid
 	}
 
 	// Delete paperbin compressed archive and uncompressed folders on disk
-	paperbinPath := repo.PaperbinPath()
+	paperbinPath := filepath.Join(filepath.Dir(repo.StoragePath), "paperbin", repo.ID.String())
 	_ = os.Remove(paperbinPath + ".tar.gz")
 	_ = os.RemoveAll(paperbinPath)
 	// Also delete normal storage path in case it wasn't moved/compressed
