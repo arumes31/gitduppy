@@ -21,12 +21,19 @@ type CleanupWorker struct {
 	stopOnce  sync.Once
 	interval  time.Duration
 	retention time.Duration
+	basePath  string
 }
 
 // CleanupConfig holds configuration for the cleanup worker.
 type CleanupConfig struct {
 	Interval  time.Duration
 	Retention time.Duration
+	// BasePath is the storage root under which the shared object "pools"
+	// directory lives (see GitOperations.BasePath / getPoolPath). It must be
+	// passed explicitly rather than derived from a repository's StoragePath,
+	// since row order from the DB is not deterministic and StoragePath can be
+	// overridden to a non-canonical location.
+	BasePath string
 }
 
 // DefaultCleanupConfig returns default cleanup configuration.
@@ -48,6 +55,7 @@ func NewCleanupWorker(config *CleanupConfig) *CleanupWorker {
 		done:      make(chan struct{}),
 		interval:  config.Interval,
 		retention: config.Retention,
+		basePath:  config.BasePath,
 	}
 }
 
@@ -215,12 +223,10 @@ func (w *CleanupWorker) performCleanup() {
 
 // cleanupPools performs auto-gc on shared object pools to keep packfiles compact.
 func (w *CleanupWorker) cleanupPools() {
-	var repos []models.Repository
-	if err := w.db.Select("storage_path").Find(&repos).Error; err != nil || len(repos) == 0 {
+	if w.basePath == "" {
 		return
 	}
-	basePath := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(repos[0].StoragePath))))
-	poolsDir := filepath.Join(basePath, "pools")
+	poolsDir := filepath.Join(w.basePath, "pools")
 	if _, err := os.Stat(poolsDir); os.IsNotExist(err) {
 		return
 	}

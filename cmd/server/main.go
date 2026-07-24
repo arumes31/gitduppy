@@ -176,7 +176,9 @@ func main() {
 	}
 
 	// Initialize cleanup worker
-	cleanupWorker := gitops.NewCleanupWorker(gitops.DefaultCleanupConfig())
+	cleanupConfig := gitops.DefaultCleanupConfig()
+	cleanupConfig.BasePath = cfg.Storage.BasePath
+	cleanupWorker := gitops.NewCleanupWorker(cleanupConfig)
 	cleanupWorker.Start()
 	defer cleanupWorker.Stop()
 

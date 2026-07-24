@@ -109,76 +109,80 @@ func (g *GitOperations) CloneRepository(ctx context.Context, opts *CloneOptions)
 				return fmt.Errorf("fetch failed: %w", err)
 			}
 
-			// Checkout branch if not bare
-			if !opts.Bare {
-				w, err := r.Worktree()
-				if err != nil {
-					return fmt.Errorf("failed to get worktree: %w", err)
-				}
+			// Resolve the target branch and point HEAD at it regardless of bare/
+			// non-bare, so a bare mirror doesn't end up with HEAD dangling at
+			// refs/heads/master (git.PlainInit's default) with no such ref ever
+			// created. The worktree checkout below only applies to non-bare clones.
+			var targetRef *plumbing.Reference
+			var targetBranchName string
 
-				var targetRef *plumbing.Reference
-				var targetBranchName string
-
-				if opts.Branch != "" {
-					targetBranchName = opts.Branch
-					ref, err := r.Reference(plumbing.NewRemoteReferenceName("origin", opts.Branch), true)
+			if opts.Branch != "" {
+				targetBranchName = opts.Branch
+				ref, err := r.Reference(plumbing.NewRemoteReferenceName("origin", opts.Branch), true)
+				if err == nil {
+					targetRef = ref
+				} else {
+					ref, err = r.Reference(plumbing.NewBranchReferenceName(opts.Branch), true)
 					if err == nil {
 						targetRef = ref
-					} else {
-						ref, err = r.Reference(plumbing.NewBranchReferenceName(opts.Branch), true)
+					}
+				}
+				if targetRef == nil {
+					return fmt.Errorf("branch %q not found on remote", opts.Branch)
+				}
+			} else {
+				if headRef, err := r.Reference(plumbing.ReferenceName("refs/remotes/origin/HEAD"), false); err == nil && headRef.Type() == plumbing.SymbolicReference {
+					targetRefName := headRef.Target()
+					if ref, err := r.Reference(targetRefName, true); err == nil {
+						targetRef = ref
+						targetBranchName = strings.TrimPrefix(targetRefName.String(), "refs/remotes/origin/")
+					}
+				}
+
+				if targetRef == nil {
+					for _, branch := range []string{"main", "master", "trunk", "development"} {
+						ref, err := r.Reference(plumbing.NewRemoteReferenceName("origin", branch), true)
 						if err == nil {
 							targetRef = ref
-						}
-					}
-				} else {
-					if headRef, err := r.Reference(plumbing.ReferenceName("refs/remotes/origin/HEAD"), false); err == nil && headRef.Type() == plumbing.SymbolicReference {
-						targetRefName := headRef.Target()
-						if ref, err := r.Reference(targetRefName, true); err == nil {
-							targetRef = ref
-							targetBranchName = strings.TrimPrefix(targetRefName.String(), "refs/remotes/origin/")
-						}
-					}
-
-					if targetRef == nil {
-						for _, branch := range []string{"main", "master", "trunk", "development"} {
-							ref, err := r.Reference(plumbing.NewRemoteReferenceName("origin", branch), true)
-							if err == nil {
-								targetRef = ref
-								targetBranchName = branch
-								break
-							}
-						}
-					}
-
-					if targetRef == nil {
-						iter, err := r.References()
-						if err == nil {
-							_ = iter.ForEach(func(ref *plumbing.Reference) error {
-								if ref.Name().IsRemote() && ref.Name() != plumbing.ReferenceName("refs/remotes/origin/HEAD") {
-									targetRef = ref
-									targetBranchName = strings.TrimPrefix(ref.Name().String(), "refs/remotes/origin/")
-									return storer.ErrStop
-								}
-								return nil
-							})
-							iter.Close()
+							targetBranchName = branch
+							break
 						}
 					}
 				}
 
-				if targetRef != nil && targetBranchName != "" {
-					localBranchRef := plumbing.NewBranchReferenceName(targetBranchName)
-					if err := r.Storer.SetReference(plumbing.NewHashReference(localBranchRef, targetRef.Hash())); err != nil {
-						return fmt.Errorf("failed to set local branch reference: %w", err)
+				if targetRef == nil {
+					iter, err := r.References()
+					if err == nil {
+						_ = iter.ForEach(func(ref *plumbing.Reference) error {
+							if ref.Name().IsRemote() && ref.Name() != plumbing.ReferenceName("refs/remotes/origin/HEAD") {
+								targetRef = ref
+								targetBranchName = strings.TrimPrefix(ref.Name().String(), "refs/remotes/origin/")
+								return storer.ErrStop
+							}
+							return nil
+						})
+						iter.Close()
 					}
-					if err := r.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, localBranchRef)); err != nil {
-						return fmt.Errorf("failed to set HEAD: %w", err)
+				}
+			}
+
+			if targetRef != nil && targetBranchName != "" {
+				localBranchRef := plumbing.NewBranchReferenceName(targetBranchName)
+				if err := r.Storer.SetReference(plumbing.NewHashReference(localBranchRef, targetRef.Hash())); err != nil {
+					return fmt.Errorf("failed to set local branch reference: %w", err)
+				}
+				if err := r.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, localBranchRef)); err != nil {
+					return fmt.Errorf("failed to set HEAD: %w", err)
+				}
+				if !opts.Bare {
+					w, err := r.Worktree()
+					if err != nil {
+						return fmt.Errorf("failed to get worktree: %w", err)
 					}
-					err = w.Checkout(&git.CheckoutOptions{
+					if err := w.Checkout(&git.CheckoutOptions{
 						Branch: localBranchRef,
 						Force:  true,
-					})
-					if err != nil {
+					}); err != nil {
 						return fmt.Errorf("checkout failed: %w", err)
 					}
 				}
@@ -267,15 +271,23 @@ func (g *GitOperations) FetchRepository(ctx context.Context, opts *CloneOptions)
 		}
 	}
 
-	// Fast-forward local active branch if non-bare
+	// Force the worktree to match the remote branch if non-bare. This is not a
+	// fast-forward-only update (no ancestry check): the mirror's local branch
+	// and worktree are always expected to match remote, so a hard reset is used.
 	if !opts.Bare {
 		if head, err := repo.Head(); err == nil && head.Name().IsBranch() {
 			branchName := head.Name().Short()
 			if remoteRef, err := repo.Reference(plumbing.NewRemoteReferenceName("origin", branchName), true); err == nil {
 				if head.Hash() != remoteRef.Hash() {
-					_ = repo.Storer.SetReference(plumbing.NewHashReference(head.Name(), remoteRef.Hash()))
-					if w, err := repo.Worktree(); err == nil {
-						_ = w.Reset(&git.ResetOptions{Mode: git.HardReset, Commit: remoteRef.Hash()})
+					if err := repo.Storer.SetReference(plumbing.NewHashReference(head.Name(), remoteRef.Hash())); err != nil {
+						return fmt.Errorf("failed to update local branch ref: %w", err)
+					}
+					w, err := repo.Worktree()
+					if err != nil {
+						return fmt.Errorf("failed to get worktree: %w", err)
+					}
+					if err := w.Reset(&git.ResetOptions{Mode: git.HardReset, Commit: remoteRef.Hash()}); err != nil {
+						return fmt.Errorf("failed to reset worktree to remote: %w", err)
 					}
 				}
 			}
