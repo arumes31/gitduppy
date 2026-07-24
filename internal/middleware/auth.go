@@ -24,6 +24,8 @@ type AuthMiddleware struct {
 	// (credential lookup + user fetch) validation every time. See AuthCache for the
 	// staleness/eviction contract.
 	cache *AuthCache
+	// Optional: exclude paths from authentication
+	excludePaths []string
 }
 
 // NewAuthMiddleware creates a new auth middleware backed by the given database.
@@ -31,6 +33,13 @@ func NewAuthMiddleware(db *gorm.DB) *AuthMiddleware {
 	return &AuthMiddleware{
 		db:    db,
 		cache: NewAuthCache(),
+		excludePaths: []string{
+			"/api/v1/health",
+			"/api/v1/health/live",
+			"/api/v1/health/ready",
+			"/api/v1/auth/login",
+			"/api/v1/webhooks/receive",
+		},
 	}
 }
 
@@ -48,6 +57,12 @@ func (m *AuthMiddleware) Stop() {
 // Middleware returns the authentication middleware function.
 func (m *AuthMiddleware) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Check if path is excluded
+		if m.isExcluded(c.Request.URL.Path) {
+			c.Next()
+			return
+		}
+
 		// Try API key authentication first (from Authorization header)
 		authHeader := c.GetHeader("Authorization")
 		if strings.HasPrefix(authHeader, "Bearer ") {
@@ -98,6 +113,16 @@ func (m *AuthMiddleware) WebMiddleware() gin.HandlerFunc {
 		c.Redirect(http.StatusFound, "/login")
 		c.Abort()
 	}
+}
+
+// isExcluded checks if a path should be excluded from authentication.
+func (m *AuthMiddleware) isExcluded(path string) bool {
+	for _, excluded := range m.excludePaths {
+		if strings.HasPrefix(path, excluded) {
+			return true
+		}
+	}
+	return false
 }
 
 // validateAPIKey validates an API key and returns the associated user.

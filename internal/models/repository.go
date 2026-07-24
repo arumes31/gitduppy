@@ -1,7 +1,6 @@
 package models
 
 import (
-	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
@@ -58,13 +57,6 @@ type Repository struct {
 // TableName specifies the table name for the Repository model.
 func (Repository) TableName() string {
 	return "repositories"
-}
-
-// PaperbinPath returns the paperbin archive base path for this repository,
-// derived from StoragePath. Callers append ".tar.gz" for the archive file or
-// use it directly as the uncompressed directory.
-func (r *Repository) PaperbinPath() string {
-	return filepath.Join(filepath.Dir(r.StoragePath), "paperbin", r.ID.String())
 }
 
 // BeforeCreate assigns a UUID primary key when one was not set explicitly (same

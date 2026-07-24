@@ -298,7 +298,7 @@ func (h *BrowseHandler) GetTree(c *gin.Context) {
 				return
 			}
 			sha := parts[0]
-			entries[i].LastCommit = sha[:min(7, len(sha))]
+			entries[i].LastCommit = sha[:minInt(7, len(sha))]
 			entries[i].LastMessage = parts[1]
 			entries[i].LastAuthor = parts[2]
 			if t, perr := time.Parse(time.RFC3339, parts[4]); perr == nil {
@@ -393,6 +393,13 @@ func (h *BrowseHandler) GetBlob(c *gin.Context) {
 	response.Success(c, resp)
 }
 
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // GetCommits handles GET /api/v1/repos/:id/commits?ref=main&limit=30
 func (h *BrowseHandler) GetCommits(c *gin.Context) {
 	gitRepo, repo, err := h.openRepo(c)
@@ -453,7 +460,7 @@ func (h *BrowseHandler) GetCommits(c *gin.Context) {
 		}
 		commits = append(commits, CommitEntry{
 			SHA:         sha,
-			ShortSHA:    sha[:min(7, len(sha))],
+			ShortSHA:    sha[:minInt(7, len(sha))],
 			Message:     parts[1],
 			Author:      parts[2],
 			AuthorEmail: parts[3],
@@ -500,6 +507,17 @@ func (h *BrowseHandler) GetCommit(c *gin.Context) {
 		response.NotFound(c, "Commit not found")
 		return
 	}
+
+	// Parse: first line is hash|subject\nbody|author|email|date|parents
+	lines := strings.SplitN(strings.TrimSpace(metaOut), "\n", 2)
+	if len(lines) == 0 {
+		response.NotFound(c, "Commit not found")
+		return
+	}
+
+	// Use show --stat for file stats and the full message
+	showOut, _ := gitops.RunGitCommand(ctx, repo.StoragePath,
+		"show", "--stat", "--format=%H|%an|%ae|%aI%n%B", sha)
 
 	// Get the actual diff (unified)
 	diffOut, _ := gitops.RunGitCommand(ctx, repo.StoragePath,

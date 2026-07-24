@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"errors"
-	"net/http"
 	"path"
 	"strings"
 
@@ -55,8 +54,6 @@ func respondServiceError(c *gin.Context, err error) {
 		response.BadRequest(c, "VALIDATION_ERROR", err.Error())
 	case errors.Is(err, services.ErrForbidden):
 		response.Forbidden(c, err.Error())
-	case errors.Is(err, services.ErrNotImplemented):
-		response.ErrorResponse(c, http.StatusNotImplemented, "NOT_IMPLEMENTED", err.Error())
 	default:
 		logServerError(c, err)
 		response.InternalError(c, genericServerErrorMessage)

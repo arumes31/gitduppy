@@ -333,16 +333,6 @@ func (s *AuthService) ChangePassword(_ context.Context, userID uuid.UUID, oldPas
 	return nil
 }
 
-// EvictUserCache removes all of a user's cached credentials from the auth cache,
-// when one is wired. It lets flows outside this service (e.g. OAuth unlink) that
-// mutate a user row invalidate the cache the same way ChangePassword does, so a
-// stale cached copy is not served for the remainder of its TTL.
-func (s *AuthService) EvictUserCache(userID uuid.UUID) {
-	if s.authCache != nil {
-		s.authCache.EvictUser(userID)
-	}
-}
-
 // GetUserByID retrieves a user by ID.
 func (s *AuthService) GetUserByID(_ context.Context, id uuid.UUID) (*models.User, error) {
 	var user models.User

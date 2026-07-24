@@ -357,27 +357,14 @@ func (h *OAuthHandler) UnlinkAccount(c *gin.Context) {
 		return
 	}
 
-	// Unlink OAuth account. Load a fresh copy of the user row and clear the fields
-	// on that copy — never mutate the shared, cache-owned *models.User returned by
-	// GetCurrentUser (the auth cache documents its cached user as never mutated).
-	var fresh models.User
-	if err := h.authService.DB().First(&fresh, user.ID).Error; err != nil {
+	// Unlink OAuth account
+	user.OAuthProvider = nil
+	user.OAuthSubject = nil
+	if err := h.authService.DB().Save(user).Error; err != nil {
 		logServerError(c, err)
 		response.InternalError(c, "Failed to unlink OAuth account")
 		return
 	}
-	fresh.OAuthProvider = nil
-	fresh.OAuthSubject = nil
-	if err := h.authService.DB().Save(&fresh).Error; err != nil {
-		logServerError(c, err)
-		response.InternalError(c, "Failed to unlink OAuth account")
-		return
-	}
-
-	// Evict cached credentials so the updated user (without the OAuth link) is
-	// re-read rather than served stale from the auth cache for the remainder of its
-	// TTL.
-	h.authService.EvictUserCache(user.ID)
 
 	response.SuccessWithMessage(c, "OAuth account unlinked successfully", nil)
 }

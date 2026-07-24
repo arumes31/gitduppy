@@ -112,7 +112,7 @@ func (h *BackupHandler) Import(c *gin.Context) {
 	}
 
 	if err := h.backupService.ImportData(c, content, importFormat); err != nil {
-		respondServiceError(c, err)
+		response.BadRequest(c, "IMPORT_ERROR", "Failed to import data: "+err.Error())
 		return
 	}
 
@@ -129,7 +129,8 @@ func (h *BackupHandler) DatabaseBackup(c *gin.Context) {
 
 	backupPath, err := h.backupService.DatabaseBackup(c)
 	if err != nil {
-		respondServiceError(c, err)
+		logServerError(c, err)
+		response.InternalError(c, "Failed to create database backup")
 		return
 	}
 

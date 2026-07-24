@@ -17,8 +17,7 @@ import (
 
 // APIKeyService handles API key CRUD operations.
 type APIKeyService struct {
-	db        *gorm.DB
-	authCache AuthCacheInvalidator
+	db *gorm.DB
 }
 
 // NewAPIKeyService creates a new API key service.
@@ -26,13 +25,6 @@ func NewAPIKeyService() *APIKeyService {
 	return &APIKeyService{
 		db: database.GetDB(),
 	}
-}
-
-// SetAuthCache wires the middleware auth cache so revoking an API key evicts its
-// cached entry eagerly rather than letting the revoked key authenticate for the
-// cache TTL. Optional: a nil invalidator simply falls back to TTL expiry.
-func (s *APIKeyService) SetAuthCache(cache AuthCacheInvalidator) {
-	s.authCache = cache
 }
 
 // CreateAPIKeyRequest represents a create API key request.
@@ -121,24 +113,12 @@ func (s *APIKeyService) GetAPIKeyByID(ctx context.Context, id uuid.UUID) (*model
 
 // RevokeAPIKey revokes an API key.
 func (s *APIKeyService) RevokeAPIKey(ctx context.Context, id uuid.UUID) error {
-	// Load the row first so we have its key_hash for a precise cache eviction (the
-	// auth cache is keyed by the stored key_hash).
-	var key models.APIKey
-	if err := s.db.WithContext(ctx).First(&key, id).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return fmt.Errorf("%w: API key", ErrNotFound)
-		}
-		return err
+	result := s.db.WithContext(ctx).Model(&models.APIKey{}).Where("id = ?", id).Update("is_active", false)
+	if result.Error != nil {
+		return result.Error
 	}
-
-	if err := s.db.WithContext(ctx).Model(&models.APIKey{}).Where("id = ?", id).Update("is_active", false).Error; err != nil {
-		return err
-	}
-
-	// Evict precisely by the stored key_hash so the revoked key stops
-	// authenticating immediately rather than after the cache TTL.
-	if s.authCache != nil {
-		s.authCache.Evict(key.KeyHash)
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("%w: API key", ErrNotFound)
 	}
 	return nil
 }
