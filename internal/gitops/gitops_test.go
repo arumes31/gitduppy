@@ -71,3 +71,64 @@ func TestGetReferencesOnRealRepo(t *testing.T) {
 		t.Error("expected non-nil refs map (empty repo => empty map)")
 	}
 }
+
+func TestCloneRepositoryDedupe(t *testing.T) {
+	ctx := context.Background()
+	originDir := t.TempDir()
+
+	// Initialize origin repo with a commit
+	if _, err := RunGitCommand(ctx, originDir, "init", "-b", "main"); err != nil {
+		t.Skipf("git init failed: %v", err)
+	}
+	if _, err := RunGitCommand(ctx, originDir, "config", "user.name", "Test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RunGitCommand(ctx, originDir, "config", "user.email", "test@example.com"); err != nil {
+		t.Fatal(err)
+	}
+
+	testFile := filepath.Join(originDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("hello world"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RunGitCommand(ctx, originDir, "add", "test.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RunGitCommand(ctx, originDir, "commit", "-m", "initial commit"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Test clone with dedupe enabled
+	baseDir := t.TempDir()
+	g := NewGitOperations(baseDir)
+	cloneDir := filepath.Join(baseDir, "cloned-repo")
+
+	opts := &CloneOptions{
+		URL:    originDir,
+		Path:   cloneDir,
+		Dedupe: true,
+	}
+
+	if err := g.CloneRepository(ctx, opts); err != nil {
+		t.Fatalf("CloneRepository with Dedupe failed: %v", err)
+	}
+
+	// Verify cloned file exists
+	clonedFile := filepath.Join(cloneDir, "test.txt")
+	content, err := os.ReadFile(clonedFile)
+	if err != nil {
+		t.Fatalf("Failed to read cloned file: %v", err)
+	}
+	if string(content) != "hello world" {
+		t.Errorf("Unexpected content: %q", string(content))
+	}
+
+	// Verify current branch
+	branch, err := g.GetCurrentBranch(cloneDir)
+	if err != nil {
+		t.Fatalf("GetCurrentBranch failed: %v", err)
+	}
+	if branch != "main" {
+		t.Errorf("Expected branch main, got %q", branch)
+	}
+}

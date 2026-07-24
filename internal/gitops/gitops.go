@@ -18,6 +18,7 @@ import (
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp/sideband"
+	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
@@ -115,19 +116,66 @@ func (g *GitOperations) CloneRepository(ctx context.Context, opts *CloneOptions)
 					return fmt.Errorf("failed to get worktree: %w", err)
 				}
 
-				var branchName plumbing.ReferenceName
+				var targetRef *plumbing.Reference
+				var targetBranchName string
+
 				if opts.Branch != "" {
-					branchName = plumbing.NewBranchReferenceName(opts.Branch)
-				} else {
-					headRef, err := r.Reference(plumbing.HEAD, true)
+					targetBranchName = opts.Branch
+					ref, err := r.Reference(plumbing.NewRemoteReferenceName("origin", opts.Branch), true)
 					if err == nil {
-						branchName = headRef.Name()
+						targetRef = ref
+					} else {
+						ref, err = r.Reference(plumbing.NewBranchReferenceName(opts.Branch), true)
+						if err == nil {
+							targetRef = ref
+						}
+					}
+				} else {
+					if headRef, err := r.Reference(plumbing.ReferenceName("refs/remotes/origin/HEAD"), false); err == nil && headRef.Type() == plumbing.SymbolicReference {
+						targetRefName := headRef.Target()
+						if ref, err := r.Reference(targetRefName, true); err == nil {
+							targetRef = ref
+							targetBranchName = strings.TrimPrefix(targetRefName.String(), "refs/remotes/origin/")
+						}
+					}
+
+					if targetRef == nil {
+						for _, branch := range []string{"main", "master", "trunk", "development"} {
+							ref, err := r.Reference(plumbing.NewRemoteReferenceName("origin", branch), true)
+							if err == nil {
+								targetRef = ref
+								targetBranchName = branch
+								break
+							}
+						}
+					}
+
+					if targetRef == nil {
+						iter, err := r.References()
+						if err == nil {
+							_ = iter.ForEach(func(ref *plumbing.Reference) error {
+								if ref.Name().IsRemote() && ref.Name() != plumbing.ReferenceName("refs/remotes/origin/HEAD") {
+									targetRef = ref
+									targetBranchName = strings.TrimPrefix(ref.Name().String(), "refs/remotes/origin/")
+									return storer.ErrStop
+								}
+								return nil
+							})
+							iter.Close()
+						}
 					}
 				}
 
-				if branchName != "" {
+				if targetRef != nil && targetBranchName != "" {
+					localBranchRef := plumbing.NewBranchReferenceName(targetBranchName)
+					if err := r.Storer.SetReference(plumbing.NewHashReference(localBranchRef, targetRef.Hash())); err != nil {
+						return fmt.Errorf("failed to set local branch reference: %w", err)
+					}
+					if err := r.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, localBranchRef)); err != nil {
+						return fmt.Errorf("failed to set HEAD: %w", err)
+					}
 					err = w.Checkout(&git.CheckoutOptions{
-						Branch: branchName,
+						Branch: localBranchRef,
 						Force:  true,
 					})
 					if err != nil {
@@ -216,6 +264,21 @@ func (g *GitOperations) FetchRepository(ctx context.Context, opts *CloneOptions)
 		// Ignore "already up-to-date" errors
 		if !errors.Is(err, git.NoErrAlreadyUpToDate) {
 			return err
+		}
+	}
+
+	// Fast-forward local active branch if non-bare
+	if !opts.Bare {
+		if head, err := repo.Head(); err == nil && head.Name().IsBranch() {
+			branchName := head.Name().Short()
+			if remoteRef, err := repo.Reference(plumbing.NewRemoteReferenceName("origin", branchName), true); err == nil {
+				if head.Hash() != remoteRef.Hash() {
+					_ = repo.Storer.SetReference(plumbing.NewHashReference(head.Name(), remoteRef.Hash()))
+					if w, err := repo.Worktree(); err == nil {
+						_ = w.Reset(&git.ResetOptions{Mode: git.HardReset, Commit: remoteRef.Hash()})
+					}
+				}
+			}
 		}
 	}
 

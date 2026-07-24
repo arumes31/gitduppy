@@ -21,6 +21,7 @@ import (
 	"github.com/gitduppy/gitduppy/pkg/validator"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -531,7 +532,7 @@ func (h *RepositoryHandler) StreamRepositoryLogs(c *gin.Context) {
 
 	ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		log.Printf("WebSocket upgrade failed: %v", err)
+		zap.L().Named("ws").Debug("WebSocket upgrade failed", zap.Error(err))
 		return
 	}
 	defer ws.Close()

@@ -3,6 +3,7 @@ package gitops
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -207,5 +208,32 @@ func (w *CleanupWorker) performCleanup() {
 		}
 	}
 
+	w.cleanupPools()
+
 	w.logger.Info("cleanup completed")
+}
+
+// cleanupPools performs auto-gc on shared object pools to keep packfiles compact.
+func (w *CleanupWorker) cleanupPools() {
+	var repos []models.Repository
+	if err := w.db.Select("storage_path").Find(&repos).Error; err != nil || len(repos) == 0 {
+		return
+	}
+	basePath := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(repos[0].StoragePath))))
+	poolsDir := filepath.Join(basePath, "pools")
+	if _, err := os.Stat(poolsDir); os.IsNotExist(err) {
+		return
+	}
+	_ = filepath.Walk(poolsDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil || !info.IsDir() {
+			return nil //nolint:nilerr
+		}
+		if _, statErr := os.Stat(filepath.Join(path, "HEAD")); statErr == nil {
+			gitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			_, _ = RunGitCommand(gitCtx, path, "gc", "--auto")
+			cancel()
+			return filepath.SkipDir
+		}
+		return nil
+	})
 }
