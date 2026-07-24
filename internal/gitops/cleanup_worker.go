@@ -110,44 +110,24 @@ func (w *CleanupWorker) performCleanup() {
 	cutoff := time.Now().Add(-w.retention)
 
 	// Clean up old completed clone jobs (success, failed, cancelled)
-	result := w.db.Where("status IN ? AND completed_at < ?", []string{"success", "failed", "cancelled"}, cutoff).Delete(&models.CloneJob{})
-	if result.Error != nil {
-		w.logger.Error("failed to cleanup clone jobs", zap.Error(result.Error))
-	} else {
-		log.Printf("Cleaned up %d old clone jobs", result.RowsAffected)
-	}
+	w.purge("clone jobs", "old clone jobs",
+		w.db.Where("status IN ? AND completed_at < ?", []string{"success", "failed", "cancelled"}, cutoff).Delete(&models.CloneJob{}))
 
 	// Clean up old clone logs for deleted jobs
-	logResult := w.db.Where("created_at < ?", cutoff).Delete(&models.CloneLog{})
-	if logResult.Error != nil {
-		w.logger.Error("failed to cleanup clone logs", zap.Error(logResult.Error))
-	} else {
-		log.Printf("Cleaned up %d old clone logs", logResult.RowsAffected)
-	}
+	w.purge("clone logs", "old clone logs",
+		w.db.Where("created_at < ?", cutoff).Delete(&models.CloneLog{}))
 
 	// Clean up old webhook deliveries
-	deliveryResult := w.db.Where("delivered_at < ?", cutoff).Delete(&models.WebhookDelivery{})
-	if deliveryResult.Error != nil {
-		w.logger.Error("failed to cleanup webhook deliveries", zap.Error(deliveryResult.Error))
-	} else {
-		log.Printf("Cleaned up %d old webhook deliveries", deliveryResult.RowsAffected)
-	}
+	w.purge("webhook deliveries", "old webhook deliveries",
+		w.db.Where("delivered_at < ?", cutoff).Delete(&models.WebhookDelivery{}))
 
 	// Clean up old audit logs
-	auditResult := w.db.Where("created_at < ?", cutoff).Delete(&models.AuditLog{})
-	if auditResult.Error != nil {
-		w.logger.Error("failed to cleanup audit logs", zap.Error(auditResult.Error))
-	} else {
-		log.Printf("Cleaned up %d old audit logs", auditResult.RowsAffected)
-	}
+	w.purge("audit logs", "old audit logs",
+		w.db.Where("created_at < ?", cutoff).Delete(&models.AuditLog{}))
 
 	// Clean up expired sessions
-	sessionResult := w.db.Where("expiry < ?", time.Now()).Delete(&models.Session{})
-	if sessionResult.Error != nil {
-		w.logger.Error("failed to cleanup sessions", zap.Error(sessionResult.Error))
-	} else {
-		log.Printf("Cleaned up %d expired sessions", sessionResult.RowsAffected)
-	}
+	w.purge("sessions", "expired sessions",
+		w.db.Where("expiry < ?", time.Now()).Delete(&models.Session{}))
 
 	// Clean up old soft-deleted repositories based on custom retention policies
 	var allDeletedRepos []models.Repository

@@ -508,17 +508,6 @@ func (h *BrowseHandler) GetCommit(c *gin.Context) {
 		return
 	}
 
-	// Parse: first line is hash|subject\nbody|author|email|date|parents
-	lines := strings.SplitN(strings.TrimSpace(metaOut), "\n", 2)
-	if len(lines) == 0 {
-		response.NotFound(c, "Commit not found")
-		return
-	}
-
-	// Use show --stat for file stats and the full message
-	showOut, _ := gitops.RunGitCommand(ctx, repo.StoragePath,
-		"show", "--stat", "--format=%H|%an|%ae|%aI%n%B", sha)
-
 	// Get the actual diff (unified)
 	diffOut, _ := gitops.RunGitCommand(ctx, repo.StoragePath,
 		"show", "--unified=3", "--format=", sha)

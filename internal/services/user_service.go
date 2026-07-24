@@ -17,6 +17,7 @@ import (
 type UserService struct {
 	db              *gorm.DB
 	passwordService *crypto.PasswordService
+	authCache       AuthCacheInvalidator
 }
 
 // NewUserService creates a new user service.
@@ -25,6 +26,14 @@ func NewUserService() *UserService {
 		db:              database.GetDB(),
 		passwordService: crypto.NewPasswordService(),
 	}
+}
+
+// SetAuthCache wires the middleware auth cache so a user status change, update or
+// deletion evicts that user's cached credentials eagerly rather than letting a
+// deactivated/renamed/deleted user be served for the cache TTL. Optional: a nil
+// invalidator simply falls back to TTL expiry.
+func (s *UserService) SetAuthCache(cache AuthCacheInvalidator) {
+	s.authCache = cache
 }
 
 // UserFilter represents filters for listing users.
@@ -187,6 +196,12 @@ func (s *UserService) UpdateUser(ctx context.Context, id uuid.UUID, req *UpdateU
 		return nil, err
 	}
 
+	// Evict this user's cached credentials so a role/status/identity change (e.g.
+	// deactivation) takes effect immediately rather than after the cache TTL.
+	if s.authCache != nil {
+		s.authCache.EvictUser(id)
+	}
+
 	return user, nil
 }
 
@@ -199,10 +214,27 @@ func (s *UserService) DeleteUser(ctx context.Context, id uuid.UUID) error {
 	if result.RowsAffected == 0 {
 		return fmt.Errorf("%w: user", ErrNotFound)
 	}
+	// Evict the deleted user's cached credentials so they cannot be served from the
+	// auth cache for the remainder of the TTL.
+	if s.authCache != nil {
+		s.authCache.EvictUser(id)
+	}
 	return nil
 }
 
 // SetUserStatus enables or disables a user.
 func (s *UserService) SetUserStatus(ctx context.Context, id uuid.UUID, isActive bool) error {
-	return s.db.WithContext(ctx).Model(&models.User{}).Where("id = ?", id).Update("is_active", isActive).Error
+	result := s.db.WithContext(ctx).Model(&models.User{}).Where("id = ?", id).Update("is_active", isActive)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("%w: user", ErrNotFound)
+	}
+	// Evict cached credentials so a disabled user stops being authenticated
+	// immediately instead of after the cache TTL.
+	if s.authCache != nil {
+		s.authCache.EvictUser(id)
+	}
+	return nil
 }

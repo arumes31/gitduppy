@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/gitduppy/gitduppy/internal/config"
@@ -78,79 +77,17 @@ func (s *BackupService) ExportData(_ context.Context, format ExportFormat) ([]by
 	}
 }
 
-// ImportData imports configuration data.
-func (s *BackupService) ImportData(_ context.Context, data []byte, format ExportFormat) error {
-	var importData map[string]any
-
-	switch format {
-	case JSONFormat:
-		if err := json.Unmarshal(data, &importData); err != nil {
-			return err
-		}
-	case YAMLFormat:
-		if err := yaml.Unmarshal(data, &importData); err != nil {
-			return err
-		}
-	default:
-		return fmt.Errorf("unsupported import format: %s", format)
-	}
-
-	// Import repositories
-	if reposData, ok := importData["repositories"]; ok {
-		if repos, ok := reposData.([]any); ok {
-			for range repos {
-				// Convert to Repository model and save
-				// This is a simplified implementation - in practice, you'd need
-				// proper type conversion and validation
-				continue
-			}
-		}
-	}
-
-	// Import tags
-	if tagsData, ok := importData["tags"]; ok {
-		if tags, ok := tagsData.([]any); ok {
-			for range tags {
-				// Convert to Tag model and save
-				continue
-			}
-		}
-	}
-
-	// Import webhooks
-	if webhooksData, ok := importData["webhooks"]; ok {
-		if webhooks, ok := webhooksData.([]any); ok {
-			for range webhooks {
-				// Convert to WebhookConfig model and save
-				continue
-			}
-		}
-	}
-
-	return nil
+// ImportData imports configuration data. Configuration import is not yet
+// implemented; rather than silently reporting success for a no-op, it returns
+// ErrNotImplemented so callers surface an honest error.
+func (s *BackupService) ImportData(_ context.Context, _ []byte, _ ExportFormat) error {
+	return fmt.Errorf("%w: configuration import is not implemented", ErrNotImplemented)
 }
 
-// DatabaseBackup creates a database backup file.
+// DatabaseBackup creates a database backup file. A real implementation would
+// shell out to pg_dump (or similar) for PostgreSQL; that is not yet done, so it
+// returns ErrNotImplemented rather than creating an empty placeholder file that
+// would misrepresent a backup as having succeeded.
 func (s *BackupService) DatabaseBackup(_ context.Context) (string, error) {
-	// This is a simplified implementation
-	// In practice, you'd use pg_dump or similar for PostgreSQL
-	backupPath := fmt.Sprintf("%s/backup_%s.sql", s.config.Storage.BackupPath, time.Now().Format("20060102_150405"))
-
-	// Ensure backup directory exists.
-	if err := os.MkdirAll(s.config.Storage.BackupPath, 0o750); err != nil {
-		return "", err
-	}
-
-	// Create empty file as placeholder.
-	// #nosec G304
-	file, err := os.Create(backupPath)
-	if err != nil {
-		return "", err
-	}
-	if err := file.Close(); err != nil {
-		s.logger.Error("failed to close backup file", zap.String("path", backupPath), zap.Error(err))
-		return "", fmt.Errorf("failed to close backup file: %w", err)
-	}
-
-	return backupPath, nil
+	return "", fmt.Errorf("%w: database backup is not implemented", ErrNotImplemented)
 }

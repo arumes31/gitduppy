@@ -19,4 +19,6 @@ var (
 	ErrValidation = errors.New("validation")
 	// ErrForbidden indicates the caller is not permitted to perform the action.
 	ErrForbidden = errors.New("forbidden")
+	// ErrNotImplemented indicates the requested operation is not implemented.
+	ErrNotImplemented = errors.New("not implemented")
 )

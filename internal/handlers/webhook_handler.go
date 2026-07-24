@@ -317,7 +317,7 @@ func (h *WebhookHandler) findMatchingWebhook(c *gin.Context, body []byte) (*mode
 // the latter instead of masking DB errors as not-found.
 var errNoWebhookMatch = errors.New("no matching webhook found")
 
-func (h *WebhookHandler) matchProvider(provider string, body []byte) (*models.WebhookConfig, string, error) {
+func (h *WebhookHandler) matchProvider(c *gin.Context, provider string, body []byte, matchFunc func(wh *models.WebhookConfig, c *gin.Context, body []byte) bool) (*models.WebhookConfig, string, error) {
 	var webhooks []models.WebhookConfig
 	if err := h.webhookService.DB().Where("provider = ? AND is_active = ?", provider, true).Find(&webhooks).Error; err != nil {
 		return nil, "", fmt.Errorf("listing webhooks for provider %s: %w", provider, err)
