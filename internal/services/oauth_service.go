@@ -68,12 +68,12 @@ func (s *OAuthService) listGitHubRepos(ctx context.Context, httpClient *http.Cli
 			return nil, err
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return nil, fmt.Errorf("github repos request returned status %d", resp.StatusCode)
 		}
 		var batch []GitHubRepo
 		decodeErr := json.NewDecoder(resp.Body).Decode(&batch)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if decodeErr != nil {
 			return nil, fmt.Errorf("failed to decode github repos: %w", decodeErr)
 		}

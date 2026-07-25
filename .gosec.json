@@ -1,7 +1,4 @@
 {
-  "global": {
-    "nosec": "enabled"
-  },
   "exclude-rules": [
     {
       "path": ".*",

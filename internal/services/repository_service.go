@@ -568,6 +568,8 @@ func (s *RepositoryService) GetDecryptedCredentials(_ context.Context, repoID uu
 
 // tarGzCompress archives and compresses a directory into a .tar.gz file.
 func tarGzCompress(srcDir, destFile string) error {
+	// #nosec G304 -- destFile is always a paperbin path derived from the
+	// repository's own ID and storage path (see callers), never user input.
 	d, err := os.Create(destFile)
 	if err != nil {
 		return err
@@ -612,7 +614,7 @@ func tarGzCompress(srcDir, destFile string) error {
 			return nil
 		}
 
-		// #nosec G122 - path is generated during walk of controlled backup directory, not user input
+		// #nosec G122 G304 - path is generated during walk of controlled backup directory, not user input
 		file, err := os.Open(path)
 		if err != nil {
 			return err
@@ -645,6 +647,8 @@ func tarGzCompress(srcDir, destFile string) error {
 
 // tarGzDecompress extracts a .tar.gz file into a destination directory.
 func tarGzDecompress(srcFile, destDir string) error {
+	// #nosec G304 -- srcFile is always a paperbin path derived from the
+	// repository's own ID and storage path (see callers), never user input.
 	r, err := os.Open(srcFile)
 	if err != nil {
 		return err
@@ -703,11 +707,11 @@ func tarGzDecompress(srcFile, destDir string) error {
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o755); err != nil {
+			if err := os.MkdirAll(target, 0o750); err != nil {
 				return err
 			}
 		case tar.TypeSymlink:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 				return err
 			}
 			// Validate symlink target to prevent path traversal (escaping destDir)
@@ -718,7 +722,7 @@ func tarGzDecompress(srcFile, destDir string) error {
 			if err != nil {
 				return err
 			}
-			//nolint:gosec // G305: path traversal is prevented by verifying relLinkTarget against cleanDest below
+			// #nosec G305 -- path traversal is prevented by verifying relLinkTarget against cleanDest below
 			linkCandidate := filepath.Join(resolvedParent, header.Linkname)
 			resolvedLinkTarget, err := filepath.EvalSymlinks(linkCandidate)
 			if err != nil {
@@ -747,9 +751,11 @@ func tarGzDecompress(srcFile, destDir string) error {
 				return err
 			}
 		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 				return err
 			}
+			// #nosec G304 -- target was validated against cleanDest above (relTarget
+			// check), so it cannot escape the extraction root.
 			outFile, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR|os.O_TRUNC, header.FileInfo().Mode())
 			if err != nil {
 				return err

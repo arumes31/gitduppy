@@ -57,6 +57,19 @@ linters:
       - third_party$
       - builtin$
       - examples$
+    rules:
+      # configureProcessGroup's Windows implementation creates a fresh
+      # context.Background()-derived context inside cmd.Cancel (the parent is
+      # already done by the time Cancel fires), which trips contextcheck at
+      # these call sites on Windows builds only — the Unix implementation
+      # creates no context, so there's nothing for contextcheck to flag there.
+      # CI lints on Linux, so an inline //nolint here would be flagged right
+      # back as unused by nolintlint; excluding by source pattern instead
+      # suppresses it consistently regardless of GOOS.
+      - path: internal/gitops/gitops\.go
+        linters:
+          - contextcheck
+        source: 'configureProcessGroup\(cmd\)'
 formatters:
   enable:
     - gofmt

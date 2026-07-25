@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -647,16 +648,36 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 			// enough to cover a large tree rather than failing a clone that would
 			// have succeeded a few seconds later.
 			var renErr error
+		renameRetry:
 			for attempt := 0; attempt < 12; attempt++ {
 				if attempt > 0 {
-					time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+					// A cancellable wait instead of time.Sleep: a worker shutdown (or
+					// the per-job clone timeout) must abort this retry loop promptly
+					// rather than blocking it for up to the full backoff budget.
+					timer := time.NewTimer(time.Duration(attempt) * 500 * time.Millisecond)
+					select {
+					case <-timer.C:
+					case <-opCtx.Done():
+						timer.Stop()
+						renErr = opCtx.Err()
+						break renameRetry
+					}
 				}
 				renErr = os.Rename(tmpPath, repoPath)
 				if renErr == nil {
 					break
 				}
 			}
-			if renErr != nil {
+			if renErr != nil && (errors.Is(renErr, context.Canceled) || errors.Is(renErr, context.DeadlineExceeded)) {
+				// The retry loop was aborted by worker shutdown or the per-job
+				// clone timeout, not a real rename failure: the tmpPath tree is
+				// still intact and complete. Leave it in place — the next clone
+				// attempt's cleanupStaleTempClones sweeps it — instead of racing
+				// a cp fallback rooted in the same already-done opCtx (which
+				// would refuse to even start) and then deleting the completed
+				// work. Surface the cancellation directly.
+				err = renErr
+			} else if renErr != nil {
 				// Some storage backends (observed on a cross-OS bind mount for a
 				// large checkout) never let an atomic rename succeed, independent of
 				// how long we retry, even though the tree itself is complete and
@@ -665,7 +686,10 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 				// successful clone over a rename quirk of the destination filesystem.
 				logger.Warn("rename failed after retries, falling back to copy",
 					zap.String("tmp", tmpPath), zap.String("dest", repoPath), zap.Error(renErr))
-				cpCtx, cpCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				// Derived from opCtx (not context.Background()) so a worker shutdown
+				// or the per-job clone timeout can still cancel this, on top of its
+				// own 10-minute cap.
+				cpCtx, cpCancel := context.WithTimeout(opCtx, 10*time.Minute)
 				// #nosec G204 -- tmpPath/repoPath are derived from the repository's
 				// own server-generated storage path, not attacker-controlled input.
 				cpOut, cpErr := exec.CommandContext(cpCtx, "cp", "-a", tmpPath, repoPath).CombinedOutput()

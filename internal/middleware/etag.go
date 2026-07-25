@@ -2,7 +2,7 @@ package middleware
 
 import (
 	"bytes"
-	"crypto/sha1" //nolint:gosec // SHA-1 here is a cache validator (ETag), not a security primitive
+	"crypto/sha1" // #nosec G505 -- cache validator (ETag), not a security primitive
 	"encoding/hex"
 	"net/http"
 	"strings"
@@ -62,7 +62,7 @@ func ETag() gin.HandlerFunc {
 			return
 		}
 
-		sum := sha1.Sum(body) //nolint:gosec // cache validator, not security
+		sum := sha1.Sum(body) // #nosec G401 -- cache validator, not security
 		etag := `W/"` + hex.EncodeToString(sum[:]) + `"`
 		orig.Header().Set("ETag", etag)
 

@@ -253,7 +253,7 @@ func (f *GitHubMetadataFetcher) fetchPaginatedJSON(ctx context.Context, owner, r
 						f.logger.Warn("GitHub rate limit exceeded. Backing off and sleeping...",
 							zap.Duration("duration", sleepDuration),
 							zap.Time("reset_time", resetTime))
-						resp.Body.Close()
+						_ = resp.Body.Close()
 
 						select {
 						case <-ctx.Done():
@@ -262,7 +262,7 @@ func (f *GitHubMetadataFetcher) fetchPaginatedJSON(ctx context.Context, owner, r
 							continue // Retry the same request
 						}
 					} else {
-						resp.Body.Close()
+						_ = resp.Body.Close()
 						return fmt.Errorf("GitHub rate limit exceeded. Reset at %s, aborting fetch", resetTime)
 					}
 				}
@@ -270,7 +270,7 @@ func (f *GitHubMetadataFetcher) fetchPaginatedJSON(ctx context.Context, owner, r
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return fmt.Errorf("GitHub API returned status: %d", resp.StatusCode)
 		}
 
@@ -287,7 +287,7 @@ func (f *GitHubMetadataFetcher) fetchPaginatedJSON(ctx context.Context, owner, r
 							zap.Duration("duration", sleepDuration))
 						select {
 						case <-ctx.Done():
-							resp.Body.Close()
+							_ = resp.Body.Close()
 							return ctx.Err()
 						case <-time.After(sleepDuration):
 						}
@@ -297,7 +297,7 @@ func (f *GitHubMetadataFetcher) fetchPaginatedJSON(ctx context.Context, owner, r
 		}
 
 		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err != nil {
 			return err
 		}
@@ -465,7 +465,10 @@ func (f *GitHubMetadataFetcher) archiveMedia(ctx context.Context, backupDir stri
 						case resp.ContentLength > maxMediaBytes:
 							f.logger.Warn("skipping oversized media asset", zap.String("url", cleanURL), zap.Int64("content_length", resp.ContentLength))
 						default:
-							outFile, createErr := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
+							// #nosec G304 -- destPath is built from a sha256 hash of
+							// cleanURL plus a scrubbed extension (see above), always
+							// under mediaDir; it is never a user-supplied path.
+							outFile, createErr := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 							if createErr == nil {
 								// Cap the bytes written so a huge or unknown-length
 								// asset cannot grow disk usage without bound.
@@ -479,7 +482,7 @@ func (f *GitHubMetadataFetcher) archiveMedia(ctx context.Context, backupDir stri
 							}
 						}
 					}
-					resp.Body.Close()
+					_ = resp.Body.Close()
 				}
 			}
 		}
