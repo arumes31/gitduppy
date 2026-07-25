@@ -514,30 +514,47 @@ var upgrader = websocket.Upgrader{
 			return false
 		}
 
-		originHost := u.Host
-		if h, _, err := net.SplitHostPort(u.Host); err == nil {
-			originHost = h
-		}
-
+		// X-Forwarded-Host is attacker-controlled unless a trusted reverse proxy
+		// overwrites it — otherwise a client could set both Origin and
+		// X-Forwarded-Host to the same arbitrary value and sail through this
+		// check. Only consult it when the deployment has explicitly configured
+		// trusted proxies (the same boundary requestIsHTTPS uses for
+		// X-Forwarded-Proto); r.Host is always checked as the safe fallback.
 		hostsToCheck := []string{r.Host}
-		if fwd := r.Header.Get("X-Forwarded-Host"); fwd != "" {
-			for _, part := range strings.Split(fwd, ",") {
-				hostsToCheck = append(hostsToCheck, strings.TrimSpace(part))
+		if trustProxyHeaders {
+			if fwd := r.Header.Get("X-Forwarded-Host"); fwd != "" {
+				for _, part := range strings.Split(fwd, ",") {
+					hostsToCheck = append(hostsToCheck, strings.TrimSpace(part))
+				}
 			}
 		}
 
+		// Normalize host:port so a browser-omitted default port (e.g. an Origin of
+		// "https://example.com" implying :443) still matches an explicit
+		// "example.com:443" Host header, without collapsing distinct non-default
+		// ports — "example.com:8443" must NOT match "example.com:443".
+		defaultPort := "80"
+		if strings.EqualFold(u.Scheme, "https") || strings.EqualFold(u.Scheme, "wss") {
+			defaultPort = "443"
+		}
+		normalizeHostPort := func(hostport string) string {
+			host, port, err := net.SplitHostPort(hostport)
+			if err != nil {
+				// No explicit port present: imply the scheme's default port.
+				return hostport + ":" + defaultPort
+			}
+			if port == "" {
+				port = defaultPort
+			}
+			return host + ":" + port
+		}
+
+		originHostPort := normalizeHostPort(u.Host)
 		for _, h := range hostsToCheck {
 			if h == "" {
 				continue
 			}
-			if strings.EqualFold(u.Host, h) {
-				return true
-			}
-			reqHost := h
-			if hostOnly, _, err := net.SplitHostPort(h); err == nil {
-				reqHost = hostOnly
-			}
-			if strings.EqualFold(originHost, reqHost) {
+			if strings.EqualFold(originHostPort, normalizeHostPort(h)) {
 				return true
 			}
 		}

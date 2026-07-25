@@ -66,4 +66,4 @@ jobs:
       - name: Verify no uncommitted changes
         run: |
           go mod tidy
-          git diff --exit-code || echo "Run 'go mod tidy' and commit changes"
+          git diff --exit-code
