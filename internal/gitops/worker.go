@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -667,7 +668,16 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 					break
 				}
 			}
-			if renErr != nil {
+			if renErr != nil && (errors.Is(renErr, context.Canceled) || errors.Is(renErr, context.DeadlineExceeded)) {
+				// The retry loop was aborted by worker shutdown or the per-job
+				// clone timeout, not a real rename failure: the tmpPath tree is
+				// still intact and complete. Leave it in place — the next clone
+				// attempt's cleanupStaleTempClones sweeps it — instead of racing
+				// a cp fallback rooted in the same already-done opCtx (which
+				// would refuse to even start) and then deleting the completed
+				// work. Surface the cancellation directly.
+				err = renErr
+			} else if renErr != nil {
 				// Some storage backends (observed on a cross-OS bind mount for a
 				// large checkout) never let an atomic rename succeed, independent of
 				// how long we retry, even though the tree itself is complete and

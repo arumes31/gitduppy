@@ -324,6 +324,13 @@ func (g *GitOperations) runLFSInstall(ctx context.Context, path string) error {
 	// #nosec G204
 	cmd := exec.CommandContext(ctx, GetGitExecutable(), "lfs", "install")
 	cmd.Dir = path
+	// Same tree-kill on cancellation as RunGitCommand: git-lfs forks per-object
+	// transfer workers and smudge/clean filters that a plain single-process
+	// kill would orphan. See the nolint on RunGitCommand's call for why
+	// contextcheck flags this (the Windows Cancel path deliberately uses a
+	// context decoupled from the already-cancelled one at this call site).
+	//nolint:contextcheck
+	configureProcessGroup(cmd)
 	return cmd.Run()
 }
 
@@ -332,6 +339,8 @@ func (g *GitOperations) runLFSPull(ctx context.Context, path string) error {
 	// #nosec G204
 	cmd := exec.CommandContext(ctx, GetGitExecutable(), "lfs", "pull")
 	cmd.Dir = path
+	//nolint:contextcheck // see runLFSInstall
+	configureProcessGroup(cmd)
 	return cmd.Run()
 }
 
@@ -340,6 +349,8 @@ func (g *GitOperations) runLFSFetch(ctx context.Context, path string) error {
 	// #nosec G204
 	cmd := exec.CommandContext(ctx, GetGitExecutable(), "lfs", "fetch")
 	cmd.Dir = path
+	//nolint:contextcheck // see runLFSInstall
+	configureProcessGroup(cmd)
 	return cmd.Run()
 }
 
