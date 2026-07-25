@@ -553,6 +553,14 @@ func RunGitCommand(ctx context.Context, dir string, args ...string) (string, err
 	// #nosec G204
 	cmd := exec.CommandContext(ctx, GetGitExecutable(), args...)
 	cmd.Dir = dir
+	// Kill the whole process tree, not just this one process, when ctx is
+	// cancelled or expires — see configureProcessGroup. On Windows the actual
+	// tree-kill runs from cmd's Cancel callback via a fresh context.Background(),
+	// deliberately decoupled from ctx (which is already done by the time Cancel
+	// fires) so the kill itself can still execute; that trips contextcheck's
+	// cross-function analysis at this call site, hence the nolint.
+	//nolint:contextcheck
+	configureProcessGroup(cmd)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
 }
