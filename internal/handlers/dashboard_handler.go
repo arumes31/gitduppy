@@ -191,12 +191,18 @@ func (h *DashboardHandler) GetOverview(c *gin.Context) {
 
 	quotaBytes := int64(pbQuotaGB * 1024 * 1024 * 1024)
 
-	queueDepth, maxConcurrent := 0, 0
+	var queueDepthVal any
 	if h.queueDepthFn != nil {
-		queueDepth = h.queueDepthFn()
+		queueDepthVal = h.queueDepthFn()
 	}
+	var maxConcurrentVal any
 	if h.maxConcurrentFn != nil {
-		maxConcurrent = h.maxConcurrentFn()
+		maxConcurrentVal = h.maxConcurrentFn()
+	}
+	queuePayload := gin.H{
+		"depth":          queueDepthVal,
+		"running":        runningCount,
+		"max_concurrent": maxConcurrentVal,
 	}
 
 	var rateLimitPayload any
@@ -225,11 +231,7 @@ func (h *DashboardHandler) GetOverview(c *gin.Context) {
 			"quota_bytes": quotaBytes,
 			"exceeded":    pbSize > quotaBytes,
 		},
-		"queue": gin.H{
-			"depth":          queueDepth,
-			"running":        runningCount,
-			"max_concurrent": maxConcurrent,
-		},
+		"queue":             queuePayload,
 		"next_syncs":        nextSyncs,
 		"recent_failures":   recentFailures,
 		"github_rate_limit": rateLimitPayload,

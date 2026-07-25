@@ -268,6 +268,7 @@ if (document.getElementById('stats-container')) {
                 if (el) el.textContent = '—';
             });
             renderQuota(null);
+            renderDedupeSavings(null);
             if (timelineContainer) renderError(timelineContainer, error.message, window.fetchStats);
             if (jobsBody) renderError(jobsBody, error.message, window.fetchStats, { colspan: 4 });
             const failuresList = document.getElementById('failures-list');
@@ -382,6 +383,13 @@ if (document.getElementById('stats-container')) {
         return `in ${Math.floor(diff / 86400)}d`;
     }
 
+    function parseValidDate(val) {
+        if (!val || val === 0 || val === '0') return null;
+        const d = new Date(val);
+        if (isNaN(d.getTime()) || d.getTime() <= 0) return null;
+        return d;
+    }
+
     // Renders the "Next Sync" stat card from the soonest upcoming repository;
     // the full list (up to 5) is available as a tooltip.
     function renderNextSync(syncs) {
@@ -392,9 +400,21 @@ if (document.getElementById('stats-container')) {
             el.title = 'No active repositories with a scheduled interval';
             return;
         }
-        const next = syncs[0];
-        el.textContent = formatDueIn(new Date(next.next_run_at));
-        el.title = syncs.map(s => `${s.name}: ${formatDueIn(new Date(s.next_run_at))}`).join('\n');
+        const validSyncs = syncs.map(s => {
+            const d = parseValidDate(s.next_run_at);
+            return { name: s.name, date: d };
+        });
+        const firstValid = validSyncs.find(s => s.date !== null);
+        if (!firstValid) {
+            el.textContent = 'N/A';
+            el.title = 'No valid upcoming sync time available';
+            return;
+        }
+        el.textContent = formatDueIn(firstValid.date);
+        el.title = validSyncs.map(s => {
+            const dueStr = s.date ? formatDueIn(s.date) : 'N/A';
+            return `${s.name}: ${dueStr}`;
+        }).join('\n');
     }
 
     // Renders the "GitHub Rate Limit" stat card. null means no GitHub API call
@@ -408,7 +428,12 @@ if (document.getElementById('stats-container')) {
             return;
         }
         el.textContent = `${rateLimit.remaining}/${rateLimit.limit}`;
-        el.title = `Resets ${new Date(rateLimit.reset_at).toLocaleTimeString()}`;
+        const resetDate = parseValidDate(rateLimit.reset_at);
+        if (resetDate) {
+            el.title = `Resets ${resetDate.toLocaleTimeString()}`;
+        } else {
+            el.title = 'Reset time unavailable';
+        }
     }
 
     // Renders the Recent Failures list, each row with a Retry action that
@@ -497,12 +522,6 @@ if (document.getElementById('stats-container')) {
         const statusEl = document.getElementById('firehose-status');
         if (!consoleEl || !statusEl) return;
 
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/api/v1/dashboard/logs/stream`;
-
-        statusEl.className = 'status-badge pending';
-        statusEl.textContent = 'connecting...';
-
         // Auto-scroll unless the operator has scrolled up to read history — same
         // idea as a terminal: new output doesn't yank you back down mid-read.
         let userScrolledUp = false;
@@ -510,49 +529,100 @@ if (document.getElementById('stats-container')) {
             userScrolledUp = consoleEl.scrollTop + consoleEl.clientHeight < consoleEl.scrollHeight - 20;
         });
 
-        const ws = new WebSocket(wsUrl);
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/api/v1/dashboard/logs/stream`;
 
-        ws.onopen = () => {
-            statusEl.className = 'status-badge running';
-            statusEl.textContent = 'live';
-        };
+        let ws = null;
+        let isTeardown = false;
+        let reconnectAttempts = 0;
+        let reconnectTimer = null;
+        let keepAliveTimer = null;
 
-        ws.onmessage = (event) => {
-            let frame;
-            try {
-                frame = JSON.parse(event.data);
-            } catch (_) {
-                return;
-            }
-            if (!frame || frame.type !== 'log' || typeof frame.line !== 'string') return;
+        window.addEventListener('beforeunload', () => {
+            isTeardown = true;
+            if (reconnectTimer) clearTimeout(reconnectTimer);
+            if (keepAliveTimer) clearInterval(keepAliveTimer);
+            if (ws) ws.close();
+        });
 
-            const t = frame.ts ? new Date(frame.ts) : null;
-            const stamp = (t && !isNaN(t.getTime())) ? t.toTimeString().slice(0, 8) : '';
-            const repoName = frame.repository_name || frame.repository_id || 'unknown';
-            const color = repoColor(repoName);
+        function connect() {
+            if (isTeardown) return;
 
-            const line = document.createElement('div');
-            const tsSpan = stamp ? `[${escHtml(stamp)}] ` : '';
-            line.innerHTML = `${tsSpan}<span style="color:${color}; font-weight:600;">[${escHtml(repoName)}]</span> ${escHtml(frame.line)}`;
-            consoleEl.appendChild(line);
+            statusEl.className = 'status-badge pending';
+            statusEl.textContent = reconnectAttempts > 0 ? 'reconnecting...' : 'connecting...';
 
-            while (consoleEl.childElementCount > FIREHOSE_MAX_LINES) {
-                consoleEl.removeChild(consoleEl.firstChild);
-            }
-            if (!userScrolledUp) {
-                consoleEl.scrollTop = consoleEl.scrollHeight;
-            }
-        };
+            ws = new WebSocket(wsUrl);
 
-        ws.onerror = () => {
-            statusEl.className = 'status-badge error';
-            statusEl.textContent = 'error';
-        };
+            ws.onopen = () => {
+                reconnectAttempts = 0;
+                statusEl.className = 'status-badge running';
+                statusEl.textContent = 'live';
 
-        ws.onclose = () => {
-            statusEl.className = 'status-badge synced';
-            statusEl.textContent = 'disconnected';
-        };
+                if (keepAliveTimer) clearInterval(keepAliveTimer);
+                keepAliveTimer = setInterval(() => {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        try {
+                            ws.send(JSON.stringify({ type: 'ping' }));
+                        } catch (_) {}
+                    }
+                }, 25000);
+            };
+
+            ws.onmessage = (event) => {
+                let frame;
+                try {
+                    frame = JSON.parse(event.data);
+                } catch (_) {
+                    return;
+                }
+                if (!frame || frame.type !== 'log' || typeof frame.line !== 'string') return;
+
+                const t = parseValidDate(frame.ts);
+                const stamp = t ? t.toTimeString().slice(0, 8) : '';
+                const repoName = frame.repository_name || frame.repository_id || 'unknown';
+                const color = repoColor(repoName);
+
+                const line = document.createElement('div');
+                const tsSpan = stamp ? `[${escHtml(stamp)}] ` : '';
+                line.innerHTML = `${tsSpan}<span style="color:${color}; font-weight:600;">[${escHtml(repoName)}]</span> ${escHtml(frame.line)}`;
+                consoleEl.appendChild(line);
+
+                while (consoleEl.childElementCount > FIREHOSE_MAX_LINES) {
+                    if (consoleEl.firstElementChild) {
+                        consoleEl.removeChild(consoleEl.firstElementChild);
+                    } else {
+                        break;
+                    }
+                }
+                if (!userScrolledUp) {
+                    consoleEl.scrollTop = consoleEl.scrollHeight;
+                }
+            };
+
+            ws.onerror = () => {
+                statusEl.className = 'status-badge error';
+                statusEl.textContent = 'error';
+            };
+
+            ws.onclose = () => {
+                if (keepAliveTimer) {
+                    clearInterval(keepAliveTimer);
+                    keepAliveTimer = null;
+                }
+                if (isTeardown) {
+                    statusEl.className = 'status-badge synced';
+                    statusEl.textContent = 'disconnected';
+                    return;
+                }
+                const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+                reconnectAttempts++;
+                statusEl.className = 'status-badge pending';
+                statusEl.textContent = 'reconnecting...';
+                reconnectTimer = setTimeout(connect, delay);
+            };
+        }
+
+        connect();
     }
 
     // Initial fetch

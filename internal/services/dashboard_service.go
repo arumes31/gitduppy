@@ -484,7 +484,7 @@ func (s *DashboardService) GetNextSyncs(ctx context.Context, limit int) ([]NextS
 	var rows []row
 	if err := s.db.WithContext(ctx).Model(&models.Repository{}).
 		Select("id AS repository_id, name, last_clone_at, clone_interval_minutes").
-		Where("is_active = ?", true).
+		Where("is_active = ? AND clone_interval_minutes > 0", true).
 		Find(&rows).Error; err != nil {
 		return nil, err
 	}
