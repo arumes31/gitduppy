@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -512,7 +513,35 @@ var upgrader = websocket.Upgrader{
 		if err != nil {
 			return false
 		}
-		return strings.EqualFold(u.Host, r.Host)
+
+		originHost := u.Host
+		if h, _, err := net.SplitHostPort(u.Host); err == nil {
+			originHost = h
+		}
+
+		hostsToCheck := []string{r.Host}
+		if fwd := r.Header.Get("X-Forwarded-Host"); fwd != "" {
+			for _, part := range strings.Split(fwd, ",") {
+				hostsToCheck = append(hostsToCheck, strings.TrimSpace(part))
+			}
+		}
+
+		for _, h := range hostsToCheck {
+			if h == "" {
+				continue
+			}
+			if strings.EqualFold(u.Host, h) {
+				return true
+			}
+			reqHost := h
+			if hostOnly, _, err := net.SplitHostPort(h); err == nil {
+				reqHost = hostOnly
+			}
+			if strings.EqualFold(originHost, reqHost) {
+				return true
+			}
+		}
+		return false
 	},
 }
 
