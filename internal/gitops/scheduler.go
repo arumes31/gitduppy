@@ -81,8 +81,8 @@ type Scheduler struct {
 }
 
 // schedulerTickInterval is how often the scheduler evaluates repositories. It is
-// intentionally finer than the smallest allowed per-repo clone interval (5 min)
-// so a repo configured for 5-minute syncs is not delayed by up to a full extra
+// intentionally finer than the smallest allowed per-repo clone interval (60 min)
+// so a repo configured for hourly syncs is not delayed by up to a full extra
 // tick before its job is queued.
 const schedulerTickInterval = time.Minute
 

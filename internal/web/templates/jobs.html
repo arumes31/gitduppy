@@ -1,0 +1,99 @@
+{{template "base" .}}
+
+{{define "content"}}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Jobs</h1>
+        <p class="text-muted">Full history of repository clone/sync jobs.</p>
+    </div>
+    <div class="header-actions">
+        <button class="btn btn-secondary" onclick="loadJobsPage({ fresh: true })">
+            <i data-lucide="refresh-cw"></i>
+            <span>Refresh</span>
+        </button>
+    </div>
+</div>
+
+<div class="card glass-panel mb-6">
+    <div class="card-body" style="display:flex; gap:16px; flex-wrap:wrap; align-items:flex-end;">
+        <div>
+            <label class="form-label" for="jobs-filter-repo">Repository</label>
+            <select id="jobs-filter-repo" class="form-control" onchange="onJobsFilterChange()">
+                <option value="">All repositories</option>
+            </select>
+        </div>
+        <div>
+            <label class="form-label" for="jobs-filter-status">Status</label>
+            <select id="jobs-filter-status" class="form-control" onchange="onJobsFilterChange()">
+                <option value="">All statuses</option>
+                <option value="pending">Pending</option>
+                <option value="running">Running</option>
+                <option value="success">Success</option>
+                <option value="failed">Failed</option>
+                <option value="cancelled">Cancelled</option>
+            </select>
+        </div>
+        <div>
+            <label class="form-label" for="jobs-filter-trigger">Trigger</label>
+            <select id="jobs-filter-trigger" class="form-control" onchange="onJobsFilterChange()">
+                <option value="">All triggers</option>
+                <option value="manual">Manual</option>
+                <option value="scheduled">Scheduled</option>
+                <option value="webhook">Webhook</option>
+            </select>
+        </div>
+    </div>
+</div>
+
+<div class="card glass-panel">
+    <div class="card-header">
+        <h3 class="card-title">Clone Jobs</h3>
+        <span class="text-muted text-sm" id="jobs-total-label"></span>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table" id="jobs-page-table">
+                <thead>
+                    <tr>
+                        <th>Repository</th>
+                        <th>Trigger</th>
+                        <th>Status</th>
+                        <th>Started</th>
+                        <th>Duration</th>
+                        <th class="text-right" style="text-align:right; padding-right:24px;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="jobs-page-body">
+                    <tr class="skeleton-row"><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td></tr>
+                    <tr class="skeleton-row"><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td></tr>
+                    <tr class="skeleton-row"><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td><td><div class="skeleton-text"></div></td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <div class="card-body" style="display:flex; justify-content:center; align-items:center; gap:12px;">
+        <button class="btn btn-secondary btn-sm" id="jobs-prev-btn" onclick="changeJobsPage(-1)" disabled>
+            <i data-lucide="chevron-left"></i>
+            <span>Prev</span>
+        </button>
+        <span class="text-muted text-sm" id="jobs-page-label">Page 1</span>
+        <button class="btn btn-secondary btn-sm" id="jobs-next-btn" onclick="changeJobsPage(1)" disabled>
+            <span>Next</span>
+            <i data-lucide="chevron-right"></i>
+        </button>
+    </div>
+</div>
+
+<!-- Job Logs Modal -->
+<div id="job-logs-modal" class="modal-overlay" style="display:none;">
+    <div class="modal-content glass-panel">
+        <div class="modal-header">
+            <h3 class="card-title" id="job-logs-title">Job Logs</h3>
+            <button class="btn btn-icon btn-ghost" onclick="closeJobLogsModal()"><i data-lucide="x"></i></button>
+        </div>
+        <div class="modal-body">
+            <pre class="terminal-console" id="job-logs-content" style="max-height:60vh; overflow:auto;">Loading...</pre>
+        </div>
+    </div>
+</div>
+{{end}}

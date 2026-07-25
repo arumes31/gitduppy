@@ -1320,6 +1320,176 @@ if (reposGrid) {
 }
 
 // ============================================================
+// JOBS LIST PAGE (/jobs)
+// ============================================================
+const jobsPageTable = document.getElementById('jobs-page-table');
+if (jobsPageTable) {
+    const jobsPageBody = document.getElementById('jobs-page-body');
+    let jobsPage = 1;
+    const jobsPerPage = 20;
+    let jobsTotalPages = 1;
+
+    function buildJobsQuery() {
+        const params = new URLSearchParams();
+        params.set('page', jobsPage);
+        params.set('per_page', jobsPerPage);
+        const repoId = document.getElementById('jobs-filter-repo').value;
+        const status = document.getElementById('jobs-filter-status').value;
+        const trigger = document.getElementById('jobs-filter-trigger').value;
+        if (repoId) params.set('repository_id', repoId);
+        if (status) params.set('status', status);
+        if (trigger) params.set('trigger_type', trigger);
+        return params.toString();
+    }
+
+    function updateJobsPagination(meta) {
+        meta = meta || {};
+        const total = meta.total || 0;
+        const page = meta.page || jobsPage;
+        const totalPages = meta.total_pages || 1;
+        jobsTotalPages = totalPages;
+        document.getElementById('jobs-total-label').textContent = `${total} job${total === 1 ? '' : 's'} total`;
+        document.getElementById('jobs-page-label').textContent = `Page ${page} of ${totalPages}`;
+        document.getElementById('jobs-prev-btn').disabled = page <= 1;
+        document.getElementById('jobs-next-btn').disabled = page >= totalPages;
+    }
+
+    function renderJobsPageRows(jobs) {
+        if (!jobs || jobs.length === 0) {
+            renderEmpty(jobsPageBody, 'No jobs found.', { colspan: 6 });
+            return;
+        }
+
+        jobsPageBody.innerHTML = jobs.map(job => {
+            const repoId = job.repository ? job.repository.id : job.repository_id;
+            const repoName = escHtml(job.repository ? job.repository.name : job.repository_id);
+            const status = job.status || 'pending';
+            const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
+            const trigger = escHtml(job.trigger_type || '-');
+            const started = job.started_at ? new Date(job.started_at).toLocaleString() : '-';
+
+            // Duration: completed jobs use started_at..completed_at; a still-running
+            // job uses started_at..now (same approach as the dashboard timeline).
+            let duration = '-';
+            if (job.started_at) {
+                const end = job.completed_at ? new Date(job.completed_at) : (status === 'running' ? new Date() : null);
+                if (end) {
+                    const secs = (end - new Date(job.started_at)) / 1000;
+                    if (secs >= 0) duration = secs.toFixed(1) + 's';
+                }
+            }
+
+            const canCancel = status === 'pending' || status === 'running';
+            const cancelBtn = canCancel
+                ? `<button class="btn btn-secondary btn-sm" onclick="cancelJobFromList(${jsArg(job.id)}, this)" title="Cancel job"><i data-lucide="x-circle"></i></button>`
+                : '';
+
+            return `
+            <tr>
+                <td>${repoId ? `<a href="/repos/${encodeURIComponent(repoId)}">${repoName}</a>` : repoName}</td>
+                <td>${trigger}</td>
+                <td><span class="status-badge ${escHtml(status)}">${escHtml(statusLabel)}</span></td>
+                <td>${started}</td>
+                <td>${duration}</td>
+                <td class="text-right" style="text-align:right; padding-right:24px;">
+                    <div style="display:inline-flex; gap:6px;">
+                        <button class="btn btn-secondary btn-sm" onclick="viewJobLogs(${jsArg(job.id)})" title="View logs"><i data-lucide="file-text"></i></button>
+                        ${cancelBtn}
+                    </div>
+                </td>
+            </tr>`;
+        }).join('');
+
+        if (window.lucide) lucide.createIcons();
+    }
+
+    window.loadJobsPage = async function(opts = {}) {
+        renderLoading(jobsPageBody, 'Loading jobs...', { colspan: 6 });
+        document.getElementById('jobs-prev-btn').disabled = true;
+        document.getElementById('jobs-next-btn').disabled = true;
+        try {
+            const query = buildJobsQuery();
+            const res = await apiCall(`/api/v1/clone-jobs?${query}`, { fresh: opts.fresh === true });
+            renderJobsPageRows(res.data || []);
+            updateJobsPagination(res.meta);
+        } catch (e) {
+            renderError(jobsPageBody, e.message || 'Failed to load jobs.', () => loadJobsPage({ fresh: true }), { colspan: 6 });
+        }
+    };
+
+    window.onJobsFilterChange = function() {
+        jobsPage = 1;
+        loadJobsPage({ fresh: true });
+    };
+
+    window.changeJobsPage = function(delta) {
+        const next = jobsPage + delta;
+        if (next < 1 || next > jobsTotalPages) return;
+        jobsPage = next;
+        loadJobsPage();
+    };
+
+    window.viewJobLogs = async function(jobId) {
+        const modal = document.getElementById('job-logs-modal');
+        const title = document.getElementById('job-logs-title');
+        const content = document.getElementById('job-logs-content');
+        title.textContent = 'Job Logs';
+        content.textContent = 'Loading...';
+        modal.style.display = 'flex';
+        try {
+            const res = await apiCall(`/api/v1/clone-jobs/${encodeURIComponent(jobId)}`, { fresh: true });
+            const job = res.data || {};
+            const repoName = job.repository ? job.repository.name : jobId;
+            title.textContent = `Job Logs — ${repoName}`;
+            content.textContent = (job.output_log && job.output_log.trim())
+                ? job.output_log
+                : 'No logs recorded for this job yet.';
+        } catch (e) {
+            content.textContent = e.message || 'Failed to load job logs.';
+        }
+    };
+
+    window.closeJobLogsModal = function() {
+        document.getElementById('job-logs-modal').style.display = 'none';
+    };
+
+    window.cancelJobFromList = async function(jobId, btn) {
+        const ok = await modernConfirm({
+            title: 'Cancel Job',
+            message: 'Cancel this clone job? This cannot be undone.',
+            okText: 'Cancel Job',
+            cancelText: 'Keep Running',
+            danger: true
+        });
+        if (!ok) return;
+
+        btn.disabled = true;
+        try {
+            await apiCall(`/api/v1/clone-jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+            showToast('Job cancelled');
+            loadJobsPage({ fresh: true });
+        } catch (e) {
+            btn.disabled = false;
+        }
+    };
+
+    async function loadJobsFilterRepos() {
+        const select = document.getElementById('jobs-filter-repo');
+        try {
+            const res = await apiCall('/api/v1/repositories?per_page=100');
+            const repos = (res.data || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+            select.innerHTML = '<option value="">All repositories</option>' +
+                repos.map(r => `<option value="${escHtml(r.id)}">${escHtml(r.name)}</option>`).join('');
+        } catch (e) {
+            console.error('Failed to load repositories for job filter:', e);
+        }
+    }
+
+    loadJobsFilterRepos();
+    loadJobsPage();
+}
+
+// ============================================================
 // REPOSITORY BROWSER PAGE (/repos/:id)
 // ============================================================
 const repoBrowser = document.getElementById('repo-browser');

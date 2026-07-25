@@ -689,10 +689,11 @@ h1, h2, h3, h4, h5, h6,
     font-size: 0.75rem;
     font-weight: 600;
 }
-.status-badge.synced { background: rgba(35,134,54,0.2); color: #2ea043; }
+.status-badge.synced, .status-badge.success { background: rgba(35,134,54,0.2); color: #2ea043; }
 .status-badge.pending { background: rgba(210,153,34,0.2); color: #e3b341; }
-.status-badge.error { background: rgba(218,54,51,0.2); color: #f85149; }
+.status-badge.error, .status-badge.failed { background: rgba(218,54,51,0.2); color: #f85149; }
 .status-badge.running { background: rgba(59,130,246,0.2); color: #60a5fa; }
+.status-badge.cancelled { background: rgba(139,148,158,0.2); color: #8b949e; }
 
 .visibility-badge {
     display: inline-flex;
