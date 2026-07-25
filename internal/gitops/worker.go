@@ -21,10 +21,23 @@ import (
 	"gorm.io/gorm"
 )
 
-// LogHub manages subscribers for real-time repository progress logs.
+// FirehoseEntry is one log line on the dashboard's all-repositories live feed,
+// tagged with which repository it came from (unlike the per-repo stream, whose
+// subscribers already know that from the URL they connected to).
+type FirehoseEntry struct {
+	RepositoryID   string `json:"repository_id"`
+	RepositoryName string `json:"repository_name"`
+	Line           string `json:"line"`
+	TS             string `json:"ts"`
+}
+
+// LogHub manages subscribers for real-time repository progress logs, both
+// per-repository (Subscribe) and the dashboard's combined firehose across all
+// repositories (SubscribeAll).
 type LogHub struct {
 	mu          sync.Mutex
 	subscribers map[string][]chan string
+	globalSubs  []chan FirehoseEntry
 }
 
 // GlobalLogHub is the global instance for logging subscription.
@@ -65,13 +78,52 @@ func (h *LogHub) Unsubscribe(repoID string, ch chan string) {
 	}
 }
 
-// Broadcast sends a message to all subscribers for a repository.
-func (h *LogHub) Broadcast(repoID string, message string) {
+// SubscribeAll returns a channel of tagged log lines from every repository's
+// progress, for the dashboard's combined live-activity firehose.
+func (h *LogHub) SubscribeAll() chan FirehoseEntry {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	ch := make(chan FirehoseEntry, 200)
+	h.globalSubs = append(h.globalSubs, ch)
+	return ch
+}
+
+// UnsubscribeAll removes a firehose subscription, closing and dropping ch.
+func (h *LogHub) UnsubscribeAll(ch chan FirehoseEntry) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i, sub := range h.globalSubs {
+		if sub == ch {
+			h.globalSubs = append(h.globalSubs[:i], h.globalSubs[i+1:]...)
+			close(ch)
+			break
+		}
+	}
+}
+
+// Broadcast sends a message to all subscribers for a repository, and a tagged
+// copy to every dashboard firehose subscriber.
+func (h *LogHub) Broadcast(repoID, repoName, message string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, ch := range h.subscribers[repoID] {
 		select {
 		case ch <- message:
+		default:
+		}
+	}
+	if len(h.globalSubs) == 0 {
+		return
+	}
+	entry := FirehoseEntry{
+		RepositoryID:   repoID,
+		RepositoryName: repoName,
+		Line:           message,
+		TS:             time.Now().UTC().Format(time.RFC3339),
+	}
+	for _, ch := range h.globalSubs {
+		select {
+		case ch <- entry:
 		default:
 		}
 	}
@@ -293,6 +345,12 @@ func (w *CloneWorker) QueueDepth() int {
 	return backlog + len(w.jobQueue)
 }
 
+// MaxConcurrent returns the configured worker pool size, for surfacing queue
+// pressure (depth vs. capacity) on the dashboard.
+func (w *CloneWorker) MaxConcurrent() int {
+	return w.config.MaxConcurrent
+}
+
 // dispatch drains the overflow backlog into jobQueue, blocking on a full queue
 // until a worker frees a slot (or the worker shuts down). Running as a single
 // goroutine, it replaces the previous unbounded goroutine-per-job fallback.
@@ -510,9 +568,10 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 
 	// Create progress callback
 	progress := &CloneProgress{
-		jobID:        job.ID,
-		repositoryID: repo.ID.String(),
-		db:           w.db,
+		jobID:          job.ID,
+		repositoryID:   repo.ID.String(),
+		repositoryName: repo.Name,
+		db:             w.db,
 	}
 	cloneOpts.Progress = progress
 
@@ -893,9 +952,10 @@ const progressDBInterval = 2 * time.Second
 
 // CloneProgress implements git.Progress interface.
 type CloneProgress struct {
-	jobID        uuid.UUID
-	repositoryID string
-	db           *gorm.DB
+	jobID          uuid.UUID
+	repositoryID   string
+	repositoryName string
+	db             *gorm.DB
 
 	mu          sync.Mutex
 	lastPersist time.Time
@@ -906,7 +966,7 @@ type CloneProgress struct {
 // avoid write amplification during large clones.
 func (p *CloneProgress) Write(b []byte) (n int, err error) {
 	message := string(b)
-	GlobalLogHub.Broadcast(p.repositoryID, message)
+	GlobalLogHub.Broadcast(p.repositoryID, p.repositoryName, message)
 
 	p.mu.Lock()
 	persist := time.Since(p.lastPersist) >= progressDBInterval

@@ -198,7 +198,9 @@ func main() {
 	apiKeyHandler := handlers.NewAPIKeyHandler(apiKeyService)
 	webhookHandler := handlers.NewWebhookHandler(webhookService)
 	tagHandler := handlers.NewTagHandler(tagService)
-	dashboardHandler := handlers.NewDashboardHandler(dashboardService, cloneService)
+	dashboardHandler := handlers.NewDashboardHandler(dashboardService, cloneService, database.GetDB())
+	dashboardHandler.SetWorkerProviders(cloneWorker.QueueDepth, cloneWorker.MaxConcurrent)
+	dashboardHandler.SetGitOps(gitOps)
 	healthHandler := handlers.NewHealthHandler(Version, BuildTime, database.GetDB())
 	healthHandler.SetQueueDepthProvider(cloneWorker.QueueDepth)
 	oauthHandler := handlers.NewOAuthHandler(oauthService, authService)
@@ -480,9 +482,10 @@ func setupRouter(
 	// and ratio. Exclusions:
 	//   - the Prometheus metrics path: scrapers negotiate their own encoding and the
 	//     text exposition format is cheap; compressing it just burns CPU;
-	//   - the live log WebSocket (/logs/stream): a hijacked/upgraded connection must
-	//     not be wrapped by the gzip writer (gzip also self-excludes Connection:
-	//     Upgrade, but the explicit rule documents the intent);
+	//   - the live log WebSockets (per-repo and dashboard-firehose /logs/stream):
+	//     a hijacked/upgraded connection must not be wrapped by the gzip writer
+	//     (gzip also self-excludes Connection: Upgrade, but the explicit rule
+	//     documents the intent);
 	//   - the repo archive download (already a compressed .zip/.tar.gz — re-gzipping
 	//     wastes CPU for no gain);
 	//   - the two ETag-cached read endpoints (repositories list, dashboard overview):
@@ -492,6 +495,7 @@ func setupRouter(
 		gzip.WithExcludedPaths([]string{cfg.Monitoring.MetricsPath}),
 		gzip.WithExcludedPathsRegexs([]string{
 			`^/api/v1/repositories/[^/]+/logs/stream$`,
+			`^/api/v1/dashboard/logs/stream$`,
 			`^/api/v1/repos(?:itories)?/[^/]+/download$`,
 			`^/api/v1/repositories$`,
 			`^/api/v1/dashboard/overview$`,
@@ -666,6 +670,9 @@ func setupRouter(
 			dashboard.GET("/recent-jobs", dashboardHandler.GetRecentJobs)
 			dashboard.GET("/timeline", dashboardHandler.GetTimeline)
 			dashboard.GET("/paperbin-quota", dashboardHandler.GetPaperbinQuota)
+			// Live combined feed of every currently-running clone job's progress
+			// output, tagged by repository. See the /logs/stream gzip exclusion above.
+			dashboard.GET("/logs/stream", dashboardHandler.StreamDashboardLogs)
 			// Combined single-request payload for the dashboard view. ETag-cached so
 			// frequent polling that finds nothing changed costs only a 304. Inherits
 			// the "dashboard:" rate-limit tier via its path prefix.

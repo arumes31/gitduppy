@@ -167,6 +167,7 @@ func (f *GitHubMetadataFetcher) FetchRepositoryInfo(ctx context.Context, repoURL
 		return nil, err
 	}
 	defer resp.Body.Close()
+	recordGitHubRateLimit(resp)
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GitHub API returned status: %d", resp.StatusCode)
@@ -239,6 +240,7 @@ func (f *GitHubMetadataFetcher) fetchPaginatedJSON(ctx context.Context, owner, r
 		if err != nil {
 			return err
 		}
+		recordGitHubRateLimit(resp)
 
 		// Handle Rate Limiting (403 Forbidden or 429 Too Many Requests)
 		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
