@@ -250,6 +250,11 @@ if (document.getElementById('stats-container')) {
             renderJobs(d.recent_jobs || []);
             renderTimeline(d.timeline || []);
             renderQuota(d.paperbin_quota);
+            renderQueue(d.queue);
+            renderNextSync(d.next_syncs || []);
+            renderRateLimit(d.github_rate_limit);
+            renderFailures(d.recent_failures || []);
+            renderDedupeSavings(d.dedupe_savings);
         } catch (error) {
             console.error('Failed to fetch dashboard overview:', error);
             // The overview feeds every section, so failing it must not leave the
@@ -257,13 +262,16 @@ if (document.getElementById('stats-container')) {
             // and mark the (single-value) cards unavailable, and hide the quota
             // banner. Timeline and jobs are containers, so they get full error UI.
             document.querySelectorAll('.skeleton-text').forEach(el => el.classList.remove('skeleton-text'));
-            ['stat-total-repos', 'stat-success-clones', 'stat-failed-clones', 'stat-storage-used'].forEach(id => {
+            ['stat-total-repos', 'stat-success-clones', 'stat-failed-clones', 'stat-storage-used',
+             'stat-queue', 'stat-next-sync', 'stat-rate-limit'].forEach(id => {
                 const el = document.getElementById(id);
                 if (el) el.textContent = '—';
             });
             renderQuota(null);
             if (timelineContainer) renderError(timelineContainer, error.message, window.fetchStats);
             if (jobsBody) renderError(jobsBody, error.message, window.fetchStats, { colspan: 4 });
+            const failuresList = document.getElementById('failures-list');
+            if (failuresList) renderError(failuresList, error.message, window.fetchStats);
         }
     };
 
@@ -281,7 +289,17 @@ if (document.getElementById('stats-container')) {
                 const repoName = escHtml(job.repository ? job.repository.name : 'Unknown');
                 const rawStatus = job.status || '';
                 const status = escHtml(rawStatus);
-                const duration = escHtml(job.duration_ms ? (job.duration_ms / 1000).toFixed(1) + 's' : '0s');
+
+                // Duration: completed jobs use started_at..completed_at; a still-running
+                // job uses started_at..now so the bar keeps growing on each refresh
+                // instead of being stuck at 0s for its whole run.
+                let durationSecs = null;
+                if (job.started_at) {
+                    const end = job.completed_at ? new Date(job.completed_at) : new Date();
+                    const secs = (end - new Date(job.started_at)) / 1000;
+                    if (secs >= 0) durationSecs = secs;
+                }
+                const duration = escHtml(durationSecs !== null ? durationSecs.toFixed(1) + 's' : '0s');
 
                 // Construct progress width (Gantt duration bar)
                 const startTime = escHtml(job.started_at ? new Date(job.started_at).toLocaleTimeString() : 'Pending');
@@ -289,7 +307,7 @@ if (document.getElementById('stats-container')) {
 
                 // Color mapping
                 const barClass = rawStatus === 'success' ? 'success' : (rawStatus === 'failed' ? 'failed' : 'running');
-                const widthPercent = rawStatus === 'running' ? '100%' : (job.duration_ms ? Math.min(100, Math.max(10, (job.duration_ms / 1000) * 2)) + '%' : '10%');
+                const widthPercent = rawStatus === 'running' ? '100%' : (durationSecs !== null ? Math.min(100, Math.max(10, durationSecs * 2)) + '%' : '10%');
 
                 return `
                 <div class="timeline-row" style="margin-bottom: 12px;">
@@ -338,8 +356,208 @@ if (document.getElementById('stats-container')) {
         });
     }
 
+    // Renders the "Clone Queue" stat card: workers busy vs. pool capacity as the
+    // headline (the number operators actually watch), queue depth as a tooltip
+    // since it's normally zero and only interesting when non-zero.
+    function renderQueue(queue) {
+        const el = document.getElementById('stat-queue');
+        if (!el) return;
+        queue = queue || {};
+        const running = queue.running || 0;
+        const max = queue.max_concurrent || 0;
+        const depth = queue.depth || 0;
+        el.textContent = `${running}/${max}`;
+        el.title = `${depth} job${depth === 1 ? '' : 's'} queued`;
+    }
+
+    // formatDueIn renders a future timestamp as "due now" / "in Xm" / "in Xh" /
+    // "in Xd". Unlike timeAgo (past-only), this is for the next-scheduled-sync
+    // widget where the timestamp is normally in the future.
+    function formatDueIn(date) {
+        const diff = Math.floor((date.getTime() - Date.now()) / 1000);
+        if (diff <= 0) return 'due now';
+        if (diff < 60) return `in ${diff}s`;
+        if (diff < 3600) return `in ${Math.floor(diff / 60)}m`;
+        if (diff < 86400) return `in ${Math.floor(diff / 3600)}h`;
+        return `in ${Math.floor(diff / 86400)}d`;
+    }
+
+    // Renders the "Next Sync" stat card from the soonest upcoming repository;
+    // the full list (up to 5) is available as a tooltip.
+    function renderNextSync(syncs) {
+        const el = document.getElementById('stat-next-sync');
+        if (!el) return;
+        if (!syncs || syncs.length === 0) {
+            el.textContent = 'None';
+            el.title = 'No active repositories with a scheduled interval';
+            return;
+        }
+        const next = syncs[0];
+        el.textContent = formatDueIn(new Date(next.next_run_at));
+        el.title = syncs.map(s => `${s.name}: ${formatDueIn(new Date(s.next_run_at))}`).join('\n');
+    }
+
+    // Renders the "GitHub Rate Limit" stat card. null means no GitHub API call
+    // has been observed yet this run, not a genuine 0/0.
+    function renderRateLimit(rateLimit) {
+        const el = document.getElementById('stat-rate-limit');
+        if (!el) return;
+        if (!rateLimit) {
+            el.textContent = 'N/A';
+            el.title = 'No GitHub API activity observed yet';
+            return;
+        }
+        el.textContent = `${rateLimit.remaining}/${rateLimit.limit}`;
+        el.title = `Resets ${new Date(rateLimit.reset_at).toLocaleTimeString()}`;
+    }
+
+    // Renders the Recent Failures list, each row with a Retry action that
+    // re-triggers a clone via the same endpoint the repo page's "Sync Now" uses.
+    function renderFailures(failures) {
+        const container = document.getElementById('failures-list');
+        if (!container) return;
+
+        if (!failures || failures.length === 0) {
+            renderEmpty(container, 'No recent failures');
+            return;
+        }
+
+        container.innerHTML = failures.map(job => {
+            const repo = job.repository;
+            const repoId = escHtml(repo ? repo.id : job.repository_id);
+            const repoName = escHtml(repo ? repo.name : job.repository_id);
+            const when = job.completed_at ? escHtml(timeAgo(new Date(job.completed_at))) : '';
+            const errMsg = escHtml((job.output_log || 'Unknown error').slice(0, 140));
+            return `
+            <div class="failure-row" title="${errMsg}">
+                <div class="failure-row-main">
+                    <span class="failure-row-repo">${repoName}</span>
+                    <span class="failure-row-time text-muted text-sm">${when}</span>
+                </div>
+                <div class="failure-row-error text-muted text-sm">${errMsg}</div>
+                <button class="btn btn-icon btn-ghost" title="Retry" onclick="retryFailedJob('${repoId}', this)">
+                    <i data-lucide="refresh-cw"></i>
+                </button>
+            </div>`;
+        }).join('');
+        lucide.createIcons();
+    }
+
+    // Retries a failed job by re-triggering a clone for its repository (the
+    // same endpoint the repo detail page's "Sync Now" button uses). Global
+    // since it's invoked from innerHTML-built onclick handlers.
+    window.retryFailedJob = async (repoId, btn) => {
+        if (btn) btn.disabled = true;
+        try {
+            await apiCall(`/api/v1/repositories/${repoId}/clone`, { method: 'POST' });
+            showToast('Retry queued');
+            window.fetchStats();
+        } catch (error) {
+            showToast(error.message || 'Failed to queue retry', 'error');
+            if (btn) btn.disabled = false;
+        }
+    };
+
+    // Renders the low-key Dedupe Savings card; hidden entirely until the first
+    // background computation lands (null) or there is simply nothing to report.
+    function renderDedupeSavings(savings) {
+        const card = document.getElementById('dedupe-savings-card');
+        const summary = document.getElementById('dedupe-savings-summary');
+        if (!card || !summary) return;
+        if (!savings || savings.pool_count === 0) {
+            card.style.display = 'none';
+            return;
+        }
+        card.style.display = '';
+        const savedGB = (savings.estimated_saved_bytes / (1024 * 1024 * 1024)).toFixed(2);
+        const sharedGB = (savings.shared_bytes / (1024 * 1024 * 1024)).toFixed(2);
+        summary.textContent = `${savings.pool_count} shared pool${savings.pool_count === 1 ? '' : 's'} `
+            + `(${sharedGB} GB) saving an estimated ${savedGB} GB of duplicate storage.`;
+    }
+
+    // ------------------------------------------------------------
+    // Live Activity Firehose: a single websocket combining progress log lines
+    // from every currently-running clone job, tagged by repository. Distinct
+    // from the per-repo stream on the repo detail page (see startLiveLogStream)
+    // which only ever shows one repository's log.
+    // ------------------------------------------------------------
+    const FIREHOSE_MAX_LINES = 500;
+    // Small deterministic hash so the same repository always gets the same tag
+    // color within a session, without the server needing to assign one.
+    function repoColor(name) {
+        let hash = 0;
+        for (let i = 0; i < name.length; i++) {
+            hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+        }
+        return `hsl(${hash % 360}, 70%, 65%)`;
+    }
+
+    function startDashboardFirehose() {
+        const consoleEl = document.getElementById('firehose-console');
+        const statusEl = document.getElementById('firehose-status');
+        if (!consoleEl || !statusEl) return;
+
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/api/v1/dashboard/logs/stream`;
+
+        statusEl.className = 'status-badge pending';
+        statusEl.textContent = 'connecting...';
+
+        // Auto-scroll unless the operator has scrolled up to read history — same
+        // idea as a terminal: new output doesn't yank you back down mid-read.
+        let userScrolledUp = false;
+        consoleEl.addEventListener('scroll', () => {
+            userScrolledUp = consoleEl.scrollTop + consoleEl.clientHeight < consoleEl.scrollHeight - 20;
+        });
+
+        const ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+            statusEl.className = 'status-badge running';
+            statusEl.textContent = 'live';
+        };
+
+        ws.onmessage = (event) => {
+            let frame;
+            try {
+                frame = JSON.parse(event.data);
+            } catch (_) {
+                return;
+            }
+            if (!frame || frame.type !== 'log' || typeof frame.line !== 'string') return;
+
+            const t = frame.ts ? new Date(frame.ts) : null;
+            const stamp = (t && !isNaN(t.getTime())) ? t.toTimeString().slice(0, 8) : '';
+            const repoName = frame.repository_name || frame.repository_id || 'unknown';
+            const color = repoColor(repoName);
+
+            const line = document.createElement('div');
+            const tsSpan = stamp ? `[${escHtml(stamp)}] ` : '';
+            line.innerHTML = `${tsSpan}<span style="color:${color}; font-weight:600;">[${escHtml(repoName)}]</span> ${escHtml(frame.line)}`;
+            consoleEl.appendChild(line);
+
+            while (consoleEl.childElementCount > FIREHOSE_MAX_LINES) {
+                consoleEl.removeChild(consoleEl.firstChild);
+            }
+            if (!userScrolledUp) {
+                consoleEl.scrollTop = consoleEl.scrollHeight;
+            }
+        };
+
+        ws.onerror = () => {
+            statusEl.className = 'status-badge error';
+            statusEl.textContent = 'error';
+        };
+
+        ws.onclose = () => {
+            statusEl.className = 'status-badge synced';
+            statusEl.textContent = 'disconnected';
+        };
+    }
+
     // Initial fetch
     fetchStats();
+    startDashboardFirehose();
 }
 
 // Config page

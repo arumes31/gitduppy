@@ -65,6 +65,33 @@
             <p class="stat-value skeleton-text" id="stat-storage-used">-</p>
         </div>
     </div>
+    <div class="stat-card glass-panel">
+        <div class="stat-icon-wrapper primary">
+            <i data-lucide="list-ordered"></i>
+        </div>
+        <div class="stat-content">
+            <h3 class="stat-label">Clone Queue</h3>
+            <p class="stat-value skeleton-text" id="stat-queue">-</p>
+        </div>
+    </div>
+    <div class="stat-card glass-panel">
+        <div class="stat-icon-wrapper warning">
+            <i data-lucide="calendar-clock"></i>
+        </div>
+        <div class="stat-content">
+            <h3 class="stat-label">Next Sync</h3>
+            <p class="stat-value skeleton-text" id="stat-next-sync">-</p>
+        </div>
+    </div>
+    <div class="stat-card glass-panel">
+        <div class="stat-icon-wrapper primary">
+            <i data-lucide="gauge"></i>
+        </div>
+        <div class="stat-content">
+            <h3 class="stat-label">GitHub Rate Limit</h3>
+            <p class="stat-value skeleton-text" id="stat-rate-limit">-</p>
+        </div>
+    </div>
 </div>
 
 <!-- Interactive Sync Timeline -->
@@ -76,6 +103,17 @@
         <div id="timeline-chart-container" class="timeline-chart">
             <p class="text-muted text-center py-4">Loading timeline data...</p>
         </div>
+    </div>
+</div>
+
+<!-- Live combined feed of every currently-running job's progress output -->
+<div class="card glass-panel mb-6">
+    <div class="card-header">
+        <h3 class="card-title" style="display:flex; align-items:center; gap:8px;"><i data-lucide="radio"></i> Live Activity Firehose</h3>
+        <span class="status-badge" id="firehose-status">connecting...</span>
+    </div>
+    <div class="card-body">
+        <div id="firehose-console" class="terminal-console"></div>
     </div>
 </div>
 
@@ -107,6 +145,27 @@
                 </table>
             </div>
         </div>
+    </div>
+    <div class="card glass-panel">
+        <div class="card-header">
+            <h3 class="card-title">Recent Failures</h3>
+        </div>
+        <div class="card-body p-0">
+            <div id="failures-list" class="failures-list">
+                <p class="text-muted text-center py-4">Loading...</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Dedupe savings: the most approximate/heuristic figure on the dashboard, so
+     it is kept visually low-key rather than presented as a hard number. -->
+<div class="card glass-panel mt-6" id="dedupe-savings-card" style="display:none;">
+    <div class="card-header">
+        <h3 class="card-title text-muted" style="font-size:0.9rem;"><i data-lucide="layers"></i> Dedupe Savings (estimated)</h3>
+    </div>
+    <div class="card-body">
+        <p class="text-muted text-sm" id="dedupe-savings-summary">-</p>
     </div>
 </div>
 {{end}}

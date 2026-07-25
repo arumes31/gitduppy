@@ -29,7 +29,7 @@ type CleanupConfig struct {
 	Interval  time.Duration
 	Retention time.Duration
 	// BasePath is the storage root under which the shared object "pools"
-	// directory lives (see GitOperations.BasePath / getPoolPath). It must be
+	// directory lives (see GitOperations.BasePath / GetPoolPath). It must be
 	// passed explicitly rather than derived from a repository's StoragePath,
 	// since row order from the DB is not deterministic and StoragePath can be
 	// overridden to a non-canonical location.

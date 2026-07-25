@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"github.com/gitduppy/gitduppy/internal/database"
 	"github.com/gitduppy/gitduppy/internal/metrics"
 	"github.com/gitduppy/gitduppy/internal/models"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -434,6 +436,95 @@ func (s *DashboardService) GetTimelineData(ctx context.Context, limit int) ([]mo
 	err := s.db.WithContext(ctx).
 		Preload("Repository", func(db *gorm.DB) *gorm.DB { return db.Omit("EncryptedCredentials") }).
 		Order("COALESCE(started_at, created_at) DESC").
+		Limit(limit).
+		Find(&jobs).Error
+	return jobs, err
+}
+
+// GetRunningJobCount returns how many clone jobs are currently running, for
+// pairing with a worker pool's queue depth/capacity on the dashboard.
+func (s *DashboardService) GetRunningJobCount(ctx context.Context) (int64, error) {
+	var count int64
+	err := s.db.WithContext(ctx).Model(&models.CloneJob{}).Where("status = ?", "running").Count(&count).Error
+	return count, err
+}
+
+// NextSync describes when a repository is next due for a scheduled mirror.
+type NextSync struct {
+	RepositoryID         uuid.UUID  `json:"repository_id"`
+	Name                 string     `json:"name"`
+	LastCloneAt          *time.Time `json:"last_clone_at,omitempty"`
+	CloneIntervalMinutes int        `json:"clone_interval_minutes"`
+	NextRunAt            time.Time  `json:"next_run_at"`
+}
+
+// GetNextSyncs returns the soonest N active repositories due for their next
+// scheduled mirror, computed the same way the scheduler itself evaluates
+// eligibility (last_clone_at + clone_interval_minutes; never-cloned repos sort
+// first as already due). It does not attempt to replicate the scheduler's
+// busy-set/retry-backoff exclusions — those are concurrency-safety concerns
+// for actually enqueuing jobs, not relevant to a "what's coming up" display.
+//
+// next_run_at is computed in Go rather than in SQL: for a never-cloned repo,
+// the natural SQL expression is COALESCE(last_clone_at, '-infinity') + ...,
+// but Postgres's special -infinity timestamp cannot be scanned into a Go
+// time.Time (the driver returns it as the literal string "-infinity"). A very
+// old sentinel (the Unix epoch) sorts first just as well and scans cleanly.
+func (s *DashboardService) GetNextSyncs(ctx context.Context, limit int) ([]NextSync, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+
+	type row struct {
+		RepositoryID         uuid.UUID
+		Name                 string
+		LastCloneAt          *time.Time
+		CloneIntervalMinutes int
+	}
+	var rows []row
+	if err := s.db.WithContext(ctx).Model(&models.Repository{}).
+		Select("id AS repository_id, name, last_clone_at, clone_interval_minutes").
+		Where("is_active = ?", true).
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	syncs := make([]NextSync, len(rows))
+	for i, r := range rows {
+		base := time.Unix(0, 0).UTC()
+		if r.LastCloneAt != nil {
+			base = *r.LastCloneAt
+		}
+		syncs[i] = NextSync{
+			RepositoryID:         r.RepositoryID,
+			Name:                 r.Name,
+			LastCloneAt:          r.LastCloneAt,
+			CloneIntervalMinutes: r.CloneIntervalMinutes,
+			NextRunAt:            base.Add(time.Duration(r.CloneIntervalMinutes) * time.Minute),
+		}
+	}
+	sort.Slice(syncs, func(i, j int) bool { return syncs[i].NextRunAt.Before(syncs[j].NextRunAt) })
+
+	if len(syncs) > limit {
+		syncs = syncs[:limit]
+	}
+	return syncs, nil
+}
+
+// GetRecentFailures returns the most recent failed clone jobs, preloading
+// their repositories (same lean shape as GetTimelineData) so the dashboard's
+// failures widget can show a repo name and offer a retry without a second
+// round trip.
+func (s *DashboardService) GetRecentFailures(ctx context.Context, limit int) ([]models.CloneJob, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+
+	var jobs []models.CloneJob
+	err := s.db.WithContext(ctx).
+		Preload("Repository", func(db *gorm.DB) *gorm.DB { return db.Omit("EncryptedCredentials") }).
+		Where("status = ?", "failed").
+		Order("completed_at DESC").
 		Limit(limit).
 		Find(&jobs).Error
 	return jobs, err

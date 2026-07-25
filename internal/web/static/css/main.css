@@ -1215,6 +1215,46 @@ h1, h2, h3, h4, h5, h6,
     margin-top: 16px;
 }
 
+/* Recent Failures list (dashboard) */
+.failures-list {
+    display: flex;
+    flex-direction: column;
+}
+.failure-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-areas: "main btn" "error btn";
+    align-items: center;
+    gap: 4px 12px;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+}
+.failure-row:last-child {
+    border-bottom: none;
+}
+.failure-row-main {
+    grid-area: main;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+}
+.failure-row-repo {
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.failure-row-error {
+    grid-area: error;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.failure-row .btn-icon {
+    grid-area: btn;
+}
+
 /* Search view */
 .search-results {
     display: flex;

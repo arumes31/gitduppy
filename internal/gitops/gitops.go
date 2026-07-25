@@ -27,6 +27,9 @@ import (
 // GitOperations handles git operations.
 type GitOperations struct {
 	BasePath string
+
+	// dedupeCache backs the DedupeSavings method (see dedupe_savings.go).
+	dedupeCache dedupeSavingsCache
 }
 
 // NewGitOperations creates a new git operations instance.
@@ -607,8 +610,11 @@ func (g *GitOperations) GetReferences(ctx context.Context, path string) (map[str
 	return refs, nil
 }
 
-// getPoolPath returns the pool path for a remote repository URL.
-func (g *GitOperations) getPoolPath(url string) string {
+// GetPoolPath returns the shared dedupe object pool path for a remote
+// repository URL. Exported so callers outside this package (the dashboard's
+// dedupe-savings aggregation) can group repositories by pool without
+// duplicating the hash scheme.
+func (g *GitOperations) GetPoolPath(url string) string {
 	h := sha256.Sum256([]byte(url))
 	hashStr := hex.EncodeToString(h[:])
 	return filepath.Join(g.BasePath, "pools", hashStr[0:2], hashStr[2:4], hashStr)
@@ -625,7 +631,7 @@ var poolLocks = newKeyedMutex()
 
 // updatePool populates or updates the shared object pool for the remote URL.
 func (g *GitOperations) updatePool(ctx context.Context, url string, auth transport.AuthMethod, progress sideband.Progress) (string, error) {
-	poolPath := g.getPoolPath(url)
+	poolPath := g.GetPoolPath(url)
 
 	// Serialize all work on this pool directory. Blocking here is correct: two
 	// fetches into the same pool must not overlap.
