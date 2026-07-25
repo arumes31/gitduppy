@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -637,10 +638,47 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 			if rmErr := os.RemoveAll(repoPath); rmErr != nil {
 				logger.Warn("failed to clear destination before rename", zap.String("path", repoPath), zap.Error(rmErr))
 			}
-			if renErr := os.Rename(tmpPath, repoPath); renErr != nil {
-				err = fmt.Errorf("failed to move completed clone into place: %w", renErr)
+			// A handle briefly held on a file just written inside tmpPath (virus
+			// scanner, search indexer, or the host-side translation layer under a
+			// cross-OS bind mount) can make an otherwise-valid rename fail with a
+			// transient permission/access error. This clears faster for a small
+			// checkout than a large one (more files for an external scanner to
+			// finish with), so retry with a growing backoff and a budget generous
+			// enough to cover a large tree rather than failing a clone that would
+			// have succeeded a few seconds later.
+			var renErr error
+			for attempt := 0; attempt < 12; attempt++ {
+				if attempt > 0 {
+					time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+				}
+				renErr = os.Rename(tmpPath, repoPath)
+				if renErr == nil {
+					break
+				}
+			}
+			if renErr != nil {
+				// Some storage backends (observed on a cross-OS bind mount for a
+				// large checkout) never let an atomic rename succeed, independent of
+				// how long we retry, even though the tree itself is complete and
+				// correct. Fall back to a recursive copy + remove: slower and briefly
+				// non-atomic, but far more portable, rather than discarding a
+				// successful clone over a rename quirk of the destination filesystem.
+				logger.Warn("rename failed after retries, falling back to copy",
+					zap.String("tmp", tmpPath), zap.String("dest", repoPath), zap.Error(renErr))
+				cpCtx, cpCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				// #nosec G204 -- tmpPath/repoPath are derived from the repository's
+				// own server-generated storage path, not attacker-controlled input.
+				cpOut, cpErr := exec.CommandContext(cpCtx, "cp", "-a", tmpPath, repoPath).CombinedOutput()
+				cpCancel()
+				if cpErr != nil {
+					err = fmt.Errorf("failed to move completed clone into place: rename failed (%w) and copy fallback failed: %w (output: %s)",
+						renErr, cpErr, strings.TrimSpace(string(cpOut)))
+					if rmErr := os.RemoveAll(repoPath); rmErr != nil {
+						logger.Warn("failed to remove partial destination after failed copy fallback", zap.String("path", repoPath), zap.Error(rmErr))
+					}
+				}
 				if rmErr := os.RemoveAll(tmpPath); rmErr != nil {
-					logger.Warn("failed to remove temp clone after failed rename", zap.String("path", tmpPath), zap.Error(rmErr))
+					logger.Warn("failed to remove temp clone after rename/copy fallback", zap.String("path", tmpPath), zap.Error(rmErr))
 				}
 			}
 		} else {

@@ -1,0 +1,10 @@
+# Force LF regardless of core.autocrlf so scripts baked into Linux containers
+# (e.g. docker-entrypoint.sh) don't get a CRLF-broken shebang, and so Go source
+# doesn't spuriously fail gofmt on a Windows checkout.
+*.sh text eol=lf
+*.go text eol=lf
+
+# Windows-native scripts keep CRLF.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
