@@ -520,6 +520,7 @@ func setupRouter(
 		webGroup.GET("/repos/:id", webHandler.RepoDetail)
 		webGroup.GET("/repos/:id/commit/:sha", webHandler.RepoCommit)
 		webGroup.GET("/search", webHandler.Search)
+		webGroup.GET("/jobs", webHandler.JobsList)
 	}
 
 	// Health check endpoints (no auth required). They accept GET and HEAD because
@@ -727,5 +728,6 @@ func loadTemplates() CustomHTMLRenderer {
 	r["repo_detail.html"] = template.Must(template.ParseFiles("internal/web/templates/base.html", "internal/web/templates/repo_detail.html"))
 	r["repo_commit.html"] = template.Must(template.ParseFiles("internal/web/templates/base.html", "internal/web/templates/repo_commit.html"))
 	r["search.html"] = template.Must(template.ParseFiles("internal/web/templates/base.html", "internal/web/templates/search.html"))
+	r["jobs.html"] = template.Must(template.ParseFiles("internal/web/templates/base.html", "internal/web/templates/jobs.html"))
 	return r
 }

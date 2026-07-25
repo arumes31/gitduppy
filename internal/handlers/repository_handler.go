@@ -146,7 +146,7 @@ func (h *RepositoryHandler) CreateRepository(c *gin.Context) {
 		MirrorPullRequests   bool                       `json:"mirror_pull_requests"`
 		MirrorReleases       bool                       `json:"mirror_releases"`
 		MirrorWiki           bool                       `json:"mirror_wiki"`
-		CloneIntervalMinutes int                        `json:"clone_interval_minutes" validate:"min=5"`
+		CloneIntervalMinutes int                        `json:"clone_interval_minutes" validate:"min=60"`
 		RetentionDays        int                        `json:"retention_days"`
 		Description          *string                    `json:"description,omitempty"`
 		TagIDs               []uuid.UUID                `json:"tag_ids,omitempty"`

@@ -100,3 +100,14 @@ func (h *WebHandler) Search(c *gin.Context) {
 		"version": h.version,
 	})
 }
+
+// JobsList renders the full, filterable/paginated clone-job history page (the
+// destination for the dashboard's "Recent Jobs" -> "View all" button).
+func (h *WebHandler) JobsList(c *gin.Context) {
+	user, _ := c.Get("user")
+	c.HTML(http.StatusOK, "jobs.html", gin.H{
+		"title":   "Jobs - GitDuppy",
+		"user":    user,
+		"version": h.version,
+	})
+}
