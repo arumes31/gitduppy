@@ -175,15 +175,16 @@ func (g *GitOperations) CloneRepository(ctx context.Context, opts *CloneOptions)
 					return fmt.Errorf("failed to set HEAD: %w", err)
 				}
 				if !opts.Bare {
-					w, err := r.Worktree()
-					if err != nil {
-						return fmt.Errorf("failed to get worktree: %w", err)
-					}
-					if err := w.Checkout(&git.CheckoutOptions{
-						Branch: localBranchRef,
-						Force:  true,
-					}); err != nil {
-						return fmt.Errorf("checkout failed: %w", err)
+					// Materialize the worktree via the native git binary rather than
+					// go-git's Worktree.Checkout: that call takes no context.Context
+					// and cannot be interrupted once started, so a stuck checkout would
+					// silently run past the configured clone timeout forever. A
+					// subprocess started with exec.CommandContext is killed when ctx
+					// is cancelled/expires. HEAD already points at localBranchRef (set
+					// above), so a bare "reset --hard" materializes it without needing
+					// to know the branch name again.
+					if out, err := RunGitCommand(ctx, opts.Path, "reset", "--hard"); err != nil {
+						return fmt.Errorf("checkout failed: %w (output: %s)", err, strings.TrimSpace(out))
 					}
 				}
 			}
@@ -206,6 +207,11 @@ func (g *GitOperations) CloneRepository(ctx context.Context, opts *CloneOptions)
 	cloneOpts := &git.CloneOptions{
 		URL:      opts.URL,
 		Progress: opts.Progress,
+		// The actual worktree materialization is done afterward via the native
+		// git binary (see the "reset --hard" call below) instead of go-git's
+		// in-process checkout, which cannot be cancelled by ctx. Skip it here so
+		// the objects aren't checked out twice.
+		NoCheckout: !opts.Bare,
 	}
 
 	if opts.Branch != "" {
@@ -221,6 +227,16 @@ func (g *GitOperations) CloneRepository(ctx context.Context, opts *CloneOptions)
 	_, err = git.PlainCloneContext(ctx, opts.Path, opts.Bare, cloneOpts)
 	if err != nil {
 		return err
+	}
+
+	// Materialize the worktree via the native git binary rather than go-git's
+	// in-process checkout: see the comment on the dedupe path above for why.
+	// HEAD is already set correctly by the fetch above, so a bare "reset --hard"
+	// is enough.
+	if !opts.Bare {
+		if out, err := RunGitCommand(ctx, opts.Path, "reset", "--hard"); err != nil {
+			return fmt.Errorf("checkout failed: %w (output: %s)", err, strings.TrimSpace(out))
+		}
 	}
 
 	// Handle Git LFS if enabled
@@ -279,12 +295,14 @@ func (g *GitOperations) FetchRepository(ctx context.Context, opts *CloneOptions)
 			branchName := head.Name().Short()
 			if remoteRef, err := repo.Reference(plumbing.NewRemoteReferenceName("origin", branchName), true); err == nil {
 				if head.Hash() != remoteRef.Hash() {
-					w, err := repo.Worktree()
-					if err != nil {
-						return fmt.Errorf("failed to get worktree: %w", err)
-					}
-					if err := w.Reset(&git.ResetOptions{Mode: git.HardReset, Commit: remoteRef.Hash()}); err != nil {
-						return fmt.Errorf("failed to reset worktree to remote: %w", err)
+					// Native git, not go-git's Worktree.Reset: that call takes no
+					// context.Context and cannot be interrupted once started, so a
+					// stuck reset would silently run past the configured clone
+					// timeout. A subprocess started with exec.CommandContext is
+					// killed when ctx is cancelled/expires. "reset --hard <hash>"
+					// also moves the branch ref itself, same as HardReset did.
+					if out, err := RunGitCommand(ctx, opts.Path, "reset", "--hard", remoteRef.Hash().String()); err != nil {
+						return fmt.Errorf("failed to reset worktree to remote: %w (output: %s)", err, strings.TrimSpace(out))
 					}
 				}
 			}
