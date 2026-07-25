@@ -478,18 +478,51 @@ func (s *RepositoryService) PermanentDeleteRepository(_ context.Context, id uuid
 		return err
 	}
 
-	// Delete related DeletedBranches
-	if err := s.db.Where("repository_id = ?", id).Delete(&models.DeletedBranch{}).Error; err != nil {
-		return err
-	}
+	// Every row referencing this repository must be cleared before the DELETE
+	// below, in the same transaction. This repo's own DB-level ON DELETE CASCADE
+	// (see 0001_constraints_and_indexes.sql) does not save us here: GORM's
+	// AutoMigrate creates a plain NO ACTION foreign key on the same column
+	// alongside it, and Postgres fires that NO ACTION check trigger before the
+	// CASCADE trigger reliably runs, so the DELETE fails regardless of the
+	// cascade constraint's presence.
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("repository_id = ?", id).Delete(&models.DeletedBranch{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("repository_id = ?", id).Delete(&models.CloneJob{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("repository_id = ?", id).Delete(&models.RepositoryTag{}).Error; err != nil {
+			return err
+		}
 
-	// Delete related CloneJobs and logs
-	if err := s.db.Where("repository_id = ?", id).Delete(&models.CloneJob{}).Error; err != nil {
-		return err
-	}
+		// Webhook deliveries reference webhook configs, which reference this
+		// repository, so clear that chain before the configs themselves.
+		var webhookConfigIDs []uuid.UUID
+		if err := tx.Model(&models.WebhookConfig{}).Where("repository_id = ?", id).
+			Pluck("id", &webhookConfigIDs).Error; err != nil {
+			return err
+		}
+		if len(webhookConfigIDs) > 0 {
+			if err := tx.Where("webhook_config_id IN ?", webhookConfigIDs).Delete(&models.WebhookDelivery{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("id IN ?", webhookConfigIDs).Delete(&models.WebhookConfig{}).Error; err != nil {
+				return err
+			}
+		}
 
-	// Perform hard delete in DB
-	if err := s.db.Unscoped().Delete(&repo).Error; err != nil {
+		// Detach audit log entries rather than deleting them: they are a
+		// historical record of actions taken and should survive the repository
+		// they reference being purged.
+		if err := tx.Model(&models.AuditLog{}).Where("repository_id = ?", id).
+			Update("repository_id", nil).Error; err != nil {
+			return err
+		}
+
+		return tx.Unscoped().Delete(&repo).Error
+	})
+	if err != nil {
 		return err
 	}
 
