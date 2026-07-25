@@ -279,9 +279,6 @@ func (g *GitOperations) FetchRepository(ctx context.Context, opts *CloneOptions)
 			branchName := head.Name().Short()
 			if remoteRef, err := repo.Reference(plumbing.NewRemoteReferenceName("origin", branchName), true); err == nil {
 				if head.Hash() != remoteRef.Hash() {
-					if err := repo.Storer.SetReference(plumbing.NewHashReference(head.Name(), remoteRef.Hash())); err != nil {
-						return fmt.Errorf("failed to update local branch ref: %w", err)
-					}
 					w, err := repo.Worktree()
 					if err != nil {
 						return fmt.Errorf("failed to get worktree: %w", err)

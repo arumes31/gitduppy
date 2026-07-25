@@ -227,19 +227,32 @@ func (w *CleanupWorker) cleanupPools() {
 		return
 	}
 	poolsDir := filepath.Join(w.basePath, "pools")
-	if _, err := os.Stat(poolsDir); os.IsNotExist(err) {
+	if _, err := os.Stat(poolsDir); err != nil {
+		if !os.IsNotExist(err) {
+			w.logger.Error("failed to stat pools directory", zap.String("path", poolsDir), zap.Error(err))
+		}
 		return
 	}
-	_ = filepath.Walk(poolsDir, func(path string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil || !info.IsDir() {
-			return nil //nolint:nilerr
+	walkErr := filepath.Walk(poolsDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			w.logger.Error("failed to walk pools directory entry", zap.String("path", path), zap.Error(err))
+			return nil
+		}
+		if !info.IsDir() {
+			return nil
 		}
 		if _, statErr := os.Stat(filepath.Join(path, "HEAD")); statErr == nil {
 			gitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			_, _ = RunGitCommand(gitCtx, path, "gc", "--auto")
+			out, gcErr := RunGitCommand(gitCtx, path, "gc", "--auto")
 			cancel()
+			if gcErr != nil {
+				w.logger.Error("failed to run git gc --auto on pool", zap.String("path", path), zap.String("output", out), zap.Error(gcErr))
+			}
 			return filepath.SkipDir
 		}
 		return nil
 	})
+	if walkErr != nil {
+		w.logger.Error("failed to walk pools directory", zap.String("path", poolsDir), zap.Error(walkErr))
+	}
 }
