@@ -431,7 +431,9 @@ func (s *OAuthService) CreateOrUpdateUserFromOAuth(_ context.Context, provider O
 		// Update email if it changed
 		if existingUser.Email != email {
 			existingUser.Email = email
-			s.db.Save(&existingUser)
+			if err := s.db.Save(&existingUser).Error; err != nil {
+				return nil, err
+			}
 		}
 		return &existingUser, nil
 	}

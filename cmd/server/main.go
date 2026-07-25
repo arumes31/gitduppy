@@ -176,7 +176,9 @@ func main() {
 	}
 
 	// Initialize cleanup worker
-	cleanupWorker := gitops.NewCleanupWorker(gitops.DefaultCleanupConfig())
+	cleanupConfig := gitops.DefaultCleanupConfig()
+	cleanupConfig.BasePath = cfg.Storage.BasePath
+	cleanupWorker := gitops.NewCleanupWorker(cleanupConfig)
 	cleanupWorker.Start()
 	defer cleanupWorker.Stop()
 
@@ -215,6 +217,8 @@ func main() {
 	// Let the auth service evict the middleware's in-memory auth cache on logout /
 	// password change so a revoked credential is not honored for the cache TTL.
 	authService.SetAuthCache(authMiddleware.Cache())
+	userService.SetAuthCache(authMiddleware.Cache())
+	apiKeyService.SetAuthCache(authMiddleware.Cache())
 	corsConfig := middleware.DefaultCORSConfig()
 	// NewRateLimiter takes a refill rate in requests-per-SECOND, so convert the
 	// configured per-minute budget; burst stays at one minute's worth of tokens.
