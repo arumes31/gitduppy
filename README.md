@@ -99,10 +99,12 @@ Generate a 32-character secret (works for all three keys) with:
 
 GitDuppy supports GitHub, GitLab, and Google OAuth2 for user authentication. These can be configured in your `config.yaml` or via env variables:
 
-- **GitHub OAuth**:
+- **GitHub OAuth & App Integration**:
   - `GITMIRRORS_OAUTH_GITHUB_CLIENT_ID` / `oauth.github.client_id`
   - `GITMIRRORS_OAUTH_GITHUB_CLIENT_SECRET` / `oauth.github.client_secret`
-  - `GITMIRRORS_OAUTH_GITHUB_REDIRECT_URL` (e.g., `http://localhost:7659/api/v1/auth/oauth/github/callback`)
+  - `GITMIRRORS_OAUTH_GITHUB_REDIRECT_URL` (e.g., `http://localhost:7659/api/v1/oauth/github/callback`)
+  - Default Scopes: `read:user`, `user:email`, `repo` (the `repo` scope is required for auto-discovering and mirroring private repositories).
+  - Status Panel: The Configuration page features a live **GitHub Integration Status** card displaying App setup state, user connection state, active scopes, and a **Sync Repositories Now** button.
 - **GitLab OAuth**:
   - `GITMIRRORS_OAUTH_GITLAB_CLIENT_ID` / `oauth.gitlab.client_id`
   - `GITMIRRORS_OAUTH_GITLAB_CLIENT_SECRET` / `oauth.gitlab.client_secret`
