@@ -648,17 +648,35 @@ h1, h2, h3, h4, h5, h6,
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    margin-bottom: 8px;
+    gap: 12px;
+    margin-bottom: 12px;
 }
 .repo-card-name {
     font-weight: 700;
-    font-size: 1rem;
+    font-size: 0.95rem;
+    line-height: 1.35;
     color: var(--text-main);
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 8px;
+    flex: 1;
+    min-width: 0;
+    word-break: break-word;
+    overflow-wrap: anywhere;
 }
-.repo-card-name svg { color: var(--primary); }
+.repo-card-name svg {
+    color: var(--primary);
+    flex-shrink: 0;
+    margin-top: 2px;
+}
+.repo-card-badges {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
 
 .repo-card-desc {
     font-size: 0.875rem;

@@ -497,3 +497,35 @@ func (h *OAuthHandler) ManifestCallback(c *gin.Context) {
 	// the user is authenticated right after registering the App (single click flow).
 	c.Redirect(http.StatusFound, "/api/v1/oauth/github/login?setup=1")
 }
+
+// GetStatus handles GET /api/v1/oauth/status.
+func (h *OAuthHandler) GetStatus(c *gin.Context) {
+	user, _ := middleware.GetCurrentUser(c)
+
+	oauthConfig, err := h.oauthService.GetOAuthConfig(c, services.GitHubProvider)
+	isConfigured := err == nil && oauthConfig != nil && oauthConfig.ClientID != ""
+
+	clientID := ""
+	scopes := []string{}
+	if isConfigured {
+		clientID = oauthConfig.ClientID
+		scopes = oauthConfig.Scopes
+	}
+
+	isUserConnected := user != nil && user.OAuthProvider != nil && *user.OAuthProvider == string(services.GitHubProvider)
+	connectedUsername := ""
+	connectedEmail := ""
+	if user != nil {
+		connectedUsername = user.Username
+		connectedEmail = user.Email
+	}
+
+	response.Success(c, gin.H{
+		"is_configured":      isConfigured,
+		"client_id":          clientID,
+		"is_user_connected":  isUserConnected,
+		"connected_username": connectedUsername,
+		"connected_email":    connectedEmail,
+		"scopes":             scopes,
+	})
+}

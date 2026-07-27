@@ -58,7 +58,7 @@ type GitHubRepo struct {
 func (s *OAuthService) listGitHubRepos(ctx context.Context, httpClient *http.Client) ([]GitHubRepo, error) {
 	var all []GitHubRepo
 	for page := 1; page <= 50; page++ {
-		url := fmt.Sprintf("https://api.github.com/user/repos?per_page=100&affiliation=owner&page=%d", page)
+		url := fmt.Sprintf("https://api.github.com/user/repos?per_page=100&affiliation=owner,collaborator,organization_member&visibility=all&page=%d", page)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			return nil, err

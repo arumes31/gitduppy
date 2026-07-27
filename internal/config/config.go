@@ -191,6 +191,10 @@ func Load() (*Config, error) {
 	v.SetDefault("monitoring.metrics_path", "/metrics")
 	v.SetDefault("monitoring.health_check_interval", "15m")
 
+	v.SetDefault("oauth.github.scopes", []string{"read:user", "user:email", "repo"})
+	v.SetDefault("oauth.gitlab.scopes", []string{"read_api", "read_repository"})
+	v.SetDefault("oauth.google.scopes", []string{"email", "profile"})
+
 	// Config file settings
 	v.SetConfigName("config")
 	v.SetConfigType("yaml")

@@ -22,6 +22,45 @@
             </div>
         </div>
         <div class="card-body">
+            <!-- GitHub Integration Status Panel -->
+            <div class="oauth-status-box glass-panel mb-6 p-4" id="github-status-box" style="border: 1px solid var(--border-medium); background: rgba(0,0,0,0.4);">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <div id="github-status-icon" style="display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 50%; background: rgba(255,255,255,0.05);">
+                            <i data-lucide="shield-alert" class="text-warning"></i>
+                        </div>
+                        <div>
+                            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                                <strong style="color: var(--text-main); font-size: 0.95rem;">GitHub Integration Status</strong>
+                                <span id="github-setup-badge" class="status-badge pending">Checking...</span>
+                                <span id="github-connection-badge" class="status-badge cancelled">Not Connected</span>
+                            </div>
+                            <div id="github-status-desc" class="text-sm text-muted mt-1">
+                                Checking GitHub OAuth App setup & account login state...
+                            </div>
+                        </div>
+                    </div>
+                    <div id="github-status-actions" style="display: flex; gap: 8px; align-items: center;">
+                        <button type="button" id="github-sync-repos-btn" class="btn btn-primary btn-sm" onclick="syncGitHubReposNow()" style="display:none;">
+                            <i data-lucide="refresh-cw"></i>
+                            <span>Sync Repositories Now</span>
+                        </button>
+                        <a href="/api/v1/oauth/github/login" id="github-connect-btn" class="btn btn-secondary btn-sm" style="display:none;">
+                            <i data-lucide="log-in"></i>
+                            <span>Connect GitHub Account</span>
+                        </a>
+                        <a href="/api/v1/oauth/github/login" id="github-reconnect-btn" class="btn btn-secondary btn-sm" style="display:none;">
+                            <i data-lucide="refresh-cw"></i>
+                            <span>Re-authenticate</span>
+                        </a>
+                    </div>
+                </div>
+                <div id="github-scope-info" class="text-xs text-muted border-top mt-3 pt-2" style="display:none; border-color: var(--border) !important;">
+                    <i data-lucide="key" style="width:12px; height:12px; vertical-align:-1px; margin-right:4px;"></i>
+                    <span>OAuth Scopes: <code id="github-scope-list" style="background: rgba(255,255,255,0.08); padding: 2px 6px; border-radius: 4px; color: var(--text-main);">repo, read:user, user:email</code> &mdash; Grants access to private and public repositories.</span>
+                </div>
+            </div>
+
             <form id="oauth-form" class="settings-form">
                 <div class="form-group">
                     <label for="provider">Provider</label>
