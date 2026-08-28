@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 
-FROM golang:1.26.4-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648 AS builder
+FROM golang:1.26.6-alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS builder
 
 WORKDIR /app
 
@@ -32,6 +32,8 @@ RUN apk --no-cache add \
         ca-certificates=20260611-r0 \
         git=2.54.0-r0 \
         git-lfs=3.7.1-r0 \
+        libcrypto3=3.5.8-r0 \
+        libssl3=3.5.8-r0 \
         su-exec=0.3-r0 \
         wget=1.25.0-r3 \
     && git config --system --add safe.directory '*'
