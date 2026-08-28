@@ -16,7 +16,10 @@ func TestWebhookSecretEncryptRoundTrip(t *testing.T) {
 	s := &WebhookService{encryption: enc}
 
 	const secret = "super-secret-hmac-key"
-	stored := s.encryptSecret(secret)
+	stored, err := s.encryptSecret(secret)
+	if err != nil {
+		t.Fatalf("encryptSecret: %v", err)
+	}
 	if stored == secret {
 		t.Fatal("secret should not be stored in plaintext")
 	}
@@ -43,25 +46,34 @@ func TestWebhookSecretUndecryptableFails(t *testing.T) {
 	}
 }
 
-func TestWebhookSecretLegacyPlaintext(t *testing.T) {
+func TestWebhookSecretLegacyPlaintextRejected(t *testing.T) {
 	enc, _ := crypto.NewEncryptionService(strings.Repeat("k", 32))
 	s := &WebhookService{encryption: enc}
 
-	// A legacy value without the prefix must be returned unchanged.
 	const legacy = "legacy-plaintext-secret"
-	got, err := s.decryptSecret(legacy)
-	if err != nil {
-		t.Fatalf("legacy plaintext should not error: %v", err)
-	}
-	if got != legacy {
-		t.Errorf("legacy plaintext should pass through, got %q", got)
+	if got, err := s.decryptSecret(legacy); err == nil {
+		t.Fatalf("legacy plaintext should be rejected, got %q", got)
 	}
 }
 
 func TestWebhookSecretEmptyStaysEmpty(t *testing.T) {
 	enc, _ := crypto.NewEncryptionService(strings.Repeat("k", 32))
 	s := &WebhookService{encryption: enc}
-	if got := s.encryptSecret(""); got != "" {
+	got, err := s.encryptSecret("")
+	if err != nil {
+		t.Fatalf("encrypt empty secret: %v", err)
+	}
+	if got != "" {
 		t.Errorf("empty secret should stay empty, got %q", got)
+	}
+}
+
+func TestWebhookSecretEncryptionRequiresService(t *testing.T) {
+	s := &WebhookService{}
+	if got, err := s.encryptSecret("secret"); err == nil {
+		t.Fatalf("missing encryption service should fail, got %q", got)
+	}
+	if service, err := NewWebhookService(nil, nil); err == nil {
+		t.Fatalf("constructor should reject missing encryption service, got %#v", service)
 	}
 }

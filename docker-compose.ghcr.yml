@@ -2,7 +2,7 @@
 
 services:
   gitduppy:
-    image: ghcr.io/arumes31/gitduppy:latest
+    image: ghcr.io/arumes31/gitduppy:latest@sha256:8567bcc62feabf047070f6513f79649d94aee2a3be2797a9f2dd57723c9f332e
     ports:
       - "7659:8080"
     environment:
@@ -42,13 +42,20 @@ services:
       - ./data/gitduppy/backups:/app/storage/backups
       - ./config.yaml:/app/config.yaml:ro
     # Hardening: block privilege escalation (compatible with the entrypoint's
-    # root -> appuser drop) and keep git's scratch space off the volumes. Once
-    # this deployment is verified, `read_only: true` can be added as in
-    # docker-compose.prod.yml.
+    # root -> appuser drop) and keep git's scratch space off the volumes.
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
     tmpfs:
       - /tmp
+    read_only: true
     depends_on:
       postgres:
         condition: service_healthy
@@ -63,7 +70,7 @@ services:
       - gitduppy-network
 
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     environment:
       - POSTGRES_DB=gitduppy
       - POSTGRES_USER=gitduppy

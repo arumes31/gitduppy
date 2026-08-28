@@ -8,16 +8,24 @@ on:
   schedule:
     - cron: '0 0 * * *'  # Daily at midnight UTC
 
+permissions: {}
+
 jobs:
   govulncheck:
     name: Scan for vulnerabilities
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: 'go.mod'
           cache-dependency-path: |
@@ -26,14 +34,14 @@ jobs:
 
       - name: Install govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
 
       - name: Run govulncheck on dependencies
         run: |
           govulncheck ./... 2>&1 | tee vulncheck-report.txt || exit 1
 
       - name: Upload vulnerability report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
           name: vulncheck-report
@@ -41,8 +49,8 @@ jobs:
           retention-days: 30
 
       - name: Create issue on vulnerability found
-        if: failure()
-        uses: peter-evans/create-issue-from-file@v5
+        if: failure() && github.event_name != 'pull_request'
+        uses: peter-evans/create-issue-from-file@fca9117c27cdc29c6c4db3b86c48e4115a786710 # v6.0.0
         with:
           title: Security vulnerability detected in dependencies
           content-filepath: vulncheck-report.txt

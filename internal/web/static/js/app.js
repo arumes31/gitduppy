@@ -37,6 +37,27 @@ function showToast(message, type = 'success') {
 const API_CACHE = new Map();
 const API_CACHE_TTL = 5000; // ms
 const API_CACHE_MAX = 50;
+let csrfTokenPromise = null;
+
+async function getCSRFToken() {
+    if (!csrfTokenPromise) {
+        csrfTokenPromise = fetch('/api/v1/csrf-token', {
+            method: 'GET',
+            credentials: 'same-origin',
+            headers: { 'Accept': 'application/json' }
+        }).then(async response => {
+            if (!response.ok) throw new Error(`Unable to initialize request protection (${response.status})`);
+            const envelope = await response.json();
+            const token = envelope && envelope.data && envelope.data.token;
+            if (!token) throw new Error('Request protection token was missing');
+            return token;
+        }).catch(error => {
+            csrfTokenPromise = null;
+            throw error;
+        });
+    }
+    return csrfTokenPromise;
+}
 
 // makeApiError builds a structured Error {status, code, message} so callers can
 // branch on the HTTP status / server error code while still using err.message.
@@ -54,11 +75,13 @@ function makeApiError(status, code, message) {
 //         {success:false, errors:[{code,message}]} envelope;
 //   (51)  GET caching + If-None-Match revalidation (bypassed with {fresh:true}).
 // Cookies ride along automatically (same-origin), so no auth header is added.
-// There is currently no CSRF token scheme wired on the server, so none is sent.
+// Unsafe requests carry a token paired with the server's CSRF cookie.
 async function apiCall(endpoint, options = {}) {
     const method = (options.method || 'GET').toUpperCase();
     const isGet = method === 'GET';
+    const isSafe = method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
     const fresh = options.fresh === true;
+    let csrfToken = '';
 
     // Serve a still-fresh GET straight from cache without a network round trip.
     if (isGet && !fresh) {
@@ -70,6 +93,7 @@ async function apiCall(endpoint, options = {}) {
 
     const buildHeaders = () => {
         const headers = { 'Content-Type': 'application/json', ...options.headers };
+        if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
         if (isGet && !fresh) {
             const hit = API_CACHE.get(endpoint);
             if (hit && hit.etag) headers['If-None-Match'] = hit.etag;
@@ -80,6 +104,7 @@ async function apiCall(endpoint, options = {}) {
     const doFetch = () => fetch(endpoint, { ...options, method, headers: buildHeaders() });
 
     try {
+        if (!isSafe) csrfToken = await getCSRFToken();
         let response = await doFetch();
 
         // (91a) Rate limited: wait out Retry-After (bounded) and retry once.

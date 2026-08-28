@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/csrf"
@@ -43,11 +44,13 @@ func (m *CSRFMiddleware) Middleware() gin.HandlerFunc {
 	)
 
 	return func(c *gin.Context) {
-		// Skip CSRF check for GET, HEAD, OPTIONS requests
-		if c.Request.Method == http.MethodGet ||
-			c.Request.Method == http.MethodHead ||
-			c.Request.Method == http.MethodOptions {
-
+		// The incoming webhook authenticates its raw payload with a provider HMAC,
+		// and bearer-token API clients are not authenticated by ambient cookies.
+		// Neither is vulnerable to browser cookie CSRF.
+		sessionCookie, sessionErr := c.Cookie("session")
+		bearerOnly := strings.HasPrefix(c.GetHeader("Authorization"), "Bearer ") &&
+			(sessionErr != nil || sessionCookie == "")
+		if c.Request.URL.Path == "/api/v1/webhooks/receive" || bearerOnly {
 			c.Next()
 			return
 		}
@@ -60,7 +63,11 @@ func (m *CSRFMiddleware) Middleware() gin.HandlerFunc {
 			c.Next()
 		})
 
-		protect(nextHandler).ServeHTTP(c.Writer, c.Request)
+		request := c.Request
+		if !m.secure {
+			request = csrf.PlaintextHTTPRequest(request)
+		}
+		protect(nextHandler).ServeHTTP(c.Writer, request)
 
 		if !csrfPassed {
 			c.Abort()

@@ -1,0 +1,10 @@
+* @arumes31
+
+/.github/ @arumes31
+/Dockerfile @arumes31
+/docker-compose*.yml @arumes31
+/go.mod @arumes31
+/go.sum @arumes31
+/internal/middleware/ @arumes31
+/internal/services/webhook* @arumes31
+/pkg/crypto/ @arumes31

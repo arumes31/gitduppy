@@ -5,10 +5,10 @@ set -e
 # (base_path, ssh_path, backup_path) and the compose bind mounts. These live
 # under /app/storage so the root filesystem can be mounted read-only in
 # production — only the bind mounts and /tmp need to be writable.
-STORAGE_DIRS="/app/storage/repos /app/storage/ssh /app/storage/backups"
-
 # Ensure the bind-mounted directories exist (no-op when compose created them).
-mkdir -p $STORAGE_DIRS
+for dir in /app/storage/repos /app/storage/ssh /app/storage/backups; do
+	mkdir -p "$dir"
+done
 
 if [ "$(id -u)" = "0" ]; then
 	# Started as root (the default). The bind-mounted volumes arrive with arbitrary
@@ -20,7 +20,7 @@ if [ "$(id -u)" = "0" ]; then
 	# Only recurse when the top-level dir is not already owned by appuser (UID
 	# 1000): a chown -R across every mirrored repository on each boot would make
 	# restarts scale with the size of the mirror store.
-	for dir in $STORAGE_DIRS; do
+	for dir in /app/storage/repos /app/storage/ssh /app/storage/backups; do
 		if [ "$(stat -c %u "$dir")" != "1000" ]; then
 			chown -R appuser:appgroup "$dir"
 		fi

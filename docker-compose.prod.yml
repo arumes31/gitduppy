@@ -47,6 +47,14 @@ services:
     # raising them (su-exec runs before any workload).
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
     # Give git an ephemeral, non-persistent scratch area for its temp files and
     # keep it off the persistent volumes. Also required for the read-only root
     # filesystem below.
@@ -71,7 +79,7 @@ services:
       - gitduppy-network
 
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     environment:
       - POSTGRES_DB=gitduppy
       - POSTGRES_USER=gitduppy

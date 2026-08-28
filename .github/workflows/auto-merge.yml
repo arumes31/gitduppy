@@ -4,17 +4,39 @@ on:
   pull_request_target:
     types: [opened, synchronize, ready_for_review]
 
+permissions: {}
+
 jobs:
   auto-merge:
     name: Auto-Merge Dependabot PRs
     runs-on: ubuntu-latest
     if: github.actor == 'dependabot[bot]'
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     steps:
       - name: Dependabot metadata
         id: dependabot-metadata
-        uses: dependabot/fetch-metadata@v2
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enforce automatic update policy
+        shell: bash
+        env:
+          PACKAGE_ECOSYSTEM: ${{ steps.dependabot-metadata.outputs.package-ecosystem }}
+          UPDATE_TYPE: ${{ steps.dependabot-metadata.outputs.update-type }}
+        run: |
+          case "$PACKAGE_ECOSYSTEM" in
+            gomod|github-actions|docker) ;;
+            *) echo "Refusing unexpected ecosystem: $PACKAGE_ECOSYSTEM"; exit 1 ;;
+          esac
+          if [ "$UPDATE_TYPE" = "version-update:semver-major" ]; then
+            echo "Major updates require manual review"
+            exit 1
+          fi
 
       - name: Enable auto-merge for Dependabot PRs
         run: |
@@ -25,8 +47,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Comment on PR
-        uses: actions/github-script@v7
-        if: always()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        if: success()
         with:
           script: |
             github.rest.issues.createComment({

@@ -6,32 +6,28 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build and Test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: 'go.mod'
           cache-dependency-path: |
             go.sum
             **/go.sum
-
-      - name: Cache Go modules
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
 
       - name: Download dependencies
         run: go mod download
@@ -46,7 +42,7 @@ jobs:
           cat coverage.txt
 
       - name: Upload test results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
           name: test-results-go
@@ -56,7 +52,7 @@ jobs:
           retention-days: 14
 
       - name: Upload coverage report to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           files: ./coverage.out
           flags: unittests

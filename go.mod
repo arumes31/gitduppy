@@ -1,12 +1,12 @@
 module github.com/gitduppy/gitduppy
 
-go 1.26.4
+go 1.26.6
 
 require (
 	github.com/coreos/go-oidc/v3 v3.18.0
 	github.com/gin-contrib/gzip v1.2.6
 	github.com/gin-gonic/gin v1.12.0
-	github.com/go-git/go-git/v5 v5.19.1
+	github.com/go-git/go-git/v5 v5.19.2
 	github.com/go-playground/validator/v10 v10.30.3
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/csrf v1.7.3
@@ -94,7 +94,7 @@ require (
 	golang.org/x/arch v0.28.0 // indirect
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
-	golang.org/x/text v0.38.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 )
