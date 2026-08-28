@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -34,30 +35,35 @@ type WebhookService struct {
 	encryption   *crypto.EncryptionService
 }
 
-// NewWebhookService creates a new webhook service. encryption may be nil, in
-// which case secrets are stored as-is (used only where no master key is wired).
-func NewWebhookService(cloneService *CloneService, encryption *crypto.EncryptionService) *WebhookService {
+// NewWebhookService creates a webhook service that always encrypts secrets at
+// rest. A missing encryption service is a configuration error, never a signal
+// to persist plaintext.
+func NewWebhookService(cloneService *CloneService, encryption *crypto.EncryptionService) (*WebhookService, error) {
+	if encryption == nil {
+		return nil, errors.New("webhook encryption service is required")
+	}
 	return &WebhookService{
 		db:           database.GetDB(),
 		cloneService: cloneService,
 		encryption:   encryption,
-	}
+	}, nil
 }
 
 // encryptSecret returns the at-rest representation of a webhook secret. Empty
-// secrets stay empty; otherwise the value is AES-encrypted and prefix-tagged. If
-// encryption fails it falls back to storing plaintext (so the secret is not lost)
-// but logs an error so operators can tell it was persisted unencrypted.
-func (s *WebhookService) encryptSecret(secret string) string {
-	if secret == "" || s.encryption == nil {
-		return secret
+// secrets stay empty; otherwise the value is AES-encrypted and prefix-tagged.
+// Encryption errors fail the surrounding create/update operation closed.
+func (s *WebhookService) encryptSecret(secret string) (string, error) {
+	if secret == "" {
+		return "", nil
+	}
+	if s.encryption == nil {
+		return "", errors.New("encrypt webhook secret: encryption service is unavailable")
 	}
 	ct, err := s.encryption.EncryptString(secret)
 	if err != nil {
-		zap.L().Named("webhook-service").Error("failed to encrypt webhook secret; storing it UNENCRYPTED (plaintext) as a fallback", zap.Error(err))
-		return secret
+		return "", fmt.Errorf("encrypt webhook secret: %w", err)
 	}
-	return encSecretPrefix + ct
+	return encSecretPrefix + ct, nil
 }
 
 // DecryptSecret exposes the at-rest secret in usable plaintext for callers
@@ -68,13 +74,14 @@ func (s *WebhookService) DecryptSecret(stored string) (string, error) {
 }
 
 // decryptSecret returns the usable secret from its at-rest representation,
-// transparently handling legacy plaintext values that lack the prefix. A value
-// tagged as encrypted that fails to decrypt returns ("", error) so callers never
-// mistake the raw ciphertext for the real secret.
+// rejecting plaintext values that lack the prefix. Startup migration upgrades
+// legacy values before the server accepts requests.
 func (s *WebhookService) decryptSecret(stored string) (string, error) {
+	if stored == "" {
+		return "", nil
+	}
 	if !strings.HasPrefix(stored, encSecretPrefix) {
-		// Truly legacy plaintext secret (written before encryption existed).
-		return stored, nil
+		return "", errors.New("decrypt webhook secret: unencrypted legacy value rejected")
 	}
 	// The value is tagged as encrypted. If encryption is not wired we cannot
 	// recover the plaintext, so fail loudly rather than hand back the raw
@@ -87,6 +94,49 @@ func (s *WebhookService) decryptSecret(stored string) (string, error) {
 		return "", fmt.Errorf("decrypt webhook secret: %w", err)
 	}
 	return pt, nil
+}
+
+// MigrateLegacySecrets atomically encrypts secrets written by versions that
+// predate encrypted-at-rest storage. The final count is an invariant check: the
+// server refuses to start if any non-empty plaintext value remains.
+func (s *WebhookService) MigrateLegacySecrets(ctx context.Context) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var webhooks []models.WebhookConfig
+		if err := tx.Where("secret <> '' AND secret NOT LIKE ?", encSecretPrefix+"%").Find(&webhooks).Error; err != nil {
+			return fmt.Errorf("find legacy webhook secrets: %w", err)
+		}
+		for i := range webhooks {
+			encrypted, err := s.encryptSecret(webhooks[i].Secret)
+			if err != nil {
+				return fmt.Errorf("migrate webhook %s secret: %w", webhooks[i].ID, err)
+			}
+			if err := tx.Model(&models.WebhookConfig{}).Where("id = ?", webhooks[i].ID).
+				Update("secret", encrypted).Error; err != nil {
+				return fmt.Errorf("save migrated webhook %s secret: %w", webhooks[i].ID, err)
+			}
+		}
+
+		var plaintextCount int64
+		if err := tx.Model(&models.WebhookConfig{}).
+			Where("secret <> '' AND secret NOT LIKE ?", encSecretPrefix+"%").
+			Count(&plaintextCount).Error; err != nil {
+			return fmt.Errorf("verify webhook secret migration: %w", err)
+		}
+		if plaintextCount != 0 {
+			return fmt.Errorf("webhook secret invariant failed: %d plaintext values remain", plaintextCount)
+		}
+
+		var encryptedWebhooks []models.WebhookConfig
+		if err := tx.Select("id", "secret").Where("secret <> ''").Find(&encryptedWebhooks).Error; err != nil {
+			return fmt.Errorf("load encrypted webhook secrets for verification: %w", err)
+		}
+		for i := range encryptedWebhooks {
+			if _, err := s.decryptSecret(encryptedWebhooks[i].Secret); err != nil {
+				return fmt.Errorf("webhook secret invariant failed for %s: %w", encryptedWebhooks[i].ID, err)
+			}
+		}
+		return nil
+	})
 }
 
 // WebhookFilter represents filters for listing webhooks.
@@ -161,13 +211,20 @@ type CreateWebhookRequest struct {
 }
 
 // CreateWebhook creates a new webhook.
-func (s *WebhookService) CreateWebhook(_ context.Context, userID uuid.UUID, req *CreateWebhookRequest) (*models.WebhookConfig, error) {
+func (s *WebhookService) CreateWebhook(ctx context.Context, userID uuid.UUID, req *CreateWebhookRequest) (*models.WebhookConfig, error) {
+	if err := validateWebhookURL(ctx, net.DefaultResolver, req.URL); err != nil {
+		return nil, err
+	}
+	encryptedSecret, err := s.encryptSecret(req.Secret)
+	if err != nil {
+		return nil, err
+	}
 	webhook := &models.WebhookConfig{
 		ID:             uuid.New(),
 		UserID:         userID,
 		Name:           req.Name,
 		URL:            req.URL,
-		Secret:         s.encryptSecret(req.Secret),
+		Secret:         encryptedSecret,
 		Events:         req.Events,
 		IsActive:       req.IsActive,
 		RetryCount:     req.RetryCount,
@@ -212,10 +269,17 @@ func (s *WebhookService) UpdateWebhook(ctx context.Context, id uuid.UUID, req *U
 		webhook.Name = *req.Name
 	}
 	if req.URL != nil {
+		if err := validateWebhookURL(ctx, net.DefaultResolver, *req.URL); err != nil {
+			return nil, err
+		}
 		webhook.URL = *req.URL
 	}
 	if req.Secret != nil {
-		webhook.Secret = s.encryptSecret(*req.Secret)
+		encryptedSecret, err := s.encryptSecret(*req.Secret)
+		if err != nil {
+			return nil, err
+		}
+		webhook.Secret = encryptedSecret
 	}
 	if req.Events != nil {
 		webhook.Events = req.Events
@@ -393,10 +457,10 @@ func (s *WebhookService) attemptDelivery(webhook models.WebhookConfig, eventType
 	// zero-value client can never wait without bound (item 27). Match it to the
 	// per-webhook timeout (30s default; webhook delivery warrants a longer bound
 	// than the 10s used for other outbound calls).
-	client := &http.Client{Timeout: time.Duration(timeoutSeconds) * time.Second}
+	client := newWebhookHTTPClient(time.Duration(timeoutSeconds) * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, err.Error(), false
+		return 0, sanitizeWebhookDeliveryError(err), false
 	}
 	defer resp.Body.Close()
 

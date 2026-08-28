@@ -27,6 +27,7 @@ import (
 	"github.com/gitduppy/gitduppy/internal/models"
 	"github.com/gitduppy/gitduppy/internal/services"
 	"github.com/gitduppy/gitduppy/pkg/crypto"
+	"github.com/gitduppy/gitduppy/pkg/response"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
@@ -132,7 +133,13 @@ func main() {
 	repoService := services.NewRepositoryService(encryptionService, cfg.Storage.BasePath)
 	cloneService := services.NewCloneService()
 	apiKeyService := services.NewAPIKeyService()
-	webhookService := services.NewWebhookService(cloneService, encryptionService)
+	webhookService, err := services.NewWebhookService(cloneService, encryptionService)
+	if err != nil {
+		log.Fatalf("Failed to initialize webhook service: %v", err)
+	}
+	if err := webhookService.MigrateLegacySecrets(context.Background()); err != nil {
+		log.Fatalf("Failed to migrate webhook secrets: %v", err)
+	}
 	tagService := services.NewTagService()
 	dashboardService := services.NewDashboardService(cfg.Storage.BasePath)
 
@@ -230,7 +237,7 @@ func main() {
 	)
 	defer rateLimiter.Stop()
 	loggerConfig := middleware.DefaultLoggerConfig()
-	csrfMiddleware := middleware.NewCSRFMiddleware(cfg.Security.CSRFKey, cfg.Server.TLS.Enabled)
+	csrfMiddleware := middleware.NewCSRFMiddleware(cfg.Security.CSRFKey, cfg.Security.CookieSecure)
 
 	// Initialize Gin router
 	router := setupRouter(
@@ -260,11 +267,13 @@ func main() {
 
 	// Create HTTP server
 	srv := &http.Server{
-		Addr:         fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
-		Handler:      router,
-		ReadTimeout:  cfg.Server.ReadTimeout,
-		WriteTimeout: cfg.Server.WriteTimeout,
-		IdleTimeout:  cfg.Server.IdleTimeout,
+		Addr:              fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       cfg.Server.ReadTimeout,
+		WriteTimeout:      cfg.Server.WriteTimeout,
+		IdleTimeout:       cfg.Server.IdleTimeout,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	// Start server in goroutine
@@ -534,7 +543,14 @@ func setupRouter(
 
 	// API v1 group
 	v1 := router.Group("/api/v1")
+	v1.Use(csrfMiddleware.Middleware())
 	{
+		// Browser clients fetch a masked token before their first state-changing
+		// request. The CSRF middleware also sets the paired HttpOnly cookie.
+		v1.GET("/csrf-token", func(c *gin.Context) {
+			response.Success(c, gin.H{"token": middleware.GetCSRFToken(c)})
+		})
+
 		// Auth routes
 		auth := v1.Group("/auth")
 		{

@@ -1,6 +1,6 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 
-FROM golang:1.26.4-alpine AS builder
+FROM golang:1.26.4-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648 AS builder
 
 WORKDIR /app
 
@@ -22,13 +22,18 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 
 # git and git-lfs are required at runtime by the mirroring engine, so a
 # distroless/scratch base is not viable; a pinned Alpine keeps the image small.
-FROM alpine:3.20
+FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 # safe.directory '*' is baked into the system git config so the appuser can always
 # operate on mirrored repositories regardless of their on-disk owner (e.g. repos
 # created by a different UID, or when running under a read-only root filesystem
 # where a per-user ~/.gitconfig could not be written). It is written at build time
 # so no runtime write to /etc/gitconfig is needed.
-RUN apk --no-cache add ca-certificates su-exec git git-lfs wget \
+RUN apk --no-cache add \
+        ca-certificates=20260611-r0 \
+        git=2.54.0-r0 \
+        git-lfs=3.7.1-r0 \
+        su-exec=0.3-r0 \
+        wget=1.25.0-r3 \
     && git config --system --add safe.directory '*'
 
 WORKDIR /app
@@ -59,7 +64,7 @@ EXPOSE 8080
 
 # Container-level liveness probe (compose/k8s may override with their own).
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-    CMD wget --quiet --tries=1 --spider http://localhost:8080/api/v1/health/live || exit 1
+    CMD ["wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/api/v1/health/live"]
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["./gitduppy"]

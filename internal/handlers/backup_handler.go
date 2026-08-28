@@ -111,6 +111,7 @@ func (h *BackupHandler) Import(c *gin.Context) {
 		return
 	}
 
+	//nolint:staticcheck // ImportData intentionally returns ErrNotImplemented until the import format is implemented.
 	if err := h.backupService.ImportData(c, content, importFormat); err != nil {
 		respondServiceError(c, err)
 		return
@@ -127,7 +128,9 @@ func (h *BackupHandler) DatabaseBackup(c *gin.Context) {
 		return
 	}
 
+	//nolint:staticcheck // DatabaseBackup intentionally returns ErrNotImplemented until pg_dump support is implemented.
 	backupPath, err := h.backupService.DatabaseBackup(c)
+	//nolint:staticcheck // See the deliberate ErrNotImplemented contract above.
 	if err != nil {
 		respondServiceError(c, err)
 		return

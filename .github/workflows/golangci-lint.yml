@@ -6,16 +6,22 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   golangci:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: 'go.mod'
           cache-dependency-path: |
@@ -23,16 +29,7 @@ jobs:
             **/go.sum
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v1.64.5
-          args: --config .golangci.yml --timeout 5m | tee lint-report.txt
-
-      - name: Upload lint results
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: lint-results
-          path: |
-            lint-report.txt
-          retention-days: 14
+          version: v2.13.2
+          args: --config .golangci.yml --timeout 5m
