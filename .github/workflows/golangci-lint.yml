@@ -23,10 +23,10 @@ jobs:
             **/go.sum
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9.3.0
         with:
-          version: v1.64.5
-          args: --config .golangci.yml --timeout 5m | tee lint-report.txt
+          version: v2.14.0
+          args: --config .golangci.yml --timeout 5m --output.text.path=lint-report.txt
 
       - name: Upload lint results
         uses: actions/upload-artifact@v4

@@ -31,7 +31,7 @@ jobs:
         run: go mod download
 
       - name: Run gosec
-        uses: securego/gosec@v2.22.1
+        uses: securego/gosec@7b1b5cebe007d62fb58eacb90fc571112939ec30 # Go 1.27.2 support
         with:
           args: -conf .gosec.json -no-fail -fmt sarif -out gosec-results.sarif ./...
 
