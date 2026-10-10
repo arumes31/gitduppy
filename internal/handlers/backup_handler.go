@@ -111,12 +111,8 @@ func (h *BackupHandler) Import(c *gin.Context) {
 		return
 	}
 
-	if err := h.backupService.ImportData(c, content, importFormat); err != nil {
-		respondServiceError(c, err)
-		return
-	}
-
-	response.SuccessWithMessage(c, "Data imported successfully", nil)
+	// ImportData currently returns ErrNotImplemented for every format.
+	respondServiceError(c, h.backupService.ImportData(c, content, importFormat))
 }
 
 // DatabaseBackup handles POST /api/v1/backup/database.
@@ -127,14 +123,7 @@ func (h *BackupHandler) DatabaseBackup(c *gin.Context) {
 		return
 	}
 
-	backupPath, err := h.backupService.DatabaseBackup(c)
-	if err != nil {
-		respondServiceError(c, err)
-		return
-	}
-
-	response.Success(c, gin.H{
-		"backup_path": backupPath,
-		"message":     "Database backup created successfully",
-	})
+	// DatabaseBackup currently returns ErrNotImplemented.
+	_, err := h.backupService.DatabaseBackup(c)
+	respondServiceError(c, err)
 }
