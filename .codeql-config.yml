@@ -2,6 +2,8 @@ name: CodeQL Configuration
 
 languages:
   - go
+  - javascript-typescript
+  - actions
 
 queries:
   - uses: security-extended
