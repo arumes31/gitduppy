@@ -41,6 +41,7 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
 
       - name: Run govulncheck on dependencies
+        shell: bash
         run: |
           govulncheck ./... 2>&1 | tee vulncheck-report.txt || exit 1
 
