@@ -8,6 +8,13 @@ on:
   schedule:
     - cron: '0 0 * * 0'  # Weekly on Sunday at midnight UTC
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   analyze:
     name: Analyze
@@ -20,14 +27,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: ['go']
+        language: ['go', 'javascript-typescript', 'actions']
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        if: matrix.language == 'go'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: 'go.mod'
           cache-dependency-path: |
@@ -35,28 +45,30 @@ jobs:
             **/go.sum
 
       - name: Download dependencies
+        if: matrix.language == 'go'
         run: go mod download
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
         with:
           languages: ${{ matrix.language }}
           config-file: ./.codeql-config.yml
           queries: security-extended,security-and-quality
 
       - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
+        if: matrix.language == 'go'
+        uses: github/codeql-action/autobuild@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
         with:
           category: "/language:${{ matrix.language }}"
 
       - name: Upload CodeQL results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: codeql-results
+          name: codeql-results-${{ matrix.language }}
           path: |
             codeql-database/
             sarif-results/

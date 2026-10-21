@@ -8,16 +8,28 @@ on:
   schedule:
     - cron: '0 0 * * *'  # Daily at midnight UTC
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   govulncheck:
     name: Scan for vulnerabilities
+    permissions:
+      contents: read
+      issues: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: 'go.mod'
           cache-dependency-path: |
@@ -33,7 +45,7 @@ jobs:
           govulncheck ./... 2>&1 | tee vulncheck-report.txt || exit 1
 
       - name: Upload vulnerability report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: vulncheck-report
@@ -42,7 +54,7 @@ jobs:
 
       - name: Create issue on vulnerability found
         if: failure()
-        uses: peter-evans/create-issue-from-file@v5
+        uses: peter-evans/create-issue-from-file@e8ef132d6df98ed982188e460ebb3b5d4ef3a9cd # v5
         with:
           title: Security vulnerability detected in dependencies
           content-filepath: vulncheck-report.txt
