@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.26.10-alpine3.24@sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d61b292c88e7f6bdf7ca AS builder
+FROM golang:1.27.3-alpine3.24@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd AS builder
 
 WORKDIR /app
 
@@ -22,7 +22,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 
 # git and git-lfs are required at runtime by the mirroring engine, so a
 # distroless/scratch base is not viable; a pinned Alpine keeps the image small.
-FROM alpine:3.20
+FROM alpine:3.24
 # safe.directory '*' is baked into the system git config so the appuser can always
 # operate on mirrored repositories regardless of their on-disk owner (e.g. repos
 # created by a different UID, or when running under a read-only root filesystem
