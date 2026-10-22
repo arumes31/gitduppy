@@ -51,6 +51,9 @@ cd gitduppy
 # Copy the example configuration file
 cp config.example.yaml config.yaml
 
+# Create .env with a credential-encryption key (required; there is no default)
+echo "ENCRYPTION_KEY=$(openssl rand -hex 32)" > .env
+
 # Start the services
 docker compose up -d --build
 
@@ -81,11 +84,21 @@ All environment variables are prefixed with `GITMIRRORS_` and map to the YAML st
 
 ### Core Authentication & Security Configurations
 
-To secure your installation, you must generate three secrets for credential encryption, session signing, and CSRF protection — each a 256-bit key. The **Session Secret** and **CSRF Key** must be **exactly 32 characters long**; the **Master Key** must be either a 32-character string **or** a 64-character hex-encoded value (which decodes to 32 bytes):
+To secure your installation, generate a master key for credential encryption (required). The session secret and CSRF key are still accepted but currently reserved: sessions are random server-side tokens, and CSRF protection checks `Sec-Fetch-Site`/`Origin` on cookie-authenticated requests (set `server.base_url` to your public URL so it is trusted behind a proxy). Each key is a 256-bit value. The **Session Secret** and **CSRF Key** must be **exactly 32 characters long**; the **Master Key** must be either a 32-character string **or** a 64-character hex-encoded value (which decodes to 32 bytes):
 
 1. **Master Key** (`GITMIRRORS_SECURITY_MASTER_KEY` / `security.master_key`): the AES-256 key used to encrypt repository credentials in the database. Accepts either a 32-character string **or** a 64-character hex-encoded key (e.g. `openssl rand -hex 32`).
-2. **Session Secret** (`GITMIRRORS_SECURITY_SESSION_SECRET` / `security.session_secret`): a 32-character secret used to sign session cookies.
-3. **CSRF Key** (`GITMIRRORS_SECURITY_CSRF_KEY` / `security.csrf_key`): a 32-character key used for CSRF token generation.
+2. **Session Secret** (`GITMIRRORS_SECURITY_SESSION_SECRET` / `security.session_secret`): a 32-character secret (reserved; not currently used for signing).
+3. **CSRF Key** (`GITMIRRORS_SECURITY_CSRF_KEY` / `security.csrf_key`): a 32-character key (reserved; CSRF protection is origin-based).
+
+> [!IMPORTANT]
+> The server refuses to start with a published placeholder master key (such as the old compose default `your-32-byte-long-encryption-key`) or a trivially weak one. If an existing deployment already encrypted credentials with such a key, set `GITMIRRORS_SECURITY_ALLOW_INSECURE_MASTER_KEY=true` to keep it running, then rotate the key and re-enter repository credentials.
+
+### Network and access hardening
+
+- **Trusted proxies** (`server.trusted_proxies` / `GITMIRRORS_SERVER_TRUSTED_PROXIES`, comma-separated): `X-Forwarded-For` is honored only from these addresses. Leave empty when clients connect directly. Behind Caddy or nginx, list the proxy (or its network CIDR); otherwise every client shares the proxy's rate-limit bucket.
+- **Outbound targets** (`security.allow_private_network_targets`): webhooks cannot reach loopback, private-network, link-local or cloud-metadata addresses, do not follow redirects, and clone URLs cannot resolve to loopback or link-local addresses. Set `true` to allow loopback and private targets (for example a CI server on your LAN); link-local and metadata addresses are always blocked.
+- **Inbound webhooks** (`POST /api/v1/webhooks/receive`) must be signed: a webhook without a secret rejects deliveries.
+- **Repository permissions**: any signed-in user can view repositories, but only the repository's creator or an admin can change, delete, restore, re-clone or retag it, or cancel its jobs. A repository's URL cannot be moved to a different host without entering its credentials again.
 
 #### Generating Keys
 Generate a 32-character secret (works for all three keys) with:
@@ -113,6 +126,7 @@ GitDuppy supports GitHub, GitLab, and Google OAuth2 for user authentication. The
   - `GITMIRRORS_OAUTH_GOOGLE_CLIENT_ID` / `oauth.google.client_id`
   - `GITMIRRORS_OAUTH_GOOGLE_CLIENT_SECRET` / `oauth.google.client_secret`
   - `GITMIRRORS_OAUTH_GOOGLE_REDIRECT_URL`
+- **Sign-up control**: signing in with an OAuth identity that has no account creates one. Such accounts are **inactive until an admin enables them**, unless `oauth.auto_activate` (`GITMIRRORS_OAUTH_AUTO_ACTIVATE`) is `true`. Restrict who may self-register with `oauth.allowed_email_domains` (`GITMIRRORS_OAUTH_ALLOWED_EMAIL_DOMAINS`, comma-separated, e.g. `example.com`).
 
 ### Configuration File
 Reference the provided `config.example.yaml` file for complete configuration options. Create a `config.yaml` file in the root directory or specify its path with the `CONFIG_FILE` environment variable.
