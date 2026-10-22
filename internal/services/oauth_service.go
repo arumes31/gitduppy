@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -450,13 +451,19 @@ func (s *OAuthService) CreateOrUpdateUserFromOAuth(_ context.Context, provider O
 		return &userByEmail, nil
 	}
 
-	// Create new user
+	// Create new user. Sign-up is limited to the configured email domains, and
+	// new accounts start inactive (pending admin approval) unless auto-activation
+	// is enabled, so a configured provider does not let anyone with a free
+	// GitHub/GitLab/Google account straight in.
+	if !s.signupAllowed(email) {
+		return nil, ErrOAuthSignupNotAllowed
+	}
 	newUser := &models.User{
 		ID:            uuid.New(),
 		Username:      username,
 		Email:         email,
 		Role:          "user",
-		IsActive:      true,
+		IsActive:      s.autoActivate(),
 		OAuthProvider: stringPtr(string(provider)),
 		OAuthSubject:  stringPtr(subject),
 	}
@@ -464,6 +471,41 @@ func (s *OAuthService) CreateOrUpdateUserFromOAuth(_ context.Context, provider O
 		return nil, err
 	}
 	return newUser, nil
+}
+
+// ErrOAuthSignupNotAllowed is returned when an OAuth identity without an existing
+// account is not eligible for automatic sign-up (its email domain is not in
+// oauth.allowed_email_domains).
+var ErrOAuthSignupNotAllowed = errors.New("sign-up with this account is not allowed")
+
+// signupAllowed reports whether a new account may be created for email under the
+// configured oauth.allowed_email_domains allowlist (empty allows any domain).
+func (s *OAuthService) signupAllowed(email string) bool {
+	if s.configService == nil || s.configService.config == nil {
+		return true
+	}
+	domains := s.configService.config.OAuth.AllowedEmailDomains
+	if len(domains) == 0 {
+		return true
+	}
+	at := strings.LastIndex(email, "@")
+	if at < 0 {
+		return false
+	}
+	emailDomain := strings.ToLower(strings.TrimSpace(email[at+1:]))
+	for _, d := range domains {
+		d = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(d), "@"))
+		if d != "" && emailDomain == d {
+			return true
+		}
+	}
+	return false
+}
+
+// autoActivate reports whether accounts created through OAuth sign-up start
+// active (oauth.auto_activate). Defaults to false: an admin must enable them.
+func (s *OAuthService) autoActivate() bool {
+	return s.configService != nil && s.configService.config != nil && s.configService.config.OAuth.AutoActivate
 }
 
 // stringPtr returns a pointer to a string.

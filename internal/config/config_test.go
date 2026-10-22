@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -66,5 +67,30 @@ func TestDSN(t *testing.T) {
 	want := "host=h port=5432 user=u password=p dbname=db sslmode=disable"
 	if got != want {
 		t.Errorf("DSN()=%q want %q", got, want)
+	}
+}
+
+func TestCheckMasterKey(t *testing.T) {
+	bad := []string{
+		"your-32-byte-long-encryption-key",
+		"your-32-byte-encryption-key-here",
+		"YOUR-32-byte-long-encryption-key",
+		strings.Repeat("k", 32),
+		"abababababababababababababababab",
+		"please-changeme-please-changeme!",
+	}
+	for _, k := range bad {
+		if err := CheckMasterKey(k); err == nil {
+			t.Errorf("CheckMasterKey(%q) = nil, want error", k)
+		}
+	}
+	good := []string{
+		"3f9a1c7e5b2d8046af13ce97b5d20e68",
+		"6b1f0e4c9a2d7358e0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7",
+	}
+	for _, k := range good {
+		if err := CheckMasterKey(k); err != nil {
+			t.Errorf("CheckMasterKey(%q) = %v, want nil", k, err)
+		}
 	}
 }

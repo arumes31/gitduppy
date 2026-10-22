@@ -71,6 +71,9 @@ func (h *BrowseHandler) openRepo(c *gin.Context) (*gogit.Repository, *models.Rep
 	if err != nil {
 		return nil, nil, fmt.Errorf("repository not found")
 	}
+	if !h.repoService.IsValidStoragePath(repo) {
+		return nil, nil, fmt.Errorf("repository not cloned yet or path invalid")
+	}
 	gitRepo, err := gogit.PlainOpen(repo.StoragePath)
 	if err != nil {
 		// Deliberately drop the underlying go-git error: it embeds the on-disk
@@ -590,6 +593,10 @@ func (h *BrowseHandler) DownloadRepo(c *gin.Context) {
 	repo, err := h.repoService.GetRepositoryByID(c, id)
 	if err != nil {
 		response.NotFound(c, "Repository not found")
+		return
+	}
+	if !h.repoService.IsValidStoragePath(repo) {
+		response.NotFound(c, "Repository not cloned yet or path invalid")
 		return
 	}
 

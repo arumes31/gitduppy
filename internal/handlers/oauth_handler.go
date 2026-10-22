@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -208,9 +209,20 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 
 	// Create or update user from OAuth data
 	user, err := h.oauthService.CreateOrUpdateUserFromOAuth(c, oauthProvider, subject, email, username)
+	if errors.Is(err, services.ErrOAuthSignupNotAllowed) {
+		response.Forbidden(c, "Sign-up with this account is not allowed")
+		return
+	}
 	if err != nil {
 		logServerError(c, err)
 		response.InternalError(c, "Failed to create or update user")
+		return
+	}
+
+	// Inactive accounts (disabled, or created by OAuth sign-up and still awaiting
+	// admin approval) must not get a session.
+	if !user.IsActive {
+		response.Forbidden(c, "Account is not active; an administrator must enable it before you can sign in")
 		return
 	}
 

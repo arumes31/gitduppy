@@ -1,10 +1,14 @@
 package services
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/gitduppy/gitduppy/internal/models"
 	"github.com/gitduppy/gitduppy/pkg/crypto"
+	"github.com/google/uuid"
 )
 
 func TestWebhookSecretEncryptRoundTrip(t *testing.T) {
@@ -63,5 +67,24 @@ func TestWebhookSecretEmptyStaysEmpty(t *testing.T) {
 	s := &WebhookService{encryption: enc}
 	if got := s.encryptSecret(""); got != "" {
 		t.Errorf("empty secret should stay empty, got %q", got)
+	}
+}
+
+func TestAttemptDeliveryBlocksPrivateTargetsByDefault(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	wh := models.WebhookConfig{ID: uuid.New(), URL: srv.URL, TimeoutSeconds: 5}
+
+	s := NewWebhookService(nil, nil)
+	if _, _, ok := s.attemptDelivery(wh, "test", []byte(`{}`), 1); ok {
+		t.Fatal("delivery to a loopback address must be blocked by default")
+	}
+
+	s.SetAllowPrivateTargets(true)
+	if status, detail, ok := s.attemptDelivery(wh, "test", []byte(`{}`), 1); !ok {
+		t.Fatalf("delivery should succeed when private targets are allowed: %d %s", status, detail)
 	}
 }

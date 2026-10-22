@@ -266,19 +266,22 @@ func (h *WebhookHandler) ReceiveWebhook(c *gin.Context) {
 		return
 	}
 
-	// Verify HMAC signature if webhook has a secret (decrypt the at-rest value).
-	// Fail closed: if a stored secret cannot be decrypted, reject rather than
-	// skipping verification (which would accept unauthenticated payloads).
+	// Verify the HMAC signature (decrypt the at-rest secret first). Fail closed:
+	// this endpoint is unauthenticated, so a webhook without a secret, or one
+	// whose stored secret cannot be decrypted, must not accept deliveries —
+	// otherwise anyone could trigger clone jobs for matching repositories.
 	secret, decErr := h.webhookService.DecryptSecret(webhook.Secret)
 	if decErr != nil {
 		response.Unauthorized(c, "Webhook secret misconfigured")
 		return
 	}
-	if secret != "" {
-		if !h.verifySignature(c, secret, body, provider) {
-			response.Unauthorized(c, "Invalid signature")
-			return
-		}
+	if secret == "" {
+		response.Unauthorized(c, "Webhook has no secret configured; unsigned deliveries are rejected")
+		return
+	}
+	if !h.verifySignature(c, secret, body, provider) {
+		response.Unauthorized(c, "Invalid signature")
+		return
 	}
 
 	// Parse payload based on provider.
