@@ -6,6 +6,35 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+- **Repository storage paths** can no longer be changed through the API
+  (`storage_path` is ignored on update), and every delete, restore, purge, clone
+  and browse operation refuses paths outside `<base_path>/shards/`.
+- **Repository permissions**: mutating repository, tag and clone-job routes are
+  limited to the repository's creator or an admin. Changing a repository URL to a
+  different host requires re-entering its credentials.
+- **OAuth sign-up** creates inactive accounts (admin approval) unless
+  `oauth.auto_activate` is set, and can be limited with
+  `oauth.allowed_email_domains`.
+- **SSRF**: webhook deliveries block loopback/private/link-local/metadata
+  addresses at dial time and no longer follow redirects; clone URLs resolving
+  to loopback/link-local addresses are refused. Opt out with
+  `security.allow_private_network_targets`. LFS transfers are pinned to the
+  remote's own endpoint so `.lfsconfig` cannot redirect them.
+- **Master key**: placeholder or low-entropy keys are refused at startup
+  (override: `security.allow_insecure_master_key`); the dev compose file no
+  longer ships a default `ENCRYPTION_KEY`.
+- **Client IPs**: `X-Forwarded-For` is only trusted from
+  `server.trusted_proxies`, closing a rate-limit bypass and audit-log spoofing.
+- **CSRF**: cookie-authenticated state-changing requests are checked with
+  `Sec-Fetch-Site`/`Origin` (net/http `CrossOriginProtection`); the unused
+  gorilla/csrf dependency was removed.
+- **Login lockout** is tracked per account and client IP, so the `admin`
+  account can no longer be locked out by a third party.
+- **Inbound webhooks** without a secret reject deliveries.
+- Auth exclusions match exact paths; container base images are pinned by digest
+  and the app binary/templates are no longer owned by the runtime user.
+
 ### Fixed
 - **Storage paths**: legacy repositories whose `StoragePath` predates the
   base-joined layout are normalized (and relocated on disk) at startup, and the

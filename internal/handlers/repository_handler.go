@@ -421,6 +421,11 @@ func (h *RepositoryHandler) RestoreBranch(c *gin.Context) {
 		return
 	}
 
+	if !h.repoService.IsValidStoragePath(repo) {
+		response.NotFound(c, "Repository not cloned yet or path invalid")
+		return
+	}
+
 	paperbinRef := "refs/paperbin/heads/" + delBranch.BranchName
 
 	// Recreate branch
@@ -480,7 +485,7 @@ func (h *RepositoryHandler) PermanentDeleteBranch(c *gin.Context) {
 	}
 
 	repo, err := h.repoService.GetRepositoryByID(c, repoID)
-	if err == nil {
+	if err == nil && h.repoService.IsValidStoragePath(repo) {
 		paperbinRef := "refs/paperbin/heads/" + delBranch.BranchName
 		_, _ = gitops.RunGitCommand(c, repo.StoragePath, "update-ref", "-d", paperbinRef)
 	}
@@ -715,7 +720,11 @@ func (h *RepositoryHandler) GlobalSearch(c *gin.Context) {
 		if done || overallCtx.Err() != nil {
 			break
 		}
-		// Skip repos not present on disk without spending a worker slot.
+		// Skip repos not present on disk (or whose path escaped the storage tree)
+		// without spending a worker slot.
+		if !h.repoService.IsValidStoragePath(&repo) {
+			continue
+		}
 		if _, err := os.Stat(repo.StoragePath); err != nil {
 			continue
 		}
