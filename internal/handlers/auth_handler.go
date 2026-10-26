@@ -107,6 +107,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		Username:   req.Username,
 		Password:   req.Password,
 		RememberMe: req.RememberMe,
+		ClientIP:   c.ClientIP(),
 	})
 	if err != nil {
 		h.audit(c, nil, "auth.login_failed", map[string]any{"username": req.Username})

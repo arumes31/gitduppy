@@ -18,6 +18,7 @@ import (
 	"github.com/gitduppy/gitduppy/internal/metrics"
 	"github.com/gitduppy/gitduppy/internal/models"
 	"github.com/gitduppy/gitduppy/pkg/crypto"
+	"github.com/gitduppy/gitduppy/pkg/netguard"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -32,6 +33,10 @@ type WebhookService struct {
 	db           *gorm.DB
 	cloneService *CloneService
 	encryption   *crypto.EncryptionService
+	// transport carries every outbound delivery. It refuses, at dial time,
+	// connections to loopback, private, link-local and metadata addresses
+	// unless private targets were explicitly allowed (SetAllowPrivateTargets).
+	transport *http.Transport
 }
 
 // NewWebhookService creates a new webhook service. encryption may be nil, in
@@ -41,7 +46,15 @@ func NewWebhookService(cloneService *CloneService, encryption *crypto.Encryption
 		db:           database.GetDB(),
 		cloneService: cloneService,
 		encryption:   encryption,
+		transport:    netguard.Policy{}.Transport(),
 	}
+}
+
+// SetAllowPrivateTargets lets webhook deliveries reach loopback and private
+// network addresses (security.allow_private_network_targets). Link-local and
+// cloud metadata addresses stay blocked. Call once at startup.
+func (s *WebhookService) SetAllowPrivateTargets(allow bool) {
+	s.transport = netguard.Policy{AllowPrivate: allow, AllowLoopback: allow}.Transport()
 }
 
 // encryptSecret returns the at-rest representation of a webhook secret. Empty
@@ -393,7 +406,17 @@ func (s *WebhookService) attemptDelivery(webhook models.WebhookConfig, eventType
 	// zero-value client can never wait without bound (item 27). Match it to the
 	// per-webhook timeout (30s default; webhook delivery warrants a longer bound
 	// than the 10s used for other outbound calls).
-	client := &http.Client{Timeout: time.Duration(timeoutSeconds) * time.Second}
+	// Redirects are not followed so a permitted host cannot bounce the delivery
+	// to an internal address; the transport enforces the address policy.
+	transport := s.transport
+	if transport == nil {
+		transport = netguard.Policy{}.Transport()
+	}
+	client := &http.Client{
+		Timeout:       time.Duration(timeoutSeconds) * time.Second,
+		Transport:     transport,
+		CheckRedirect: netguard.NoRedirect,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, err.Error(), false

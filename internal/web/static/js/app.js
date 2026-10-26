@@ -1343,7 +1343,6 @@ if (reposGrid) {
             url: document.getElementById('add-repo-url').value,
             branch: document.getElementById('add-repo-branch').value,
             auth_type: document.getElementById('add-repo-auth').value,
-            storage_path: 'repos/' + document.getElementById('add-repo-name').value,
             clone_interval_minutes: parseInt(document.getElementById('add-repo-interval').value),
             retention_days: parseInt(document.getElementById('add-repo-retention').value),
             lfs_enabled: document.getElementById('add-repo-lfs').checked,

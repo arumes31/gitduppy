@@ -115,10 +115,12 @@ func (m *AuthMiddleware) WebMiddleware() gin.HandlerFunc {
 	}
 }
 
-// isExcluded checks if a path should be excluded from authentication.
+// isExcluded checks if a path should be excluded from authentication. Matching
+// is exact: a prefix match would also exempt any route registered beneath an
+// excluded path (e.g. /api/v1/webhooks/receive/... or /api/v1/healthX).
 func (m *AuthMiddleware) isExcluded(path string) bool {
 	for _, excluded := range m.excludePaths {
-		if strings.HasPrefix(path, excluded) {
+		if path == excluded {
 			return true
 		}
 	}
