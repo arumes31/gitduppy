@@ -22,14 +22,24 @@ services:
       - GITMIRRORS_DATABASE_PORT=5432
       - GITMIRRORS_DATABASE_NAME=gitduppy
       - GITMIRRORS_DATABASE_USER=gitduppy
-      - GITMIRRORS_DATABASE_PASSWORD=gitduppy
+      - GITMIRRORS_DATABASE_PASSWORD=${POSTGRES_PASSWORD:-gitduppy}
       - GITMIRRORS_DATABASE_SSLMODE=disable
       - GITMIRRORS_SERVER_PORT=${SERVER_PORT:-8080}
       - GITMIRRORS_SERVER_HOST=${SERVER_HOST:-0.0.0.0}
       - GITMIRRORS_SERVER_BASE_URL=${SERVER_BASE_URL:-http://localhost:8080}
-      - GITMIRRORS_SECURITY_MASTER_KEY=${ENCRYPTION_KEY:-your-32-byte-long-encryption-key}
-      - GITMIRRORS_SECURITY_SESSION_SECRET=${SESSION_SECRET:-your-32-byte-long-session-secret}
-      - GITMIRRORS_SECURITY_CSRF_KEY=${CSRF_KEY:-your-32-byte-long-csrf-secret-12}
+      # Comma-separated reverse-proxy IPs/CIDRs whose X-Forwarded-For is trusted
+      # (rate limiting and audit-log client IPs). Empty trusts no proxy.
+      - GITMIRRORS_SERVER_TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
+      # OAuth sign-up: comma-separated email domains allowed to self-register
+      # (empty = any). New OAuth accounts stay inactive until an admin enables
+      # them unless OAUTH_AUTO_ACTIVATE=true.
+      - GITMIRRORS_OAUTH_ALLOWED_EMAIL_DOMAINS=${OAUTH_ALLOWED_EMAIL_DOMAINS:-}
+      - GITMIRRORS_OAUTH_AUTO_ACTIVATE=${OAUTH_AUTO_ACTIVATE:-false}
+      # Encrypts stored repository credentials. There is deliberately no
+      # default: generate one with `openssl rand -hex 32` and put it in .env.
+      - GITMIRRORS_SECURITY_MASTER_KEY=${ENCRYPTION_KEY:?ENCRYPTION_KEY is required (openssl rand -hex 32)}
+      - GITMIRRORS_SECURITY_SESSION_SECRET=${SESSION_SECRET:-}
+      - GITMIRRORS_SECURITY_CSRF_KEY=${CSRF_KEY:-}
       - GITMIRRORS_EMAIL_SMTP_HOST=${SMTP_HOST:-}
       - GITMIRRORS_EMAIL_SMTP_PORT=${SMTP_PORT:-587}
       - GITMIRRORS_EMAIL_SMTP_USER=${SMTP_USERNAME:-}
@@ -74,11 +84,11 @@ services:
       - gitduppy-network
 
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:deb28ee471183cb0c303113dac9b2433c51eeeeb678def7af9a9ec5820367815
     environment:
       - POSTGRES_DB=gitduppy
       - POSTGRES_USER=gitduppy
-      - POSTGRES_PASSWORD=gitduppy
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-gitduppy}
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
     healthcheck:

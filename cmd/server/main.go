@@ -118,6 +118,18 @@ func main() {
 		log.Fatalf("Failed to create default admin user: %v", err)
 	}
 
+	// Refuse well-known placeholder or trivially weak master keys: anyone with a
+	// DB dump or backup could otherwise decrypt every stored credential.
+	if keyErr := config.CheckMasterKey(cfg.Security.MasterKey); keyErr != nil {
+		if !cfg.Security.AllowInsecureMasterKey {
+			log.Fatalf("Insecure security.master_key: %v. Generate one with `openssl rand -hex 32`. "+
+				"Existing deployments that already encrypted credentials with this key can set "+
+				"GITMIRRORS_SECURITY_ALLOW_INSECURE_MASTER_KEY=true to start while they migrate.", keyErr)
+		}
+		log.Printf("WARNING: insecure security.master_key (%v) accepted because allow_insecure_master_key is set; "+
+			"stored credentials are not protected. Rotate the key and re-enter repository credentials.", keyErr)
+	}
+
 	// Initialize encryption service
 	encryptionService, err := crypto.NewEncryptionService(cfg.Security.MasterKey)
 	if err != nil {
@@ -133,6 +145,7 @@ func main() {
 	cloneService := services.NewCloneService()
 	apiKeyService := services.NewAPIKeyService()
 	webhookService := services.NewWebhookService(cloneService, encryptionService)
+	webhookService.SetAllowPrivateTargets(cfg.Security.AllowPrivateNetworkTargets)
 	tagService := services.NewTagService()
 	dashboardService := services.NewDashboardService(cfg.Storage.BasePath)
 
@@ -155,6 +168,7 @@ func main() {
 	workerConfig.RetryMaxAttempts = cfg.Worker.RetryMaxAttempts
 	workerConfig.RetryBaseDelay = cfg.Worker.RetryBaseDelay
 	workerConfig.DedupeEnabled = cfg.Storage.DedupeEnabled
+	workerConfig.AllowLoopbackTargets = cfg.Security.AllowPrivateNetworkTargets
 
 	cloneWorker := gitops.NewCloneWorker(workerConfig, gitOps, encryptionService)
 	cloneWorker.SetNotificationServices(webhookService, emailService)
@@ -230,7 +244,10 @@ func main() {
 	)
 	defer rateLimiter.Stop()
 	loggerConfig := middleware.DefaultLoggerConfig()
-	csrfMiddleware := middleware.NewCSRFMiddleware(cfg.Security.CSRFKey, cfg.Server.TLS.Enabled)
+	csrfMiddleware, err := middleware.CrossOriginProtection(cfg.Server.BaseURL)
+	if err != nil {
+		log.Fatalf("Failed to initialize cross-origin protection: %v", err)
+	}
 
 	// Initialize Gin router
 	router := setupRouter(
@@ -435,7 +452,7 @@ func setupRouter(
 	corsConfig *middleware.CORSConfig,
 	rateLimiter *middleware.RateLimiter,
 	loggerConfig *middleware.LoggerConfig,
-	csrfMiddleware *middleware.CSRFMiddleware,
+	csrfMiddleware gin.HandlerFunc,
 	authHandler *handlers.AuthHandler,
 	userHandler *handlers.UserHandler,
 	repoHandler *handlers.RepositoryHandler,
@@ -456,6 +473,14 @@ func setupRouter(
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 
+	// Only honor X-Forwarded-For / X-Real-IP from the configured reverse proxies.
+	// Gin trusts every peer by default, which would let any client pick its own
+	// ClientIP() and so dodge the per-IP rate limiter and forge audit-log IPs.
+	// An empty list disables forwarded-header trust entirely.
+	if err := router.SetTrustedProxies(cfg.Server.TrustedProxies); err != nil {
+		log.Fatalf("Invalid server.trusted_proxies: %v", err)
+	}
+
 	// HTML templates must be loaded before the first request.
 	router.HTMLRender = loadTemplates()
 
@@ -465,6 +490,8 @@ func setupRouter(
 	router.Use(middleware.CORS(corsConfig))
 	router.Use(rateLimiter.Middleware())
 	router.Use(middleware.SecurityHeaders(cfg))
+	// Reject cross-origin state-changing requests made with the session cookie.
+	router.Use(csrfMiddleware)
 	if cfg.Monitoring.MetricsEnabled {
 		router.Use(middleware.Metrics())
 	}
@@ -584,14 +611,17 @@ func setupRouter(
 			repos.POST("", repoHandler.CreateRepository)
 			repos.GET("/paperbin", repoHandler.GetPaperbin)
 			repos.GET("/:id", repoHandler.GetRepository)
-			repos.PUT("/:id", repoHandler.UpdateRepository)
-			repos.DELETE("/:id", repoHandler.DeleteRepository)
-			repos.POST("/:id/restore", repoHandler.RestoreRepository)
-			repos.DELETE("/:id/force", repoHandler.PermanentDeleteRepository)
-			repos.POST("/:id/paperbin/branches/:branchId/restore", repoHandler.RestoreBranch)
-			repos.DELETE("/:id/paperbin/branches/:branchId", repoHandler.PermanentDeleteBranch)
-			repos.PATCH("/:id/status", repoHandler.SetRepositoryStatus)
-			repos.POST("/:id/clone", repoHandler.TriggerClone)
+			// Mutating routes are limited to the repository's owner or an admin;
+			// reads stay available to every authenticated user.
+			repoOwner := authMiddleware.RequireRepoOwnerOrAdmin("id")
+			repos.PUT("/:id", repoOwner, repoHandler.UpdateRepository)
+			repos.DELETE("/:id", repoOwner, repoHandler.DeleteRepository)
+			repos.POST("/:id/restore", repoOwner, repoHandler.RestoreRepository)
+			repos.DELETE("/:id/force", repoOwner, repoHandler.PermanentDeleteRepository)
+			repos.POST("/:id/paperbin/branches/:branchId/restore", repoOwner, repoHandler.RestoreBranch)
+			repos.DELETE("/:id/paperbin/branches/:branchId", repoOwner, repoHandler.PermanentDeleteBranch)
+			repos.PATCH("/:id/status", repoOwner, repoHandler.SetRepositoryStatus)
+			repos.POST("/:id/clone", repoOwner, repoHandler.TriggerClone)
 			repos.GET("/:id/logs", repoHandler.GetRepositoryLogs)
 			repos.GET("/:id/logs/stream", repoHandler.StreamRepositoryLogs)
 			repos.GET("/:id/jobs", cloneHandler.ListRepositoryJobs)
@@ -614,7 +644,7 @@ func setupRouter(
 		{
 			jobs.GET("", cloneHandler.ListCloneJobs)
 			jobs.GET("/:id", cloneHandler.GetCloneJob)
-			jobs.POST("/:id/cancel", cloneHandler.CancelCloneJob)
+			jobs.POST("/:id/cancel", authMiddleware.RequireCloneJobOwnerOrAdmin("id"), cloneHandler.CancelCloneJob)
 			jobs.GET("/:id/logs", cloneHandler.GetCloneJobLogs)
 		}
 
@@ -656,10 +686,11 @@ func setupRouter(
 		repoTags := v1.Group("/repositories/:id/tags")
 		repoTags.Use(authMiddleware.Middleware())
 		{
+			repoTagOwner := authMiddleware.RequireRepoOwnerOrAdmin("id")
 			repoTags.GET("", tagHandler.GetRepositoryTags)
-			repoTags.POST("", tagHandler.AddTagToRepository)
-			repoTags.DELETE("/:tagId", tagHandler.RemoveTagFromRepository)
-			repoTags.PUT("", tagHandler.SetRepositoryTags)
+			repoTags.POST("", repoTagOwner, tagHandler.AddTagToRepository)
+			repoTags.DELETE("/:tagId", repoTagOwner, tagHandler.RemoveTagFromRepository)
+			repoTags.PUT("", repoTagOwner, tagHandler.SetRepositoryTags)
 		}
 
 		// Dashboard routes

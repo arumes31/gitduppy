@@ -17,11 +17,11 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// Account lockout policy for password logins. After maxFailedLoginAttempts
-// consecutive failures the account is locked with a progressive backoff: the
-// lock starts at baseLockoutDuration and doubles with each further failure,
-// capped at maxLockoutDuration. A successful login resets the counter and clears
-// the lock.
+// Lockout policy for password logins. After maxFailedLoginAttempts consecutive
+// failures from one client IP, that (account, IP) pair is locked with a
+// progressive backoff: the lock starts at baseLockoutDuration and doubles with
+// each further failure, capped at maxLockoutDuration. A successful login from
+// that IP resets it. See loginThrottle for why the lock is not account-wide.
 const (
 	maxFailedLoginAttempts = 5
 	baseLockoutDuration    = 15 * time.Minute
@@ -45,6 +45,7 @@ type AuthService struct {
 	sessionDuration time.Duration
 	auditService    *AuditService
 	authCache       AuthCacheInvalidator
+	throttle        *loginThrottle
 }
 
 // NewAuthService creates a new auth service. auditService may be nil, in which
@@ -55,6 +56,7 @@ func NewAuthService(sessionDuration time.Duration, auditService *AuditService) *
 		passwordService: crypto.NewPasswordService(),
 		sessionDuration: sessionDuration,
 		auditService:    auditService,
+		throttle:        newLoginThrottle(),
 	}
 }
 
@@ -79,6 +81,9 @@ type LoginRequest struct {
 	Username   string `json:"username" validate:"required"`
 	Password   string `json:"password" validate:"required"`
 	RememberMe bool   `json:"remember_me"`
+	// ClientIP is the caller's address, set by the HTTP handler. Lockout is
+	// tracked per (account, ClientIP) pair.
+	ClientIP string `json:"-"`
 }
 
 // LoginResponse represents a login response.
@@ -112,15 +117,17 @@ func (s *AuthService) Login(ctx context.Context, req *LoginRequest) (*LoginRespo
 		return nil, errors.New("account is disabled")
 	}
 
-	// Reject a locked account BEFORE running bcrypt, so a locked-out attacker can
-	// neither authenticate nor use the endpoint as a bcrypt oracle. The client is
-	// told only "invalid username or password" (the lockout is not disclosed), but
-	// it is audited so operators can see the brute-force being throttled.
-	if user.LockedUntil != nil && user.LockedUntil.After(time.Now()) {
+	// Reject a locked (account, client IP) pair BEFORE running bcrypt, so a
+	// locked-out attacker can neither authenticate nor use the endpoint as a
+	// bcrypt oracle. The client is told only "invalid username or password" (the
+	// lockout is not disclosed), but it is audited so operators can see the
+	// brute-force being throttled.
+	throttle := s.loginThrottle()
+	if until := throttle.lockedUntil(user.ID, req.ClientIP, time.Now()); !until.IsZero() {
 		s.audit(ctx, &user.ID, "login.locked", map[string]any{
-			"username":      user.Username,
-			"locked_until":  user.LockedUntil,
-			"failed_before": user.FailedLoginAttempts,
+			"username":     user.Username,
+			"ip_address":   req.ClientIP,
+			"locked_until": until,
 		})
 		return nil, errors.New("invalid username or password")
 	}
@@ -135,23 +142,22 @@ func (s *AuthService) Login(ctx context.Context, req *LoginRequest) (*LoginRespo
 		// failure (never the DB error) so the security response is unchanged. The
 		// generic failure is audited (with client IP) by the caller as
 		// "auth.login_failed"; only the lockout transition is recorded here.
+		// The account-wide counter is kept for visibility only; the lock itself
+		// is per (account, client IP) so it cannot be used to lock the real
+		// user out.
 		if err := s.db.Model(&user).
 			Clauses(clause.Returning{Columns: []clause.Column{{Name: "failed_login_attempts"}}}).
 			Update("failed_login_attempts", gorm.Expr("failed_login_attempts + 1")).Error; err != nil {
 			zap.L().Named("auth-service").Error("failed to record failed login attempt",
 				zap.String("user_id", user.ID.String()), zap.Error(err))
-		} else if user.FailedLoginAttempts >= maxFailedLoginAttempts {
-			lockedUntil := time.Now().UTC().Add(lockoutDuration(user.FailedLoginAttempts))
-			if err := s.db.Model(&user).Update("locked_until", lockedUntil).Error; err != nil {
-				zap.L().Named("auth-service").Error("failed to persist account lockout",
-					zap.String("user_id", user.ID.String()), zap.Error(err))
-			} else {
-				s.audit(ctx, &user.ID, "login.locked", map[string]any{
-					"username":     user.Username,
-					"locked_until": lockedUntil,
-					"failed_count": user.FailedLoginAttempts,
-				})
-			}
+		}
+		if failures, lockedUntil := throttle.recordFailure(user.ID, req.ClientIP, time.Now().UTC()); !lockedUntil.IsZero() {
+			s.audit(ctx, &user.ID, "login.locked", map[string]any{
+				"username":     user.Username,
+				"ip_address":   req.ClientIP,
+				"locked_until": lockedUntil,
+				"failed_count": failures,
+			})
 		}
 		return nil, errors.New("invalid username or password")
 	}
@@ -161,6 +167,7 @@ func (s *AuthService) Login(ctx context.Context, req *LoginRequest) (*LoginRespo
 	// above), so a failure to clear this throttle bookkeeping must not block the
 	// login — log it and continue; the next successful login clears the stale
 	// counter.
+	throttle.reset(user.ID, req.ClientIP)
 	now := time.Now().UTC()
 	user.LastLogin = &now
 	user.FailedLoginAttempts = 0
@@ -200,6 +207,15 @@ func (s *AuthService) Login(ctx context.Context, req *LoginRequest) (*LoginRespo
 		SessionToken: sessionToken,
 		ExpiresAt:    expiresAt,
 	}, nil
+}
+
+// loginThrottle returns the service's throttle, creating it for services built
+// without NewAuthService (tests).
+func (s *AuthService) loginThrottle() *loginThrottle {
+	if s.throttle == nil {
+		s.throttle = newLoginThrottle()
+	}
+	return s.throttle
 }
 
 // lockoutDuration returns the progressive lockout window for a given number of
