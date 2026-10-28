@@ -76,6 +76,42 @@ type SecurityConfig struct {
 	// derived at load time from server.base_url — true for an https:// URL, false
 	// otherwise — so HTTPS deployments get Secure cookies without extra config.
 	CookieSecure bool `mapstructure:"cookie_secure"`
+	// AllowInsecureMasterKey lets the server start with a known placeholder or
+	// trivially weak master key (see CheckMasterKey). Only for existing
+	// deployments that must keep decrypting credentials while they rotate.
+	AllowInsecureMasterKey bool `mapstructure:"allow_insecure_master_key"`
+	// AllowPrivateNetworkTargets lets outbound webhooks reach loopback and
+	// private-network addresses, and clone URLs reach loopback addresses.
+	// Link-local and cloud metadata addresses are always blocked.
+	AllowPrivateNetworkTargets bool `mapstructure:"allow_private_network_targets"`
+}
+
+// placeholderSecrets are example values that have shipped in this repository's
+// compose files and docs. They are public, so they must never protect data.
+var placeholderSecrets = map[string]bool{
+	"your-32-byte-long-encryption-key": true,
+	"your-32-byte-long-session-secret": true,
+	"your-32-byte-long-csrf-secret-12": true,
+	"your-32-byte-encryption-key-here": true,
+}
+
+// CheckMasterKey returns an error when key is a published placeholder or has
+// too little variety to be a random key (e.g. 32 repeated characters). A random
+// 32-character hex string essentially never has fewer than 6 distinct symbols.
+func CheckMasterKey(key string) error {
+	lower := strings.ToLower(strings.TrimSpace(key))
+	if placeholderSecrets[lower] || strings.HasPrefix(lower, "your-") ||
+		strings.Contains(lower, "changeme") || strings.Contains(lower, "change-me") {
+		return errors.New("the key is a published placeholder value")
+	}
+	distinct := make(map[rune]struct{})
+	for _, r := range key {
+		distinct[r] = struct{}{}
+	}
+	if len(distinct) < 6 {
+		return errors.New("the key has too little entropy")
+	}
+	return nil
 }
 
 // RateLimitConfig holds rate limiting configuration.
@@ -89,6 +125,15 @@ type OAuthConfig struct {
 	GitHub OAuthProviderConfig `mapstructure:"github"`
 	GitLab OAuthProviderConfig `mapstructure:"gitlab"`
 	Google OAuthProviderConfig `mapstructure:"google"`
+	// AllowedEmailDomains limits automatic account creation through OAuth to
+	// identities whose verified email belongs to one of these domains (e.g.
+	// ["example.com"]). Empty allows any domain. Existing accounts (matched by
+	// linked identity or email) can always sign in.
+	AllowedEmailDomains []string `mapstructure:"allowed_email_domains"`
+	// AutoActivate makes accounts created through OAuth sign-up active right
+	// away. By default they are created inactive and an admin must enable them
+	// before they can sign in.
+	AutoActivate bool `mapstructure:"auto_activate"`
 }
 
 // OAuthProviderConfig holds a single OAuth provider configuration.

@@ -9,6 +9,7 @@ import (
 
 	"github.com/gitduppy/gitduppy/internal/database"
 	"github.com/gitduppy/gitduppy/internal/models"
+	"github.com/gitduppy/gitduppy/pkg/validator"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -158,8 +159,14 @@ func (w *CleanupWorker) performCleanup() {
 					continue
 				}
 
-				// Only purge disk after the DB work has committed. Surface
-				// any storage cleanup failures explicitly.
+				// Only purge disk after the DB work has committed, and only for
+				// paths inside the sharded storage tree. Surface any storage
+				// cleanup failures explicitly.
+				if !validator.IsRepoStoragePath(w.basePath, repo.StoragePath) {
+					w.logger.Error("skipping disk cleanup: repository storage path is outside the storage root",
+						zap.String("id", repo.ID.String()), zap.String("path", repo.StoragePath))
+					continue
+				}
 				paperbinPath := filepath.Join(filepath.Dir(repo.StoragePath), "paperbin", repo.ID.String())
 				if err := os.Remove(paperbinPath + ".tar.gz"); err != nil && !os.IsNotExist(err) {
 					w.logger.Error("failed to remove paperbin archive", zap.String("path", paperbinPath+".tar.gz"), zap.Error(err))

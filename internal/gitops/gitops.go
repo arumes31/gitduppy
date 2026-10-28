@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -197,7 +198,7 @@ func (g *GitOperations) CloneRepository(ctx context.Context, opts *CloneOptions)
 				if err := g.runLFSInstall(ctx, opts.Path); err != nil {
 					return fmt.Errorf("git lfs install failed: %w", err)
 				}
-				if err := g.runLFSPull(ctx, opts.Path); err != nil {
+				if err := g.runLFSPull(ctx, opts.Path, opts.URL); err != nil {
 					return fmt.Errorf("git lfs pull failed: %w", err)
 				}
 			}
@@ -247,7 +248,7 @@ func (g *GitOperations) CloneRepository(ctx context.Context, opts *CloneOptions)
 		if err := g.runLFSInstall(ctx, opts.Path); err != nil {
 			return fmt.Errorf("git lfs install failed: %w", err)
 		}
-		if err := g.runLFSPull(ctx, opts.Path); err != nil {
+		if err := g.runLFSPull(ctx, opts.Path, opts.URL); err != nil {
 			return fmt.Errorf("git lfs pull failed: %w", err)
 		}
 	}
@@ -314,7 +315,7 @@ func (g *GitOperations) FetchRepository(ctx context.Context, opts *CloneOptions)
 
 	// Handle Git LFS fetch if enabled
 	if opts.LFS {
-		if err := g.runLFSFetch(ctx, opts.Path); err != nil {
+		if err := g.runLFSFetch(ctx, opts.Path, opts.URL); err != nil {
 			return fmt.Errorf("git lfs fetch failed: %w", err)
 		}
 	}
@@ -336,21 +337,45 @@ func (g *GitOperations) runLFSInstall(ctx context.Context, path string) error {
 }
 
 // runLFSPull pulls Git LFS objects.
-func (g *GitOperations) runLFSPull(ctx context.Context, path string) error {
-	// #nosec G204
-	cmd := exec.CommandContext(ctx, GetGitExecutable(), "lfs", "pull")
+func (g *GitOperations) runLFSPull(ctx context.Context, path, remoteURL string) error {
+	// #nosec G204 -- fixed subcommand; the only variable argument is the
+	// lfs.url value derived from the repository's own validated remote URL.
+	cmd := exec.CommandContext(ctx, GetGitExecutable(), append(lfsConfigArgs(remoteURL), "lfs", "pull")...)
 	cmd.Dir = path
 	configureProcessGroup(cmd)
 	return cmd.Run()
 }
 
 // runLFSFetch fetches Git LFS objects.
-func (g *GitOperations) runLFSFetch(ctx context.Context, path string) error {
-	// #nosec G204
-	cmd := exec.CommandContext(ctx, GetGitExecutable(), "lfs", "fetch")
+func (g *GitOperations) runLFSFetch(ctx context.Context, path, remoteURL string) error {
+	// #nosec G204 -- see runLFSPull.
+	cmd := exec.CommandContext(ctx, GetGitExecutable(), append(lfsConfigArgs(remoteURL), "lfs", "fetch")...)
 	cmd.Dir = path
 	configureProcessGroup(cmd)
 	return cmd.Run()
+}
+
+// lfsConfigArgs pins the LFS endpoint of an HTTP(S) remote to git-lfs's default
+// location (<remote>.git/info/lfs) via "git -c lfs.url=...". Command-line git
+// config takes precedence over a mirrored repository's .lfsconfig, so an
+// untrusted upstream cannot redirect LFS transfers to an arbitrary (e.g.
+// internal) server. Credentials embedded in the URL are dropped. SSH and other
+// remotes resolve their endpoint through the git host and are left as-is.
+func lfsConfigArgs(remoteURL string) []string {
+	u, err := url.Parse(strings.TrimSpace(remoteURL))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return nil
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.Fragment = ""
+	u.Path = strings.TrimSuffix(u.Path, "/")
+	if !strings.HasSuffix(u.Path, ".git") {
+		u.Path += ".git"
+	}
+	u.Path += "/info/lfs"
+	u.RawPath = ""
+	return []string{"-c", "lfs.url=" + u.String()}
 }
 
 // PushRepository pushes changes to a repository.

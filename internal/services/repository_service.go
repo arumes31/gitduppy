@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -266,23 +267,25 @@ func (s *RepositoryService) UpsertGitHubMirror(ctx context.Context, userID uuid.
 
 // UpdateRepositoryRequest represents an update repository request.
 type UpdateRepositoryRequest struct {
-	Name                 *string                    `json:"name,omitempty"`
-	URL                  *string                    `json:"url,omitempty"`
-	Branch               *string                    `json:"branch,omitempty"`
-	AuthType             *string                    `json:"auth_type,omitempty"`
-	Credentials          *crypto.CredentialsPayload `json:"credentials,omitempty"`
-	StoragePath          *string                    `json:"storage_path,omitempty"`
-	IsBare               *bool                      `json:"is_bare,omitempty"`
-	LFSEnabled           *bool                      `json:"lfs_enabled,omitempty"`
-	MirrorIssues         *bool                      `json:"mirror_issues,omitempty"`
-	MirrorPullRequests   *bool                      `json:"mirror_pull_requests,omitempty"`
-	MirrorReleases       *bool                      `json:"mirror_releases,omitempty"`
-	MirrorWiki           *bool                      `json:"mirror_wiki,omitempty"`
-	IsActive             *bool                      `json:"is_active,omitempty"`
-	CloneIntervalMinutes *int                       `json:"clone_interval_minutes,omitempty"`
-	RetentionDays        *int                       `json:"retention_days,omitempty"`
-	Description          *string                    `json:"description,omitempty"`
-	TagIDs               []uuid.UUID                `json:"tag_ids,omitempty"`
+	Name        *string                    `json:"name,omitempty"`
+	URL         *string                    `json:"url,omitempty"`
+	Branch      *string                    `json:"branch,omitempty"`
+	AuthType    *string                    `json:"auth_type,omitempty"`
+	Credentials *crypto.CredentialsPayload `json:"credentials,omitempty"`
+	// Note: storage_path is intentionally not updatable. It is derived
+	// server-side from the storage base and the repository ID (see
+	// CreateRepository), and destructive operations act on it directly.
+	IsBare               *bool       `json:"is_bare,omitempty"`
+	LFSEnabled           *bool       `json:"lfs_enabled,omitempty"`
+	MirrorIssues         *bool       `json:"mirror_issues,omitempty"`
+	MirrorPullRequests   *bool       `json:"mirror_pull_requests,omitempty"`
+	MirrorReleases       *bool       `json:"mirror_releases,omitempty"`
+	MirrorWiki           *bool       `json:"mirror_wiki,omitempty"`
+	IsActive             *bool       `json:"is_active,omitempty"`
+	CloneIntervalMinutes *int        `json:"clone_interval_minutes,omitempty"`
+	RetentionDays        *int        `json:"retention_days,omitempty"`
+	Description          *string     `json:"description,omitempty"`
+	TagIDs               []uuid.UUID `json:"tag_ids,omitempty"`
 }
 
 // UpdateRepository updates a repository.
@@ -331,6 +334,14 @@ func (s *RepositoryService) applyUpdateFields(repo *models.Repository, req *Upda
 		if !validator.ValidateGitURL(*req.URL) {
 			return fmt.Errorf("%w: invalid git repository URL", ErrValidation)
 		}
+		// Stored credentials are bound to the remote they were entered for. If the
+		// URL moves to a different host (or transport), require them to be supplied
+		// again; otherwise the next clone would hand the existing token, password or
+		// SSH key to whatever server the new URL points at.
+		if repo.EncryptedCredentials != "" && req.Credentials == nil &&
+			gitRemoteOrigin(*req.URL) != gitRemoteOrigin(repo.URL) {
+			return fmt.Errorf("%w: credentials must be provided again when the repository host changes", ErrValidation)
+		}
 		repo.URL = *req.URL
 	}
 	if req.Branch != nil {
@@ -350,9 +361,6 @@ func (s *RepositoryService) applyUpdateFields(repo *models.Repository, req *Upda
 			return err
 		}
 		repo.EncryptedCredentials = encrypted
-	}
-	if req.StoragePath != nil {
-		repo.StoragePath = *req.StoragePath
 	}
 	if req.IsBare != nil {
 		repo.IsBare = *req.IsBare
@@ -390,10 +398,55 @@ func (s *RepositoryService) applyUpdateFields(repo *models.Repository, req *Upda
 	return nil
 }
 
+// gitRemoteOrigin reduces a git remote URL to its transport and host
+// ("https://github.com", "ssh://git.example.com:2222"), the identity that stored
+// credentials are bound to. scp-like SSH remotes (git@host:path) map to "ssh".
+// Unparseable input returns the trimmed raw string so it never compares equal to
+// a different remote by accident.
+func gitRemoteOrigin(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if !strings.Contains(raw, "://") {
+		// scp-like syntax: [user@]host:path
+		hostPart := raw
+		if i := strings.Index(hostPart, ":"); i >= 0 {
+			hostPart = hostPart[:i]
+		}
+		if i := strings.LastIndex(hostPart, "@"); i >= 0 {
+			hostPart = hostPart[i+1:]
+		}
+		return "ssh://" + strings.ToLower(hostPart)
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host)
+}
+
+// checkStoragePath refuses to operate on a repository whose persisted path is
+// not inside the sharded storage tree. It guards every filesystem operation
+// that removes, replaces or extracts into StoragePath.
+func (s *RepositoryService) checkStoragePath(repo *models.Repository) error {
+	if !validator.IsRepoStoragePath(s.basePath, repo.StoragePath) {
+		return fmt.Errorf("refusing to operate on repository %s: storage path is outside the storage root", repo.ID)
+	}
+	return nil
+}
+
+// IsValidStoragePath reports whether a repository's persisted storage path lies
+// inside the sharded storage tree, for handlers that read through it (browse,
+// archive download, code search).
+func (s *RepositoryService) IsValidStoragePath(repo *models.Repository) bool {
+	return validator.IsRepoStoragePath(s.basePath, repo.StoragePath)
+}
+
 // DeleteRepository soft-deletes a repository and moves its compressed folder to the paperbin.
 func (s *RepositoryService) DeleteRepository(_ context.Context, id uuid.UUID) error {
 	var repo models.Repository
 	if err := s.db.First(&repo, id).Error; err != nil {
+		return err
+	}
+	if err := s.checkStoragePath(&repo); err != nil {
 		return err
 	}
 
@@ -433,6 +486,9 @@ func (s *RepositoryService) DeleteRepository(_ context.Context, id uuid.UUID) er
 func (s *RepositoryService) RestoreRepository(_ context.Context, id uuid.UUID) error {
 	var repo models.Repository
 	if err := s.db.Unscoped().Where("id = ? AND deleted_at IS NOT NULL", id).First(&repo).Error; err != nil {
+		return err
+	}
+	if err := s.checkStoragePath(&repo); err != nil {
 		return err
 	}
 
@@ -524,6 +580,12 @@ func (s *RepositoryService) PermanentDeleteRepository(_ context.Context, id uuid
 	})
 	if err != nil {
 		return err
+	}
+
+	// Only touch the filesystem when the persisted path is inside the storage
+	// tree; the DB rows are purged either way so a bad row can still be removed.
+	if err := s.checkStoragePath(&repo); err != nil {
+		return nil //nolint:nilerr // record purged; on-disk cleanup deliberately skipped
 	}
 
 	// Delete paperbin compressed archive and uncompressed folders on disk
