@@ -3,6 +3,7 @@ package validator
 import (
 	"net/mail"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -158,4 +159,22 @@ func ParseInt(s string, defaultVal int) int {
 		return defaultVal
 	}
 	return result
+}
+
+// IsRepoStoragePath reports whether path is a repository directory inside the
+// sharded storage tree (basePath/shards/...). Repository paths are derived
+// server-side, but every destructive or read-through use of a persisted path
+// re-checks it so a tampered or legacy row can never point a RemoveAll, clone
+// or git invocation at an arbitrary directory (e.g. the storage root itself, the
+// SSH key store, or the application directory).
+func IsRepoStoragePath(basePath, path string) bool {
+	if basePath == "" || path == "" || !filepath.IsAbs(path) {
+		return false
+	}
+	shards := filepath.Join(filepath.Clean(basePath), "shards")
+	rel, err := filepath.Rel(shards, filepath.Clean(path))
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return !filepath.IsAbs(rel)
 }

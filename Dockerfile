@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.26.9-alpine AS builder
+FROM golang:1.27.3-alpine3.24@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd AS builder
 
 WORKDIR /app
 
@@ -22,7 +22,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 
 # git and git-lfs are required at runtime by the mirroring engine, so a
 # distroless/scratch base is not viable; a pinned Alpine keeps the image small.
-FROM alpine:3.20
+FROM alpine:3.24@sha256:71e9b7bae160ba167fa17414401b94cbcdaf3c32feeab9298bd794a2a0614c35
 # safe.directory '*' is baked into the system git config so the appuser can always
 # operate on mirrored repositories regardless of their on-disk owner (e.g. repos
 # created by a different UID, or when running under a read-only root filesystem
@@ -48,9 +48,11 @@ COPY --from=builder /app/static ./static
 # The storage tree matches config.yaml's storage.* paths (base_path, ssh_path,
 # backup_path) and the compose bind mounts; pre-creating it keeps a plain
 # `docker run` (no mounts) working and gives bind mounts sane image-side parents.
+# Only the writable data directories are owned by appuser; the binary, templates
+# and static assets stay root-owned so the server process cannot modify them.
 RUN addgroup -g 1000 -S appgroup && adduser -u 1000 -S appuser -G appgroup \
-    && mkdir -p /app/storage/repos /app/storage/ssh /app/storage/backups \
-    && chown -R appuser:appgroup /app
+    && mkdir -p /app/storage/repos /app/storage/ssh /app/storage/backups /app/logs \
+    && chown -R appuser:appgroup /app/storage /app/logs
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

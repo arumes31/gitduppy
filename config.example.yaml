@@ -11,6 +11,11 @@ server:
     enabled: false
     cert: ""
     key: ""
+  # Reverse proxies (IPs or CIDRs) allowed to set X-Forwarded-For/X-Real-IP.
+  # The client IP used for rate limiting and audit logs is taken from those
+  # headers only when the request comes from one of these addresses; empty
+  # trusts no proxy. Behind Caddy/nginx, list the proxy address here, e.g.
+  # ["172.18.0.0/16"] for a compose network.
   trusted_proxies: []
   base_url: "http://localhost:8080"
 
@@ -41,8 +46,16 @@ database:
 
 security:
   master_key: ""  # 32-char AES-256 key for credential encryption (openssl rand -hex 16); also accepts a 64-char hex key
-  session_secret: ""  # exactly 32 chars for session signing (openssl rand -hex 16)
-  csrf_key: ""  # exactly 32 chars for CSRF tokens (openssl rand -hex 16)
+  # Known placeholder or low-entropy master keys are refused at startup. Set this
+  # only to keep an existing deployment running while you rotate such a key.
+  # allow_insecure_master_key: false
+  session_secret: ""  # reserved; sessions are random server-side tokens
+  csrf_key: ""  # reserved; CSRF protection is origin-based (Sec-Fetch-Site/Origin)
+  # Outbound webhooks may not reach loopback, private-network, link-local or
+  # cloud metadata addresses, and clone URLs may not resolve to loopback or
+  # link-local addresses. Set true to allow loopback/private targets (e.g. a
+  # CI server on your LAN). Link-local/metadata addresses stay blocked.
+  allow_private_network_targets: false
   session_duration: "24h"
   # Force the Secure flag on the session cookie. When omitted it is derived from
   # server.base_url (true for https://, false otherwise). Override here or via
@@ -53,6 +66,12 @@ security:
     api_requests_per_minute: 60
 
 oauth:
+  # Restrict OAuth self-registration to these email domains (empty = any).
+  # Existing accounts can always sign in.
+  allowed_email_domains: []
+  # New OAuth accounts are created inactive and must be enabled by an admin
+  # (Users > status) unless this is true.
+  auto_activate: false
   github:
     client_id: ""
     client_secret: ""

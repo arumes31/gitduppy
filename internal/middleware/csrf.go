@@ -1,74 +1,52 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gorilla/csrf"
+	"github.com/gitduppy/gitduppy/pkg/response"
 )
 
-// CSRFMiddleware provides CSRF protection using gorilla/csrf.
-type CSRFMiddleware struct {
-	csrfKey    []byte
-	secure     bool
-	cookieName string
-	headerName string
-}
-
-// NewCSRFMiddleware creates a new CSRF middleware instance.
-func NewCSRFMiddleware(csrfKey string, secure bool) *CSRFMiddleware {
-	return &CSRFMiddleware{
-		csrfKey:    []byte(csrfKey),
-		secure:     secure,
-		cookieName: "gorilla.csrf.Token",
-		headerName: "X-CSRF-Token",
+// CrossOriginProtection returns a middleware that rejects cross-origin,
+// state-changing browser requests that carry the session cookie. It relies on
+// net/http's CrossOriginProtection (Sec-Fetch-Site, falling back to comparing
+// Origin with Host), so it needs no token plumbing in the frontend and also
+// blocks sibling subdomains that SameSite=Lax would let through.
+//
+// Safe methods (GET, HEAD, OPTIONS) are always allowed. Requests without the
+// session cookie are skipped: API clients authenticate with a bearer API key,
+// which a cross-site page cannot attach. baseURL, when set, is added as a
+// trusted origin so deployments behind a proxy that rewrites Host keep working.
+func CrossOriginProtection(baseURL string) (gin.HandlerFunc, error) {
+	cop := http.NewCrossOriginProtection()
+	if origin := originOf(baseURL); origin != "" {
+		if err := cop.AddTrustedOrigin(origin); err != nil {
+			return nil, fmt.Errorf("invalid trusted origin %q: %w", origin, err)
+		}
 	}
-}
-
-// Middleware returns a gin.HandlerFunc that provides CSRF protection.
-func (m *CSRFMiddleware) Middleware() gin.HandlerFunc {
-	errorHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte("CSRF token invalid"))
-	})
-
-	// csrf.Protect returns func(http.Handler) http.Handler
-	protect := csrf.Protect(
-		m.csrfKey,
-		csrf.Secure(m.secure),
-		csrf.CookieName(m.cookieName),
-		csrf.RequestHeader(m.headerName),
-		csrf.FieldName("csrf_token"),
-		csrf.ErrorHandler(errorHandler),
-	)
-
 	return func(c *gin.Context) {
-		// Skip CSRF check for GET, HEAD, OPTIONS requests
-		if c.Request.Method == http.MethodGet ||
-			c.Request.Method == http.MethodHead ||
-			c.Request.Method == http.MethodOptions {
-
+		if cookie, err := c.Cookie("session"); err != nil || cookie == "" {
 			c.Next()
 			return
 		}
-
-		// Wrap the gin handler chain with CSRF protection.
-		var csrfPassed bool
-		nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-			csrfPassed = true
-			c.Request = r
-			c.Next()
-		})
-
-		protect(nextHandler).ServeHTTP(c.Writer, c.Request)
-
-		if !csrfPassed {
+		if err := cop.Check(c.Request); err != nil {
+			response.Forbidden(c, "Cross-origin request blocked")
 			c.Abort()
+			return
 		}
-	}
+		c.Next()
+	}, nil
 }
 
-// GetCSRFToken extracts the CSRF token from the request context.
-func GetCSRFToken(c *gin.Context) string {
-	return csrf.Token(c.Request)
+// originOf reduces a base URL such as "https://git.example.com/" to its origin
+// ("https://git.example.com"). It returns "" for an empty or non-HTTP value.
+func originOf(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }
