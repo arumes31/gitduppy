@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,8 @@ import (
 	"github.com/gitduppy/gitduppy/internal/metrics"
 	"github.com/gitduppy/gitduppy/internal/models"
 	"github.com/gitduppy/gitduppy/pkg/crypto"
+	"github.com/gitduppy/gitduppy/pkg/netguard"
+	"github.com/gitduppy/gitduppy/pkg/validator"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -136,6 +139,10 @@ type WorkerConfig struct {
 	RetryMaxAttempts int
 	RetryBaseDelay   time.Duration
 	DedupeEnabled    bool
+	// AllowLoopbackTargets permits clone URLs that resolve to loopback addresses
+	// (security.allow_private_network_targets). Private-network Git servers are
+	// always allowed; link-local and cloud metadata addresses never are.
+	AllowLoopbackTargets bool
 }
 
 // DefaultWorkerConfig returns default worker configuration.
@@ -479,6 +486,24 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 	// StoragePath is persisted as the full on-disk path (base root already
 	// joined at creation time), so it is used directly here.
 	repoPath := repo.StoragePath
+
+	// The worker removes and replaces this directory wholesale, so never act on a
+	// path that has escaped the sharded storage tree (a tampered or legacy row).
+	if !validator.IsRepoStoragePath(w.gitOps.BasePath, repoPath) {
+		w.failJob(logger, job, "repository storage path is outside the storage root; refusing to clone")
+		return
+	}
+
+	// Refuse remotes that resolve to loopback, link-local or cloud metadata
+	// addresses so a clone URL cannot be used to probe the host or its metadata
+	// service. A resolution failure is left for git to report.
+	if host := remoteHost(repo.URL); host != "" {
+		policy := netguard.Policy{AllowPrivate: true, AllowLoopback: w.config.AllowLoopbackTargets}
+		if err := policy.CheckHost(w.ctx, host); errors.Is(err, netguard.ErrBlockedAddress) {
+			w.failJob(logger, job, fmt.Sprintf("clone URL is not allowed: %v", err))
+			return
+		}
+	}
 
 	// Never run two git operations against the same on-disk repository
 	// concurrently. If another worker already holds this path (e.g. a manual
@@ -979,4 +1004,26 @@ func (p *CloneProgress) Write(b []byte) (n int, err error) {
 		p.db.Model(&models.CloneJob{}).Where("id = ?", p.jobID).Update("output_log", message)
 	}
 	return len(b), nil
+}
+
+// remoteHost extracts the host name from a git remote URL, handling both
+// URL syntax (https://host/x.git, ssh://git@host:22/x.git) and scp-like SSH
+// syntax (git@host:x.git). It returns "" when no host can be determined.
+func remoteHost(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if !strings.Contains(raw, "://") {
+		hostPart, _, found := strings.Cut(raw, ":")
+		if !found {
+			return ""
+		}
+		if i := strings.LastIndex(hostPart, "@"); i >= 0 {
+			hostPart = hostPart[i+1:]
+		}
+		return strings.Trim(hostPart, "[]")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
 }
