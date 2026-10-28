@@ -18,7 +18,8 @@ jobs:
       contents: write
       pull-requests: write
     runs-on: ubuntu-latest
-    if: github.actor == 'dependabot[bot]'
+    timeout-minutes: 30
+    if: github.actor == 'dependabot[bot]' && github.event.pull_request.user.login == 'dependabot[bot]'
     steps:
       - name: Dependabot metadata
         id: dependabot-metadata
@@ -27,9 +28,42 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Enable auto-merge for Dependabot PRs
+        shell: bash
         run: |
-          echo "Dependabot PR detected. Enabling auto-merge."
-          gh pr merge --auto --merge "$PR_URL"
+          set -euo pipefail
+          case "$UPDATE_TYPE" in
+            version-update:semver-patch|version-update:semver-minor) ;;
+            *) echo "Leave major or unclassified updates for manual review."; exit 0 ;;
+          esac
+
+          allow_auto_merge=$(gh api "repos/$GITHUB_REPOSITORY" --jq .allow_auto_merge)
+          if [ "$allow_auto_merge" != true ]; then
+            echo "Repository auto-merge is disabled; leave this PR for manual review."
+            exit 0
+          fi
+
+          current_head=$(gh pr view "$PR_URL" --json headRefOid --jq .headRefOid)
+          test "$current_head" = "$PR_HEAD_SHA" || { echo "PR head changed; leave for a fresh verification run."; exit 0; }
+          base_ref=$(gh pr view "$PR_URL" --json baseRefName --jq '.baseRefName | @uri')
+          protected=$(gh api "repos/$GITHUB_REPOSITORY/branches/$base_ref" --jq .protected)
+          if [ "$protected" != true ]; then
+            echo "The target branch is unprotected; leave this PR for manual review."
+            exit 0
+          fi
+
+          # --auto can merge immediately when a branch has no required checks.
+          # Require a nonempty protected check set, then wait for that exact head.
+          required_checks=$(gh pr checks "$PR_URL" --required --json name --jq length || true)
+          if ! [[ "$required_checks" =~ ^[1-9][0-9]*$ ]]; then
+            echo "No required checks could be verified; leave this PR for manual review."
+            exit 0
+          fi
+          gh pr checks "$PR_URL" --required --watch --fail-fast
+          current_head=$(gh pr view "$PR_URL" --json headRefOid --jq .headRefOid)
+          test "$current_head" = "$PR_HEAD_SHA"
+          gh pr merge --auto --merge --match-head-commit "$PR_HEAD_SHA" "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          UPDATE_TYPE: ${{ steps.dependabot-metadata.outputs.update-type }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

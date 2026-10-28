@@ -1,6 +1,9 @@
 package validator
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestValidateEmail(t *testing.T) {
 	cases := map[string]bool{
@@ -174,5 +177,29 @@ func TestValidatorInstance(t *testing.T) {
 	}
 	if err := ValidateStruct(&s{Name: "x"}); err != nil {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestIsRepoStoragePath(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "repos")
+	shards := filepath.Join(base, "shards")
+	cases := map[string]bool{
+		filepath.Join(shards, "ab", "cd", "abcd-uuid"):           true,
+		filepath.Join(shards, "ab", "cd", "abcd-uuid") + ".wiki": true,
+		shards:                                   false, // the shard root itself
+		base:                                     false, // the storage root
+		filepath.Join(base, "pools"):             false,
+		filepath.Join(shards, "..", "..", "ssh"): false,
+		filepath.Join(filepath.Dir(base), "ssh"): false,
+		"relative/shards/ab/cd/x":                false,
+		"":                                       false,
+	}
+	for in, want := range cases {
+		if got := IsRepoStoragePath(base, in); got != want {
+			t.Errorf("IsRepoStoragePath(%q)=%v want %v", in, got, want)
+		}
+	}
+	if IsRepoStoragePath("", filepath.Join(shards, "ab")) {
+		t.Error("empty base path must never validate")
 	}
 }
