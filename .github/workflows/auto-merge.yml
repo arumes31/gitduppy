@@ -36,6 +36,12 @@ jobs:
             *) echo "Leave major or unclassified updates for manual review."; exit 0 ;;
           esac
 
+          allow_auto_merge=$(gh api "repos/$GITHUB_REPOSITORY" --jq .allow_auto_merge)
+          if [ "$allow_auto_merge" != true ]; then
+            echo "Repository auto-merge is disabled; leave this PR for manual review."
+            exit 0
+          fi
+
           current_head=$(gh pr view "$PR_URL" --json headRefOid --jq .headRefOid)
           test "$current_head" = "$PR_HEAD_SHA" || { echo "PR head changed; leave for a fresh verification run."; exit 0; }
           base_ref=$(gh pr view "$PR_URL" --json baseRefName --jq '.baseRefName | @uri')
