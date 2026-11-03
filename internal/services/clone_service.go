@@ -62,7 +62,9 @@ func (s *CloneService) ListCloneJobs(_ context.Context, filter *CloneFilter) ([]
 		filter.PerPage = 200
 	}
 
-	query := s.db.Model(&models.CloneJob{}).Preload("Repository")
+	// The preloaded repository is response-only: its credentials blob is never
+	// needed here, and its URL is redacted on serialization (Repository.MarshalJSON).
+	query := s.db.Model(&models.CloneJob{}).Preload("Repository", omitRepositoryCredentials)
 
 	// Apply filters
 	if filter.RepositoryID != nil {
@@ -91,7 +93,7 @@ func (s *CloneService) ListCloneJobs(_ context.Context, filter *CloneFilter) ([]
 // GetCloneJobByID retrieves a clone job by ID.
 func (s *CloneService) GetCloneJobByID(_ context.Context, id uuid.UUID) (*models.CloneJob, error) {
 	var job models.CloneJob
-	if err := s.db.Preload("Repository").Preload("CloneLogs").First(&job, id).Error; err != nil {
+	if err := s.db.Preload("Repository", omitRepositoryCredentials).Preload("CloneLogs").First(&job, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, fmt.Errorf("%w: clone job", ErrNotFound)
 		}
@@ -250,4 +252,10 @@ func (s *CloneService) GetRecentJobs(_ context.Context, limit int) ([]models.Clo
 		Preload("Repository", func(db *gorm.DB) *gorm.DB { return db.Omit("EncryptedCredentials") }).
 		Order("created_at DESC").Limit(limit).Find(&jobs).Error
 	return jobs, err
+}
+
+// omitRepositoryCredentials is a Preload scope that leaves the encrypted
+// credentials column out of a preloaded Repository used only for responses.
+func omitRepositoryCredentials(db *gorm.DB) *gorm.DB {
+	return db.Omit("EncryptedCredentials")
 }

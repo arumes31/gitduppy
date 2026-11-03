@@ -9,6 +9,7 @@ import (
 
 	"github.com/gitduppy/gitduppy/internal/models"
 	"github.com/gitduppy/gitduppy/pkg/crypto"
+	"github.com/gitduppy/gitduppy/pkg/validator"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -158,38 +159,53 @@ func (w *CloneWorker) syncGitHubMetadata(ctx context.Context, logger *zap.Logger
 	// whole load-merge-replace runs in one transaction: if loading the current tags
 	// fails we must abort — a partial view of the tags would drive a Replace that
 	// wipes manual tags — and rolling back leaves the tags untouched. Skip entirely
-	// when there are no topics.
-	if len(info.Topics) == 0 {
+	// when there are no usable topics.
+	topics := sanitizeTopics(info.Topics)
+	if len(topics) == 0 {
 		return
 	}
+
+	// The tags table is global and admin-managed, while topics are chosen by
+	// whoever controls the upstream repository. Topics are therefore only matched
+	// against existing tags; new tags are created from them only when the
+	// repository's owner is an admin (who could create those tags anyway).
+	canCreateTags := w.repoOwnerIsAdmin(repo)
+
 	if txErr := w.db.Transaction(func(tx *gorm.DB) error {
 		var currentTags []models.Tag
 		if err := tx.Model(&repo).Association("Tags").Find(&currentTags); err != nil {
 			return fmt.Errorf("load existing tags: %w", err)
 		}
 
-		// Insert every topic as a tag in one batch, skipping names that already
-		// exist (DO NOTHING on the unique name). One round-trip instead of N
-		// FirstOrCreate calls, and race-safe against a concurrent sync inserting the
-		// same topic. Color matches the model's gorm default so worker- and
-		// UI-created tags agree.
-		topicTags := make([]models.Tag, len(info.Topics))
-		for i, topic := range info.Topics {
-			topicTags[i] = models.Tag{ID: uuid.New(), Name: topic, Color: models.DefaultTagColor}
-		}
-		if err := tx.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "name"}},
-			DoNothing: true,
-		}).Create(&topicTags).Error; err != nil {
-			return fmt.Errorf("insert topic tags: %w", err)
+		if canCreateTags {
+			// Insert every topic as a tag in one batch, skipping names that
+			// already exist (DO NOTHING on the unique name). One round-trip
+			// instead of N FirstOrCreate calls, and race-safe against a concurrent
+			// sync inserting the same topic. Color matches the model's gorm
+			// default so worker- and UI-created tags agree.
+			topicTags := make([]models.Tag, len(topics))
+			for i, topic := range topics {
+				topicTags[i] = models.Tag{ID: uuid.New(), Name: topic, Color: models.DefaultTagColor}
+			}
+			if err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "name"}},
+				DoNothing: true,
+			}).Create(&topicTags).Error; err != nil {
+				return fmt.Errorf("insert topic tags: %w", err)
+			}
 		}
 
-		// Re-select the canonical rows by name in a single query: with DoNothing the
+		// Select the canonical rows by name in a single query: with DoNothing the
 		// conflicting rows come back without their real IDs, and a concurrent sync
 		// may have inserted some, so trust the table rather than the insert result.
+		// Without tag-creation rights this simply picks the topics that already
+		// exist as tags.
 		var canonical []models.Tag
-		if err := tx.Where("name IN ?", info.Topics).Find(&canonical).Error; err != nil {
+		if err := tx.Where("name IN ?", topics).Find(&canonical).Error; err != nil {
 			return fmt.Errorf("load canonical topic tags: %w", err)
+		}
+		if len(canonical) == 0 {
+			return nil
 		}
 
 		tagSet := make(map[uuid.UUID]models.Tag, len(currentTags)+len(canonical))
@@ -207,6 +223,38 @@ func (w *CloneWorker) syncGitHubMetadata(ctx context.Context, logger *zap.Logger
 	}); txErr != nil {
 		logger.Error("Failed to sync repository tags, skipping to avoid wiping manual tags", zap.Error(txErr))
 	}
+}
+
+// sanitizeTopics keeps the upstream topics that are valid tag names (the same
+// rule the tag API enforces), de-duplicated.
+func sanitizeTopics(topics []string) []string {
+	seen := make(map[string]struct{}, len(topics))
+	out := make([]string, 0, len(topics))
+	for _, t := range topics {
+		if !validator.ValidateTagName(t) {
+			continue
+		}
+		if _, dup := seen[t]; dup {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	return out
+}
+
+// repoOwnerIsAdmin reports whether the repository's creator is an admin.
+// Repositories without a recorded creator, or whose creator cannot be loaded,
+// are treated as non-admin.
+func (w *CloneWorker) repoOwnerIsAdmin(repo models.Repository) bool {
+	if repo.CreatedBy == nil {
+		return false
+	}
+	var owner models.User
+	if err := w.db.Select("id", "role").First(&owner, "id = ?", *repo.CreatedBy).Error; err != nil {
+		return false
+	}
+	return owner.IsAdmin()
 }
 
 // githubToken picks the credential usable as a GitHub API token: an explicit

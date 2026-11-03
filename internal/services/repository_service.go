@@ -18,6 +18,7 @@ import (
 	"github.com/gitduppy/gitduppy/pkg/crypto"
 	"github.com/gitduppy/gitduppy/pkg/validator"
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -154,6 +155,16 @@ type CreateRepositoryRequest struct {
 
 // CreateRepository creates a new repository.
 func (s *RepositoryService) CreateRepository(_ context.Context, req *CreateRepositoryRequest, createdBy uuid.UUID) (*models.Repository, error) {
+	// Validate at the service boundary too, so non-handler callers (the GitHub
+	// import) are held to the same rules. Names flow into e-mail subjects and log
+	// lines, so control characters (CR/LF header injection) are refused.
+	if !validator.ValidateRepositoryName(req.Name) {
+		return nil, fmt.Errorf("%w: repository name must be 1-255 characters without control characters", ErrValidation)
+	}
+	if !validator.ValidateGitURL(req.URL) {
+		return nil, fmt.Errorf("%w: invalid git repository URL", ErrValidation)
+	}
+
 	// Encrypt credentials if provided
 	var encryptedCredentials string
 	if req.Credentials != nil {
@@ -221,6 +232,13 @@ func (s *RepositoryService) CreateRepository(_ context.Context, req *CreateRepos
 // the same clone URL already exists — refreshes its stored credentials for
 // private repos (the previous OAuth token may have expired). It returns true
 // when a new mirror was created. Used by the "mirror all my GitHub repos" import.
+//
+// Credentials on an existing mirror are only replaced when userID created it.
+// The import runs on every OAuth login/link, so without this check any user
+// with read access to the same GitHub repository would silently swap another
+// owner's (or an admin's) stored credentials for their own OAuth token, taking
+// over which identity the mirror authenticates as. Admins are deliberately not
+// exempt: an admin's login should not rebind other users' mirrors either.
 func (s *RepositoryService) UpsertGitHubMirror(ctx context.Context, userID uuid.UUID, name, url, branch string, private bool, token string) (bool, error) {
 	if branch == "" {
 		branch = "main"
@@ -229,17 +247,26 @@ func (s *RepositoryService) UpsertGitHubMirror(ctx context.Context, userID uuid.
 	var existing models.Repository
 	err := s.db.Where("url = ?", url).First(&existing).Error
 	if err == nil {
-		// Already mirrored. Refresh the token for private repos so the mirror keeps
+		if !private || token == "" {
+			return false, nil
+		}
+		if existing.CreatedBy == nil || *existing.CreatedBy != userID {
+			zap.L().Named("repository-service").Info("skipping credential refresh for GitHub mirror owned by another user",
+				zap.String("repository_id", existing.ID.String()),
+				zap.String("importing_user_id", userID.String()))
+			return false, nil
+		}
+		// Already mirrored by this user. Refresh the token so the mirror keeps
 		// working after a prior OAuth token expired.
-		if private && token != "" {
-			enc, encErr := s.encryptionService.Encrypt(crypto.CredentialsPayload{Token: token})
-			if encErr != nil {
-				return false, encErr
-			}
-			s.db.Model(&existing).Updates(map[string]any{
-				"auth_type":             "token",
-				"encrypted_credentials": enc,
-			})
+		enc, encErr := s.encryptionService.Encrypt(crypto.CredentialsPayload{Token: token})
+		if encErr != nil {
+			return false, encErr
+		}
+		if upErr := s.db.Model(&existing).Updates(map[string]any{
+			"auth_type":             "token",
+			"encrypted_credentials": enc,
+		}).Error; upErr != nil {
+			return false, upErr
 		}
 		return false, nil
 	}
@@ -328,6 +355,9 @@ func (s *RepositoryService) UpdateRepository(ctx context.Context, id uuid.UUID, 
 
 func (s *RepositoryService) applyUpdateFields(repo *models.Repository, req *UpdateRepositoryRequest) error {
 	if req.Name != nil {
+		if !validator.ValidateRepositoryName(*req.Name) {
+			return fmt.Errorf("%w: repository name must be 1-255 characters without control characters", ErrValidation)
+		}
 		repo.Name = *req.Name
 	}
 	if req.URL != nil {
@@ -421,6 +451,37 @@ func gitRemoteOrigin(raw string) string {
 		return raw
 	}
 	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host)
+}
+
+// WarnEmbeddedURLCredentials logs a warning listing the IDs of repositories
+// whose stored URL still embeds credentials in its userinfo. Such URLs are no
+// longer accepted on create/update and are redacted in every API response, but
+// existing rows are left intact (rewriting them would silently break clones
+// that depend on the embedded secret). Operators should move the secret into
+// the repository's encrypted credentials, update the URL, and rotate the
+// secret, since earlier versions returned it to any authenticated reader. The
+// URLs themselves are never logged.
+func (s *RepositoryService) WarnEmbeddedURLCredentials(ctx context.Context) {
+	var rows []struct {
+		ID  uuid.UUID
+		URL string
+	}
+	if err := s.db.WithContext(ctx).Unscoped().Model(&models.Repository{}).
+		Select("id", "url").Where("url LIKE ?", "%://%@%").Find(&rows).Error; err != nil {
+		zap.L().Named("repository-service").Warn("could not scan repositories for embedded URL credentials", zap.Error(err))
+		return
+	}
+	var ids []string
+	for _, r := range rows {
+		if models.URLHasCredentials(r.URL) {
+			ids = append(ids, r.ID.String())
+		}
+	}
+	if len(ids) > 0 {
+		zap.L().Named("repository-service").Warn(
+			"repositories have credentials embedded in their URL; move them to the encrypted credentials field and rotate the exposed secrets",
+			zap.Strings("repository_ids", ids))
+	}
 }
 
 // checkStoragePath refuses to operate on a repository whose persisted path is

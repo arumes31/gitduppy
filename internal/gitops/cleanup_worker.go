@@ -2,8 +2,11 @@ package gitops
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,13 +25,19 @@ type CleanupWorker struct {
 	stopOnce  sync.Once
 	interval  time.Duration
 	retention time.Duration
-	basePath  string
+	// auditRetention applies to audit_logs only; 0 keeps them forever.
+	auditRetention time.Duration
+	basePath       string
 }
 
 // CleanupConfig holds configuration for the cleanup worker.
 type CleanupConfig struct {
 	Interval  time.Duration
 	Retention time.Duration
+	// AuditRetention is how long audit log entries (security records) are kept,
+	// independent of Retention (logging.audit_retention_days). 0 keeps them
+	// forever.
+	AuditRetention time.Duration
 	// BasePath is the storage root under which the shared object "pools"
 	// directory lives (see GitOperations.BasePath / GetPoolPath). It must be
 	// passed explicitly rather than derived from a repository's StoragePath,
@@ -40,8 +49,9 @@ type CleanupConfig struct {
 // DefaultCleanupConfig returns default cleanup configuration.
 func DefaultCleanupConfig() *CleanupConfig {
 	return &CleanupConfig{
-		Interval:  24 * time.Hour,
-		Retention: 30 * 24 * time.Hour, // 30 days
+		Interval:       24 * time.Hour,
+		Retention:      30 * 24 * time.Hour, // 30 days
+		AuditRetention: 90 * 24 * time.Hour, // 90 days
 	}
 }
 
@@ -51,18 +61,20 @@ func NewCleanupWorker(config *CleanupConfig) *CleanupWorker {
 		config = DefaultCleanupConfig()
 	}
 	return &CleanupWorker{
-		db:        database.GetDB(),
-		logger:    zap.L().Named("cleanup-worker"),
-		done:      make(chan struct{}),
-		interval:  config.Interval,
-		retention: config.Retention,
-		basePath:  config.BasePath,
+		db:             database.GetDB(),
+		logger:         zap.L().Named("cleanup-worker"),
+		done:           make(chan struct{}),
+		interval:       config.Interval,
+		retention:      config.Retention,
+		auditRetention: config.AuditRetention,
+		basePath:       config.BasePath,
 	}
 }
 
 // Start starts the cleanup worker.
 func (w *CleanupWorker) Start() {
-	w.logger.Info("starting cleanup worker", zap.Duration("interval", w.interval), zap.Duration("retention", w.retention))
+	w.logger.Info("starting cleanup worker", zap.Duration("interval", w.interval), zap.Duration("retention", w.retention),
+		zap.Duration("audit_retention", w.auditRetention))
 	go w.run()
 }
 
@@ -104,6 +116,15 @@ func (w *CleanupWorker) purge(errLabel, successLabel string, result *gorm.DB) {
 	}
 }
 
+// auditLogCutoff returns the creation time before which audit logs are deleted,
+// and false when retention is not positive (keep audit logs forever).
+func auditLogCutoff(now time.Time, retention time.Duration) (time.Time, bool) {
+	if retention <= 0 {
+		return time.Time{}, false
+	}
+	return now.Add(-retention), true
+}
+
 // performCleanup removes old clone logs, completed jobs, and expired sessions data.
 func (w *CleanupWorker) performCleanup() {
 	w.logger.Info("performing cleanup of old data")
@@ -122,9 +143,12 @@ func (w *CleanupWorker) performCleanup() {
 	w.purge("webhook deliveries", "old webhook deliveries",
 		w.db.Where("delivered_at < ?", cutoff).Delete(&models.WebhookDelivery{}))
 
-	// Clean up old audit logs
-	w.purge("audit logs", "old audit logs",
-		w.db.Where("created_at < ?", cutoff).Delete(&models.AuditLog{}))
+	// Clean up old audit logs on their own (longer) retention; they are
+	// security records, so 0 disables deletion entirely.
+	if auditCutoff, ok := auditLogCutoff(time.Now(), w.auditRetention); ok {
+		w.purge("audit logs", "old audit logs",
+			w.db.Where("created_at < ?", auditCutoff).Delete(&models.AuditLog{}))
+	}
 
 	// Clean up expired sessions
 	w.purge("sessions", "expired sessions",
@@ -206,12 +230,17 @@ func (w *CleanupWorker) performCleanup() {
 					continue
 				}
 
+				if !validator.IsRepoStoragePath(w.basePath, targetRepo.StoragePath) {
+					w.logger.Error("skipping pruned branch purge: repository storage path is outside the storage root",
+						zap.String("repo_id", br.RepositoryID.String()), zap.String("path", targetRepo.StoragePath))
+					continue
+				}
+
 				gitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				paperbinRef := "refs/paperbin/heads/" + br.BranchName
-				out, gitErr := RunGitCommand(gitCtx, targetRepo.StoragePath, "update-ref", "-d", paperbinRef)
+				gitErr := ReleaseArchivalRef(gitCtx, w.db, targetRepo.StoragePath, &br)
 				cancel()
 				if gitErr != nil {
-					w.logger.Error("failed to delete paperbin git ref, keeping DB record", zap.String("ref", paperbinRef), zap.String("output", out), zap.Error(gitErr))
+					w.logger.Error("failed to delete paperbin git ref, keeping DB record", zap.String("ref", br.ArchivalRef()), zap.Error(gitErr))
 					continue
 				}
 
@@ -226,6 +255,64 @@ func (w *CleanupWorker) performCleanup() {
 	w.cleanupPools()
 
 	w.logger.Info("cleanup completed")
+}
+
+// ReleaseArchivalRef deletes the git ref that protects a pruned branch's commit
+// for one deletion event, ahead of that event's DeletedBranch row being removed
+// (on expiry, restore or permanent delete).
+//
+// The ref is deleted only while it still points at the event's own commit, and
+// atomically so (`git update-ref -d <ref> <expected-sha>`), so it can never
+// remove a ref that now protects a different event. Legacy rows (written before
+// per-event refs, ArchiveRef == "") share one branch-name-derived ref; that ref
+// is left alone while any other legacy row of the same branch still exists, and
+// is otherwise deleted only if it still holds this row's commit. A ref that is
+// already gone, or that points elsewhere, is not an error: this event's commit is
+// simply no longer protected by it.
+func ReleaseArchivalRef(ctx context.Context, db *gorm.DB, repoPath string, br *models.DeletedBranch) error {
+	ref := br.ArchivalRef()
+	if !strings.HasPrefix(ref, "refs/") {
+		return fmt.Errorf("refusing to delete non-ref archival name %q", ref)
+	}
+	if !validator.ValidateCommitSHA(br.CommitSHA) {
+		return fmt.Errorf("deleted branch record %s has an invalid commit sha", br.ID)
+	}
+
+	if br.HasLegacyArchivalRef() {
+		var others int64
+		if err := db.WithContext(ctx).Model(&models.DeletedBranch{}).
+			Where("repository_id = ? AND branch_name = ? AND id <> ? AND (archive_ref = '' OR archive_ref IS NULL)",
+				br.RepositoryID, br.BranchName, br.ID).
+			Count(&others).Error; err != nil {
+			return fmt.Errorf("check shared legacy archival ref: %w", err)
+		}
+		if others > 0 {
+			return nil
+		}
+	}
+
+	// Nothing on disk means nothing left to protect or delete.
+	if _, statErr := os.Stat(repoPath); errors.Is(statErr, os.ErrNotExist) {
+		return nil
+	}
+
+	// ref always starts with "refs/", so it cannot be parsed as an option.
+	current, err := RunGitCommand(ctx, repoPath, "rev-parse", "--verify", "--quiet", ref)
+	if err != nil {
+		// rev-parse --verify --quiet exits non-zero without output when the ref
+		// does not exist; anything else is a real failure.
+		if strings.TrimSpace(current) == "" {
+			return nil
+		}
+		return fmt.Errorf("resolve archival ref: %w", err)
+	}
+	if strings.TrimSpace(current) != br.CommitSHA {
+		return nil
+	}
+	if out, err := RunGitCommand(ctx, repoPath, "update-ref", "-d", ref, br.CommitSHA); err != nil {
+		return fmt.Errorf("delete archival ref: %w: %s", err, strings.TrimSpace(out))
+	}
+	return nil
 }
 
 // cleanupPools performs auto-gc on shared object pools to keep packfiles compact.
