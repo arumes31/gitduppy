@@ -9,6 +9,7 @@ import (
 	"github.com/gitduppy/gitduppy/internal/database"
 	"github.com/gitduppy/gitduppy/internal/models"
 	"github.com/gitduppy/gitduppy/pkg/crypto"
+	"github.com/gitduppy/gitduppy/pkg/validator"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
@@ -114,12 +115,18 @@ func (s *UserService) GetUserByUsername(ctx context.Context, username string) (*
 type CreateUserRequest struct {
 	Username string `json:"username" validate:"required"`
 	Email    string `json:"email" validate:"required,email"`
-	Password string `json:"password" validate:"required,min=8"`
+	Password string `json:"password" validate:"required"` // complexity: validator.ValidatePassword
 	Role     string `json:"role" validate:"required,oneof=admin user"`
 }
 
 // CreateUser creates a new user.
 func (s *UserService) CreateUser(ctx context.Context, req *CreateUserRequest) (*models.User, error) {
+	// Enforce the configured password policy here (not only in the handler) so
+	// every caller that creates a password-backed account is covered.
+	if err := validator.ValidatePassword(req.Password); err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrValidation, err.Error())
+	}
+
 	// Check if username exists
 	var existing models.User
 	if err := s.db.WithContext(ctx).Where("username = ? OR email = ?", req.Username, req.Email).First(&existing).Error; err != nil {

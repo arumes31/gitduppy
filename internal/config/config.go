@@ -1,9 +1,12 @@
 package config
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,6 +24,10 @@ type Config struct {
 	Logging    LoggingConfig    `mapstructure:"logging"`
 	Storage    StorageConfig    `mapstructure:"storage"`
 	Monitoring MonitoringConfig `mapstructure:"monitoring"`
+
+	// Warnings collects non-fatal problems found while loading (deprecated or
+	// unknown keys). Load runs before the logger exists, so main logs them.
+	Warnings []string `mapstructure:"-" json:"-"`
 }
 
 // ServerConfig holds HTTP server configuration.
@@ -84,6 +91,14 @@ type SecurityConfig struct {
 	// private-network addresses, and clone URLs reach loopback addresses.
 	// Link-local and cloud metadata addresses are always blocked.
 	AllowPrivateNetworkTargets bool `mapstructure:"allow_private_network_targets"`
+
+	// Password policy applied whenever a password is set (change password, user
+	// creation). The minimum length can be raised but never below 8.
+	PasswordMinLength        int  `mapstructure:"password_min_length"`
+	PasswordRequireUppercase bool `mapstructure:"password_require_uppercase"`
+	PasswordRequireLowercase bool `mapstructure:"password_require_lowercase"`
+	PasswordRequireNumbers   bool `mapstructure:"password_require_numbers"`
+	PasswordRequireSpecial   bool `mapstructure:"password_require_special"`
 }
 
 // placeholderSecrets are example values that have shipped in this repository's
@@ -152,6 +167,10 @@ type EmailConfig struct {
 	SMTPPassword string `mapstructure:"smtp_password"`
 	From         string `mapstructure:"from"`
 	Enabled      bool   `mapstructure:"enabled"`
+	// AllowInsecure permits sending over a plaintext SMTP connection when the
+	// server does not offer STARTTLS (e.g. a local relay on localhost:25). By
+	// default TLS is required: implicit TLS on port 465, STARTTLS otherwise.
+	AllowInsecure bool `mapstructure:"allow_insecure"`
 }
 
 // WorkerConfig holds background worker configuration.
@@ -168,6 +187,9 @@ type LoggingConfig struct {
 	Format   string `mapstructure:"format"`
 	Output   string `mapstructure:"output"`
 	FilePath string `mapstructure:"file_path"`
+	// AuditRetentionDays is how long audit log entries (security records) are
+	// kept before the cleanup worker deletes them. 0 keeps them forever.
+	AuditRetentionDays int `mapstructure:"audit_retention_days"`
 }
 
 // StorageConfig holds storage path configuration.
@@ -187,6 +209,12 @@ type MonitoringConfig struct {
 
 // Load reads configuration from file and environment variables.
 func Load() (*Config, error) {
+	return load("")
+}
+
+// load implements Load. A non-empty configFile reads that exact file (used by
+// tests) instead of searching the standard config paths.
+func load(configFile string) (*Config, error) {
 	v := viper.New()
 
 	// Set defaults
@@ -212,10 +240,16 @@ func Load() (*Config, error) {
 	v.SetDefault("security.rate_limit.auth_requests_per_minute", 10)
 	v.SetDefault("security.rate_limit.api_requests_per_minute", 60)
 	v.SetDefault("security.hsts_max_age", 31536000) // 1 year in seconds
+	v.SetDefault("security.password_min_length", 8)
+	v.SetDefault("security.password_require_uppercase", false)
+	v.SetDefault("security.password_require_lowercase", false)
+	v.SetDefault("security.password_require_numbers", false)
+	v.SetDefault("security.password_require_special", false)
 
 	v.SetDefault("email.smtp_port", 587)
 	v.SetDefault("email.from", "noreply@gitmirrors.local")
 	v.SetDefault("email.enabled", false)
+	v.SetDefault("email.allow_insecure", false)
 
 	v.SetDefault("worker.max_concurrent", 3)
 	v.SetDefault("worker.clone_timeout", 3600)
@@ -226,6 +260,7 @@ func Load() (*Config, error) {
 	v.SetDefault("logging.format", "json")
 	v.SetDefault("logging.output", "stdout")
 	v.SetDefault("logging.file_path", "/app/logs/app.log")
+	v.SetDefault("logging.audit_retention_days", 90)
 
 	v.SetDefault("storage.base_path", "/app/storage/repos")
 	v.SetDefault("storage.ssh_path", "/app/storage/ssh")
@@ -241,11 +276,15 @@ func Load() (*Config, error) {
 	v.SetDefault("oauth.google.scopes", []string{"email", "profile"})
 
 	// Config file settings
-	v.SetConfigName("config")
 	v.SetConfigType("yaml")
-	v.AddConfigPath("/app/config")
-	v.AddConfigPath("./config")
-	v.AddConfigPath(".")
+	if configFile != "" {
+		v.SetConfigFile(configFile)
+	} else {
+		v.SetConfigName("config")
+		v.AddConfigPath("/app/config")
+		v.AddConfigPath("./config")
+		v.AddConfigPath(".")
+	}
 
 	// Environment variables
 	v.AutomaticEnv()
@@ -268,10 +307,17 @@ func Load() (*Config, error) {
 		}
 	}
 
+	// Map deprecated keys onto their current names, then flag keys this
+	// version does not understand (typos, keys from old example files) so they
+	// are not silently ignored.
+	warnings := migrateLegacyKeys(v)
+	warnings = append(warnings, unknownKeyWarnings(v)...)
+
 	var config Config
 	if err := v.Unmarshal(&config); err != nil {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
 	}
+	config.Warnings = warnings
 
 	// Derive the session-cookie Secure flag from the base_url scheme unless it was
 	// set explicitly. No viper default is registered for the key, so IsSet is true
@@ -282,7 +328,119 @@ func Load() (*Config, error) {
 			strings.ToLower(strings.TrimSpace(config.Server.BaseURL)), "https://")
 	}
 
+	if err := config.validate(); err != nil {
+		return nil, err
+	}
+
 	return &config, nil
+}
+
+// legacyKeys maps deprecated (flat or misnamed) keys that older example files
+// advertised to their current names.
+var legacyKeys = map[string]string{
+	"server.tls_enabled":  "server.tls.enabled",
+	"server.tls_cert":     "server.tls.cert",
+	"server.tls_key":      "server.tls.key",
+	"email.smtp_username": "email.smtp_user",
+	"email.from_address":  "email.from",
+}
+
+// migrateLegacyKeys copies each deprecated key found in the config file onto
+// its current name, unless the current name is already set in the file or the
+// environment (which then wins). It returns a deprecation warning per key.
+func migrateLegacyKeys(v *viper.Viper) []string {
+	oldKeys := make([]string, 0, len(legacyKeys))
+	for k := range legacyKeys {
+		oldKeys = append(oldKeys, k)
+	}
+	sort.Strings(oldKeys)
+
+	var warnings []string
+	for _, oldKey := range oldKeys {
+		newKey := legacyKeys[oldKey]
+		if !v.InConfig(oldKey) {
+			continue
+		}
+		if _, envSet := os.LookupEnv(envName(newKey)); v.InConfig(newKey) || envSet {
+			warnings = append(warnings, fmt.Sprintf(
+				"deprecated config key %q is ignored because %q is also set; remove it", oldKey, newKey))
+			continue
+		}
+		v.Set(newKey, v.Get(oldKey))
+		warnings = append(warnings, fmt.Sprintf(
+			"deprecated config key %q is applied as %q; rename it, support will be removed", oldKey, newKey))
+	}
+	return warnings
+}
+
+// unknownKeyWarnings returns a warning for every key viper knows about (from the
+// config file) that maps to no Config field and is not a handled legacy key.
+func unknownKeyWarnings(v *viper.Viper) []string {
+	known := make(map[string]bool)
+	collectKeys(reflect.TypeFor[Config](), "", known)
+	var warnings []string
+	for _, key := range v.AllKeys() {
+		if known[key] || legacyKeys[key] != "" {
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf("unknown config key %q is not supported and is ignored", key))
+	}
+	sort.Strings(warnings)
+	return warnings
+}
+
+// collectKeys records the dotted mapstructure path of every leaf field of t.
+func collectKeys(t reflect.Type, prefix string, out map[string]bool) {
+	for i := 0; i < t.NumField(); i++ {
+		tag := t.Field(i).Tag.Get("mapstructure")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		key := tag
+		if prefix != "" {
+			key = prefix + "." + tag
+		}
+		if ft := t.Field(i).Type; ft.Kind() == reflect.Struct {
+			collectKeys(ft, key, out)
+			continue
+		}
+		out[key] = true
+	}
+}
+
+// envName returns the GITMIRRORS_* environment variable bound to a config key.
+func envName(key string) string {
+	return "GITMIRRORS_" + strings.ToUpper(strings.ReplaceAll(key, ".", "_"))
+}
+
+// validate rejects settings that would otherwise silently weaken security.
+func (c *Config) validate() error {
+	var errs []error
+	if c.Security.RateLimit.AuthRequestsPerMinute <= 0 {
+		errs = append(errs, errors.New("security.rate_limit.auth_requests_per_minute must be positive"))
+	}
+	if c.Security.RateLimit.APIRequestsPerMinute <= 0 {
+		errs = append(errs, errors.New("security.rate_limit.api_requests_per_minute must be positive"))
+	}
+	if n := c.Security.PasswordMinLength; n < 8 || n > 72 {
+		errs = append(errs, fmt.Errorf("security.password_min_length must be between 8 and 72, got %d", n))
+	}
+	if c.Logging.AuditRetentionDays < 0 {
+		errs = append(errs, errors.New("logging.audit_retention_days must not be negative (0 keeps audit logs forever)"))
+	}
+	if c.Server.TLS.Enabled {
+		// Fail at startup rather than when the listener starts (or, worse, run
+		// plaintext): TLS was requested, so the key pair must be usable.
+		if c.Server.TLS.Cert == "" || c.Server.TLS.Key == "" {
+			errs = append(errs, errors.New("server.tls.enabled is true but server.tls.cert and server.tls.key must both be set"))
+		} else if _, err := tls.LoadX509KeyPair(c.Server.TLS.Cert, c.Server.TLS.Key); err != nil {
+			errs = append(errs, fmt.Errorf("server.tls.enabled is true but the certificate/key cannot be loaded: %w", err))
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("invalid configuration: %w", err)
+	}
+	return nil
 }
 
 // bindEnvs walks a (possibly nested) struct and calls v.BindEnv for every leaf

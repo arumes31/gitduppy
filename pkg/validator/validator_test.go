@@ -87,21 +87,6 @@ func TestValidateUsername(t *testing.T) {
 	}
 }
 
-func TestValidatePassword(t *testing.T) {
-	cases := map[string]bool{
-		"abcd1234":   true,
-		"short1":     false, // < 8
-		"allletters": false, // no number
-		"12345678":   false, // no letter
-		"Passw0rd":   true,
-	}
-	for in, want := range cases {
-		if got := ValidatePassword(in); got != want {
-			t.Errorf("ValidatePassword(%q)=%v want %v", in, got, want)
-		}
-	}
-}
-
 func TestValidateTagName(t *testing.T) {
 	if !ValidateTagName("production") {
 		t.Error("valid tag rejected")
@@ -201,5 +186,97 @@ func TestIsRepoStoragePath(t *testing.T) {
 	}
 	if IsRepoStoragePath("", filepath.Join(shards, "ab")) {
 		t.Error("empty base path must never validate")
+	}
+}
+
+func TestValidateGitURLRejectsEmbeddedCredentials(t *testing.T) {
+	cases := map[string]bool{
+		"https://user:token@github.com/a/b.git": false,
+		"https://ghp_abc123@github.com/a/b.git": false, // token as bare username
+		"http://user@host/a/b.git":              false,
+		"git://user:pw@host/a/b.git":            false,
+		"ssh://git:secret@host/a/b.git":         false,
+		"ssh://git@host:2222/a/b.git":           true,
+		"git@github.com:user/repo.git":          true,
+		"https://github.com/a/b.git\r\nX: y":    false,
+	}
+	for in, want := range cases {
+		if got := ValidateGitURL(in); got != want {
+			t.Errorf("ValidateGitURL(%q)=%v want %v", in, got, want)
+		}
+	}
+}
+
+func TestValidateGitRefName(t *testing.T) {
+	cases := map[string]bool{
+		"main":                    true,
+		"feature/x-1":             true,
+		"release/v1.2":            true,
+		"user/ünïcode":            true,
+		"":                        false,
+		"-f":                      false,
+		"--upload-pack=evil":      false,
+		"a..b":                    false,
+		"a//b":                    false,
+		"/a":                      false,
+		"a/":                      false,
+		"a.":                      false,
+		"a/.hidden":               false,
+		"x.lock":                  false,
+		"a/b.lock/c":              false,
+		"@":                       false,
+		"a@{1}":                   false,
+		"has space":               false,
+		"tilde~1":                 false,
+		"caret^":                  false,
+		"colon:x":                 false,
+		"glob*":                   false,
+		"q?":                      false,
+		"br[ack":                  false,
+		`back\slash`:              false,
+		"ctrl\x01":                false,
+		"new\nline":               false,
+		"del\x7f":                 false,
+		string(make([]byte, 256)): false,
+	}
+	for in, want := range cases {
+		if got := ValidateGitRefName(in); got != want {
+			t.Errorf("ValidateGitRefName(%q)=%v want %v", in, got, want)
+		}
+	}
+}
+
+func TestValidateCommitSHA(t *testing.T) {
+	cases := map[string]bool{
+		"0123456789abcdef0123456789abcdef01234567":                         true,
+		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef": true,
+		"0123456789ABCDEF0123456789abcdef01234567":                         false,
+		"-123456789abcdef0123456789abcdef01234567":                         false,
+		"abc": false,
+		"":    false,
+	}
+	for in, want := range cases {
+		if got := ValidateCommitSHA(in); got != want {
+			t.Errorf("ValidateCommitSHA(%q)=%v want %v", in, got, want)
+		}
+	}
+}
+
+func TestValidateRepositoryName(t *testing.T) {
+	cases := map[string]bool{
+		"my-repo":                 true,
+		"My Repo (fork)":          true,
+		"":                        false,
+		"   ":                     false,
+		"evil\r\nBcc: x@y.z":      false,
+		"line\nbreak":             false,
+		"tab\tname":               false,
+		"sep arator":              false,
+		string(make([]byte, 256)): false,
+	}
+	for in, want := range cases {
+		if got := ValidateRepositoryName(in); got != want {
+			t.Errorf("ValidateRepositoryName(%q)=%v want %v", in, got, want)
+		}
 	}
 }

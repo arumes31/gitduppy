@@ -3,7 +3,9 @@ package services
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/gitduppy/gitduppy/internal/config"
 	"github.com/gitduppy/gitduppy/internal/database"
@@ -77,7 +79,15 @@ func (s *EmailService) SendCloneFailureNotification(ctx context.Context, repo *m
 		return err
 	}
 
-	subject := fmt.Sprintf("GitDuppy - Clone Failure: %s", repo.Name)
+	// Flatten control characters in the repository name: the email layer rejects
+	// header values containing line breaks, and the alert should still go out.
+	safeName := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, repo.Name)
+	subject := fmt.Sprintf("GitDuppy - Clone Failure: %s", safeName)
 	return s.email.SendEmail(recipients, subject, body)
 }
 

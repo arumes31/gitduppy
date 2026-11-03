@@ -30,7 +30,7 @@ func doGet(r *gin.Engine) *httptest.ResponseRecorder {
 // TestRateLimitHeadersOnAllow checks that an accepted request advertises the
 // tier limit and the remaining token budget.
 func TestRateLimitHeadersOnAllow(t *testing.T) {
-	rl := NewRateLimiter(1, 5) // 1 rps, burst 5
+	rl := NewRateLimiter(RateBudget{RPS: 1, Burst: 5}, RateBudget{}) // 1 rps, burst 5
 	defer rl.Stop()
 	r := newTestEngine(rl)
 
@@ -52,7 +52,7 @@ func TestRateLimitHeadersOnAllow(t *testing.T) {
 func TestRateLimitHeadersOn429(t *testing.T) {
 	// Burst of 1 with a slow refill: the first request drains the bucket, the
 	// second is rejected.
-	rl := NewRateLimiter(0.001, 1)
+	rl := NewRateLimiter(RateBudget{RPS: 0.001, Burst: 1}, RateBudget{})
 	defer rl.Stop()
 	r := newTestEngine(rl)
 

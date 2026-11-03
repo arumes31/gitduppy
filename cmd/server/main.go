@@ -27,6 +27,7 @@ import (
 	"github.com/gitduppy/gitduppy/internal/models"
 	"github.com/gitduppy/gitduppy/internal/services"
 	"github.com/gitduppy/gitduppy/pkg/crypto"
+	"github.com/gitduppy/gitduppy/pkg/validator"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
@@ -78,6 +79,22 @@ func main() {
 	// and any dependency that logs via std log) through the configured zap sink so
 	// all output shares one format, level, and destination.
 	zap.RedirectStdLog(zapLogger)
+
+	// Surface config problems found during Load (deprecated or unknown keys);
+	// they are not fatal, but a mistyped key would otherwise be silently ignored.
+	for _, w := range cfg.Warnings {
+		zapLogger.Warn("configuration: " + w)
+	}
+
+	// Install the password policy (security.password_*) used by every code path
+	// that sets a password.
+	validator.SetPasswordPolicy(validator.PasswordPolicy{
+		MinLength:        cfg.Security.PasswordMinLength,
+		RequireUppercase: cfg.Security.PasswordRequireUppercase,
+		RequireLowercase: cfg.Security.PasswordRequireLowercase,
+		RequireNumbers:   cfg.Security.PasswordRequireNumbers,
+		RequireSpecial:   cfg.Security.PasswordRequireSpecial,
+	})
 
 	// Normalize the storage base to an absolute path. It is baked into every
 	// repository's StoragePath and resolved directly by browse/clone/cleanup; a
@@ -142,10 +159,14 @@ func main() {
 	authService := services.NewAuthService(cfg.Security.SessionDuration, auditService)
 	userService := services.NewUserService()
 	repoService := services.NewRepositoryService(encryptionService, cfg.Storage.BasePath)
+	repoService.WarnEmbeddedURLCredentials(context.Background())
 	cloneService := services.NewCloneService()
 	apiKeyService := services.NewAPIKeyService()
 	webhookService := services.NewWebhookService(cloneService, encryptionService)
 	webhookService.SetAllowPrivateTargets(cfg.Security.AllowPrivateNetworkTargets)
+	// Deferred first so it runs last: cancels in-flight webhook deliveries after
+	// the clone worker (which emits events) has stopped.
+	defer webhookService.Stop()
 	tagService := services.NewTagService()
 	dashboardService := services.NewDashboardService(cfg.Storage.BasePath)
 
@@ -192,6 +213,9 @@ func main() {
 	// Initialize cleanup worker
 	cleanupConfig := gitops.DefaultCleanupConfig()
 	cleanupConfig.BasePath = cfg.Storage.BasePath
+	// Audit logs are security records with their own retention
+	// (logging.audit_retention_days, default 90; 0 keeps them forever).
+	cleanupConfig.AuditRetention = time.Duration(cfg.Logging.AuditRetentionDays) * 24 * time.Hour
 	cleanupWorker := gitops.NewCleanupWorker(cleanupConfig)
 	cleanupWorker.Start()
 	defer cleanupWorker.Stop()
@@ -236,11 +260,12 @@ func main() {
 	userService.SetAuthCache(authMiddleware.Cache())
 	apiKeyService.SetAuthCache(authMiddleware.Cache())
 	corsConfig := middleware.DefaultCORSConfig()
-	// NewRateLimiter takes a refill rate in requests-per-SECOND, so convert the
-	// configured per-minute budget; burst stays at one minute's worth of tokens.
+	// Convert the configured per-minute budgets to per-second refill rates with
+	// one minute's worth of burst. Authentication endpoints get their own,
+	// tighter budget (security.rate_limit.auth_requests_per_minute).
 	rateLimiter := middleware.NewRateLimiter(
-		float64(cfg.Security.RateLimit.APIRequestsPerMinute)/60.0,
-		cfg.Security.RateLimit.APIRequestsPerMinute,
+		middleware.PerMinute(cfg.Security.RateLimit.APIRequestsPerMinute),
+		middleware.PerMinute(cfg.Security.RateLimit.AuthRequestsPerMinute),
 	)
 	defer rateLimiter.Stop()
 	loggerConfig := middleware.DefaultLoggerConfig()
