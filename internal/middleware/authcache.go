@@ -40,8 +40,20 @@ type authCacheEntry struct {
 //
 // It follows the RateLimiter cleanup pattern: a sync.Map for lock-free reads plus
 // a background sweeper that drops expired entries, stopped via Stop.
+//
+// Revocation race: a validator reads the credential + user from the database and
+// then publishes the result. If a revocation (logout, password change, key
+// revoke, deactivation) deletes the row and evicts the cache entry between that
+// read and the publish, a naive store would re-insert the just-revoked identity
+// for a full TTL. To close that window every eviction bumps a generation counter
+// under mu, validators capture the generation with begin() BEFORE touching the
+// database, and store() only publishes — under the same mu — when no eviction has
+// happened since. A coarse global generation is deliberate: evictions are rare,
+// and the only cost of a spurious mismatch is one uncached validation.
 type AuthCache struct {
 	entries  sync.Map // map[string]authCacheEntry
+	mu       sync.Mutex
+	gen      uint64 // eviction generation; guarded by mu
 	done     chan struct{}
 	stopOnce sync.Once
 }
@@ -69,18 +81,46 @@ func (ac *AuthCache) get(key string) (*models.User, bool) {
 	return entry.user, true
 }
 
-// set caches a validated user under a credential hash for authCacheTTL.
-func (ac *AuthCache) set(key string, user *models.User) {
+// begin returns the current eviction generation. Validators call it BEFORE the
+// database lookup and pass the result to store, so a revocation that lands while
+// the lookup is in flight prevents the (now stale) result from being cached.
+func (ac *AuthCache) begin() uint64 {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	return ac.gen
+}
+
+// store caches a validated user under a credential hash for authCacheTTL, but
+// only when no eviction has happened since gen was captured by begin. The check
+// and the store happen under the same lock Evict/EvictUser take, so an eviction
+// can never interleave between them. It reports whether the entry was stored.
+func (ac *AuthCache) store(key string, user *models.User, gen uint64) bool {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	if ac.gen != gen {
+		return false
+	}
 	ac.entries.Store(key, authCacheEntry{
 		user:      user,
 		userID:    user.ID,
 		expiresAt: time.Now().Add(authCacheTTL),
 	})
+	return true
+}
+
+// set unconditionally caches a user (no generation check). It exists to prime
+// the cache in tests; request paths must use begin/store.
+func (ac *AuthCache) set(key string, user *models.User) {
+	ac.store(key, user, ac.begin())
 }
 
 // Evict removes a single cached entry by credential hash. Called on logout so a
-// deleted session is not served from cache for up to the TTL.
+// deleted session is not served from cache for up to the TTL. Bumping the
+// generation also discards any in-flight validation of the same credential.
 func (ac *AuthCache) Evict(credentialHash string) {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	ac.gen++
 	ac.entries.Delete(credentialHash)
 }
 
@@ -89,6 +129,9 @@ func (ac *AuthCache) Evict(credentialHash string) {
 // or a concurrently applied lockout/deactivation — takes effect immediately
 // rather than being masked for up to the TTL.
 func (ac *AuthCache) EvictUser(userID uuid.UUID) {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	ac.gen++
 	ac.entries.Range(func(k, v any) bool {
 		if entry, ok := v.(authCacheEntry); ok && entry.userID == userID {
 			ac.entries.Delete(k)

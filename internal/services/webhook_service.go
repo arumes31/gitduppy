@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gitduppy/gitduppy/internal/database"
@@ -37,17 +38,136 @@ type WebhookService struct {
 	// connections to loopback, private, link-local and metadata addresses
 	// unless private targets were explicitly allowed (SetAllowPrivateTargets).
 	transport *http.Transport
+
+	// Outbound deliveries (events and tests) run on a fixed pool of workers fed
+	// by a bounded queue, so neither event bursts nor repeated test requests can
+	// spawn unbounded goroutines. ctx is cancelled by Stop to abort in-flight
+	// deliveries on shutdown.
+	queue    chan webhookJob
+	ctx      context.Context
+	cancel   context.CancelFunc
+	workers  sync.WaitGroup
+	stopOnce sync.Once
+}
+
+// Delivery limits. retry_count is the total number of attempts per delivery.
+const (
+	webhookDefaultRetryCount   = 3
+	webhookMaxRetryCount       = 10
+	webhookDefaultTimeout      = 30 // seconds
+	webhookMaxTimeoutSeconds   = 120
+	webhookDeliveryDeadline    = 10 * time.Minute
+	webhookDeliveryWorkers     = 8
+	webhookDeliveryQueueLength = 256
+)
+
+// ErrWebhookQueueFull is returned when a delivery cannot be queued because the
+// bounded delivery queue is full or the service is shutting down.
+var ErrWebhookQueueFull = errors.New("webhook delivery queue is full, try again later")
+
+// webhookJob is one queued delivery.
+type webhookJob struct {
+	webhook   models.WebhookConfig
+	eventType string
+	payload   map[string]any
 }
 
 // NewWebhookService creates a new webhook service. encryption may be nil, in
 // which case secrets are stored as-is (used only where no master key is wired).
+// Call Stop on shutdown to cancel in-flight deliveries.
 func NewWebhookService(cloneService *CloneService, encryption *crypto.EncryptionService) *WebhookService {
-	return &WebhookService{
+	s := &WebhookService{
 		db:           database.GetDB(),
 		cloneService: cloneService,
 		encryption:   encryption,
 		transport:    netguard.Policy{}.Transport(),
 	}
+	s.startDeliveryWorkers(webhookDeliveryWorkers, webhookDeliveryQueueLength)
+	return s
+}
+
+// startDeliveryWorkers creates the delivery queue and its worker pool.
+func (s *WebhookService) startDeliveryWorkers(workers, queueLen int) {
+	s.ctx, s.cancel = context.WithCancel(context.Background())
+	s.queue = make(chan webhookJob, queueLen)
+	for range workers {
+		s.workers.Add(1)
+		go func() {
+			defer s.workers.Done()
+			for {
+				select {
+				case <-s.ctx.Done():
+					return
+				case job := <-s.queue:
+					s.deliverWebhook(s.ctx, job.webhook, job.eventType, job.payload)
+				}
+			}
+		}()
+	}
+}
+
+// Stop cancels in-flight deliveries, waits for the workers to exit and drops
+// anything still queued. Safe to call more than once.
+func (s *WebhookService) Stop() {
+	s.stopOnce.Do(func() {
+		if s.cancel == nil {
+			return
+		}
+		s.cancel()
+		s.workers.Wait()
+		if n := len(s.queue); n > 0 {
+			zap.L().Named("webhook-service").Warn("dropping queued webhook deliveries on shutdown", zap.Int("count", n))
+		}
+	})
+}
+
+// enqueue hands a delivery to the worker pool without blocking.
+func (s *WebhookService) enqueue(job webhookJob) error {
+	if s.ctx == nil || s.ctx.Err() != nil {
+		return ErrWebhookQueueFull
+	}
+	select {
+	case s.queue <- job:
+		return nil
+	default:
+		return ErrWebhookQueueFull
+	}
+}
+
+// validateDeliveryLimits checks user-supplied retry_count/timeout_seconds. Zero
+// means "use the default"; values outside the bounds are rejected.
+func validateDeliveryLimits(retryCount, timeoutSeconds *int) error {
+	if retryCount != nil && (*retryCount < 0 || *retryCount > webhookMaxRetryCount) {
+		return fmt.Errorf("%w: retry_count must be between 0 and %d", ErrValidation, webhookMaxRetryCount)
+	}
+	if timeoutSeconds != nil && (*timeoutSeconds < 0 || *timeoutSeconds > webhookMaxTimeoutSeconds) {
+		return fmt.Errorf("%w: timeout_seconds must be between 0 and %d", ErrValidation, webhookMaxTimeoutSeconds)
+	}
+	return nil
+}
+
+// clampAttempts maps a stored retry_count onto the attempt budget actually used,
+// so rows written before validation existed cannot schedule unbounded retries.
+func clampAttempts(retryCount int) int {
+	switch {
+	case retryCount < 1:
+		return webhookDefaultRetryCount
+	case retryCount > webhookMaxRetryCount:
+		return webhookMaxRetryCount
+	default:
+		return retryCount
+	}
+}
+
+// clampTimeout maps a stored timeout_seconds onto the per-attempt timeout used.
+func clampTimeout(timeoutSeconds int) time.Duration {
+	switch {
+	case timeoutSeconds <= 0:
+		timeoutSeconds = webhookDefaultTimeout
+	case timeoutSeconds > webhookMaxTimeoutSeconds:
+		timeoutSeconds = webhookMaxTimeoutSeconds
+	}
+	return time.Duration(timeoutSeconds) * time.Second
 }
 
 // SetAllowPrivateTargets lets webhook deliveries reach loopback and private
@@ -175,6 +295,9 @@ type CreateWebhookRequest struct {
 
 // CreateWebhook creates a new webhook.
 func (s *WebhookService) CreateWebhook(_ context.Context, userID uuid.UUID, req *CreateWebhookRequest) (*models.WebhookConfig, error) {
+	if err := validateDeliveryLimits(&req.RetryCount, &req.TimeoutSeconds); err != nil {
+		return nil, err
+	}
 	webhook := &models.WebhookConfig{
 		ID:             uuid.New(),
 		UserID:         userID,
@@ -190,10 +313,10 @@ func (s *WebhookService) CreateWebhook(_ context.Context, userID uuid.UUID, req 
 	}
 
 	if webhook.RetryCount <= 0 {
-		webhook.RetryCount = 3
+		webhook.RetryCount = webhookDefaultRetryCount
 	}
 	if webhook.TimeoutSeconds <= 0 {
-		webhook.TimeoutSeconds = 30
+		webhook.TimeoutSeconds = webhookDefaultTimeout
 	}
 
 	if err := s.db.Create(webhook).Error; err != nil {
@@ -216,6 +339,9 @@ type UpdateWebhookRequest struct {
 
 // UpdateWebhook updates a webhook.
 func (s *WebhookService) UpdateWebhook(ctx context.Context, id uuid.UUID, req *UpdateWebhookRequest) (*models.WebhookConfig, error) {
+	if err := validateDeliveryLimits(req.RetryCount, req.TimeoutSeconds); err != nil {
+		return nil, err
+	}
 	webhook, err := s.GetWebhookByID(ctx, id)
 	if err != nil {
 		return nil, err
@@ -279,11 +405,15 @@ func (s *WebhookService) SendEvent(_ context.Context, eventType string, payload 
 	}
 
 	for _, webhook := range webhooks {
-		// Deliveries are fire-and-forget and must outlive the triggering request, so
-		// they intentionally run detached from ctx; attemptDelivery uses a fresh
-		// context.Background with its own per-webhook timeout (see its comment).
-		//nolint:contextcheck // detached background delivery, not request-scoped
-		go s.deliverWebhook(webhook, eventType, payload)
+		// Deliveries must outlive the triggering request, so they are queued to
+		// the service's worker pool (bounded, cancelled on Stop) rather than tied
+		// to ctx. A full queue drops the delivery with an error log instead of
+		// blocking the caller (e.g. the clone worker).
+		if err := s.enqueue(webhookJob{webhook: webhook, eventType: eventType, payload: payload}); err != nil {
+			zap.L().Named("webhook-service").Error("dropping webhook delivery",
+				zap.String("webhook_id", webhook.ID.String()), zap.String("event", eventType), zap.Error(err))
+			metrics.WebhookDeliveriesTotal.WithLabelValues("failed").Inc()
+		}
 	}
 
 	return nil
@@ -313,20 +443,22 @@ func webhookRetryDelay(attempt int) time.Duration {
 // its attempt count, HTTP status, response/error and status are updated in place,
 // and after the final failed attempt the row is left in the terminal "failed"
 // (permanently failed) state, visible via the deliveries listing.
-func (s *WebhookService) deliverWebhook(webhook models.WebhookConfig, eventType string, payload map[string]any) {
+//
+// The whole delivery, retries and backoff included, is bounded by
+// webhookDeliveryDeadline and aborted when parent is cancelled (Stop).
+func (s *WebhookService) deliverWebhook(parent context.Context, webhook models.WebhookConfig, eventType string, payload map[string]any) {
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
 		s.recordTerminalMarshalFailure(webhook.ID, eventType, err)
 		return
 	}
 
-	// Floor the retry count so a webhook stored/updated with 0 (or a negative
-	// value — UpdateWebhook applies no lower bound) still delivers at least once
-	// instead of silently dropping the event.
-	retries := webhook.RetryCount
-	if retries < 1 {
-		retries = 3
-	}
+	ctx, cancel := context.WithTimeout(parent, webhookDeliveryDeadline)
+	defer cancel()
+
+	// Clamp the stored retry count: 0/negative still delivers (default budget)
+	// and rows saved before validation existed cannot exceed the maximum.
+	retries := clampAttempts(webhook.RetryCount)
 
 	// One row per delivery, created up front (status "pending") and updated on
 	// each attempt so the listing shows a single evolving record that ends in a
@@ -348,14 +480,25 @@ func (s *WebhookService) deliverWebhook(webhook models.WebhookConfig, eventType 
 	}
 
 	for attempt := 1; attempt <= retries; attempt++ {
-		httpStatus, detail, ok := s.attemptDelivery(webhook, eventType, payloadJSON, attempt)
-		// The row becomes terminal once an attempt succeeds or the budget is spent.
-		s.updateDelivery(delivery, attempt, httpStatus, detail, ok, ok || attempt == retries)
-		if ok {
+		httpStatus, detail, ok := s.attemptDelivery(ctx, webhook, eventType, payloadJSON, attempt)
+		// The row becomes terminal once an attempt succeeds, the budget is spent,
+		// or the delivery deadline/shutdown leaves no time for another attempt.
+		aborted := !ok && ctx.Err() != nil
+		if aborted {
+			detail += " (delivery aborted: deadline exceeded or shutting down)"
+		}
+		s.updateDelivery(delivery, attempt, httpStatus, detail, ok, ok || aborted || attempt == retries)
+		if ok || aborted || attempt == retries {
 			return
 		}
-		if attempt < retries {
-			time.Sleep(webhookRetryDelay(attempt))
+		timer := time.NewTimer(webhookRetryDelay(attempt))
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			s.updateDelivery(delivery, attempt, httpStatus,
+				detail+" (delivery aborted before retry: deadline exceeded or shutting down)", false, true)
+			return
 		}
 	}
 }
@@ -363,18 +506,14 @@ func (s *WebhookService) deliverWebhook(webhook models.WebhookConfig, eventType 
 // attemptDelivery attempts a single webhook delivery, returning the HTTP status
 // (0 when the request never completed), a human-readable status/error detail, and
 // whether it succeeded. It does not touch the DB; the caller records the outcome.
-func (s *WebhookService) attemptDelivery(webhook models.WebhookConfig, eventType string, payloadJSON []byte, attempt int) (httpStatus int, detail string, success bool) {
-	// Floor the timeout: a stored 0 (or negative) would make context.WithTimeout
+func (s *WebhookService) attemptDelivery(parent context.Context, webhook models.WebhookConfig, eventType string, payloadJSON []byte, attempt int) (httpStatus int, detail string, success bool) {
+	// Clamp the timeout: a stored 0 (or negative) would make context.WithTimeout
 	// an already-expired deadline, failing every delivery instantly, so fall back
-	// to the default 30s.
-	timeoutSeconds := webhook.TimeoutSeconds
-	if timeoutSeconds <= 0 {
-		timeoutSeconds = 30
-	}
-	// context.Background is intentional here: deliveries run in a detached
-	// goroutine (see SendEvent) that outlives the triggering request, so the
-	// request context must not cancel them. The delivery's own timeout bounds it.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
+	// to the default; oversized legacy values are capped.
+	timeout := clampTimeout(webhook.TimeoutSeconds)
+	// parent is the worker's delivery context (deadline + shutdown), never the
+	// triggering request's context: deliveries outlive the request.
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "POST", webhook.URL, bytes.NewBuffer(payloadJSON))
@@ -413,7 +552,7 @@ func (s *WebhookService) attemptDelivery(webhook models.WebhookConfig, eventType
 		transport = netguard.Policy{}.Transport()
 	}
 	client := &http.Client{
-		Timeout:       time.Duration(timeoutSeconds) * time.Second,
+		Timeout:       timeout,
 		Transport:     transport,
 		CheckRedirect: netguard.NoRedirect,
 	}
@@ -526,11 +665,9 @@ func (s *WebhookService) TestWebhook(ctx context.Context, webhookID uuid.UUID) e
 		"webhook_id": webhook.ID.String(),
 	}
 
-	// Fire-and-forget background delivery, deliberately detached from ctx; see
-	// deliverWebhook/attemptDelivery.
-	//nolint:contextcheck // detached background delivery, not request-scoped
-	go s.deliverWebhook(*webhook, "webhook.test", payload)
-	return nil
+	// Queued to the bounded worker pool (detached from the request); a full
+	// queue is reported to the caller so repeated tests cannot pile up work.
+	return s.enqueue(webhookJob{webhook: *webhook, eventType: "webhook.test", payload: payload})
 }
 
 // DB returns the database connection.

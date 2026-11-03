@@ -17,9 +17,14 @@ import (
 // blocks sibling subdomains that SameSite=Lax would let through.
 //
 // Safe methods (GET, HEAD, OPTIONS) are always allowed. Requests without the
-// session cookie are skipped: API clients authenticate with a bearer API key,
-// which a cross-site page cannot attach. baseURL, when set, is added as a
-// trusted origin so deployments behind a proxy that rewrites Host keep working.
+// session cookie are otherwise skipped: API clients authenticate with a bearer
+// API key, which a cross-site page cannot attach. The exception is the
+// session-establishing endpoints (sessionEstablishingPaths): they are checked
+// even without a cookie, because a cross-site login form would otherwise let an
+// attacker sign the victim's browser into the attacker's account (login CSRF).
+// Non-browser clients send neither Sec-Fetch-Site nor Origin and still pass.
+// baseURL, when set, is added as a trusted origin so deployments behind a proxy
+// that rewrites Host keep working.
 func CrossOriginProtection(baseURL string) (gin.HandlerFunc, error) {
 	cop := http.NewCrossOriginProtection()
 	if origin := originOf(baseURL); origin != "" {
@@ -28,9 +33,11 @@ func CrossOriginProtection(baseURL string) (gin.HandlerFunc, error) {
 		}
 	}
 	return func(c *gin.Context) {
-		if cookie, err := c.Cookie("session"); err != nil || cookie == "" {
-			c.Next()
-			return
+		if !isSessionEstablishing(c.Request) {
+			if cookie, err := c.Cookie("session"); err != nil || cookie == "" {
+				c.Next()
+				return
+			}
 		}
 		if err := cop.Check(c.Request); err != nil {
 			response.Forbidden(c, "Cross-origin request blocked")
@@ -39,6 +46,26 @@ func CrossOriginProtection(baseURL string) (gin.HandlerFunc, error) {
 		}
 		c.Next()
 	}, nil
+}
+
+// sessionEstablishingPaths are the state-changing endpoints that mint a session
+// cookie for an unauthenticated caller, so they get origin validation whether or
+// not the request already carries a session cookie.
+//
+//nolint:gochecknoglobals
+var sessionEstablishingPaths = map[string]struct{}{
+	"/api/v1/auth/login": {},
+}
+
+// isSessionEstablishing reports whether r is a non-safe request to one of the
+// sessionEstablishingPaths.
+func isSessionEstablishing(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	}
+	_, ok := sessionEstablishingPaths[r.URL.Path]
+	return ok
 }
 
 // originOf reduces a base URL such as "https://git.example.com/" to its origin

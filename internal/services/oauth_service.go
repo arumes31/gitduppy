@@ -87,9 +87,11 @@ func (s *OAuthService) listGitHubRepos(ctx context.Context, httpClient *http.Cli
 }
 
 // MirrorAllGitHubRepos imports every repository owned by the authenticated GitHub
-// user as a mirror for userID (creating new ones, refreshing credentials on
-// existing ones). It is best-effort: a per-repo failure is skipped so one bad
-// repo cannot abort the batch. Returns the number of newly created mirrors.
+// user as a mirror for userID (creating new ones, refreshing credentials only on
+// existing mirrors that userID created — see UpsertGitHubMirror; mirrors owned
+// by anyone else are left untouched). It is best-effort: a per-repo failure is
+// skipped so one bad repo cannot abort the batch. Returns the number of newly
+// created mirrors.
 func (s *OAuthService) MirrorAllGitHubRepos(ctx context.Context, userID uuid.UUID, token *oauth2.Token) (int, error) {
 	if s.repoService == nil {
 		return 0, errors.New("repository service not configured")
@@ -418,10 +420,12 @@ func (s *OAuthService) LinkOAuthAccount(_ context.Context, userID uuid.UUID, pro
 		return nil
 	}
 
-	// Link the OAuth account
-	user.OAuthProvider = stringPtr(string(provider))
-	user.OAuthSubject = stringPtr(subject)
-	return s.db.Save(&user).Error
+	// Link the OAuth account. Write only the two OAuth columns: saving the whole
+	// row loaded above would overwrite a concurrent admin change (is_active/role).
+	return s.db.Model(&models.User{}).Where("id = ?", user.ID).Updates(map[string]any{
+		"oauth_provider": string(provider),
+		"oauth_subject":  subject,
+	}).Error
 }
 
 // CreateOrUpdateUserFromOAuth creates or updates a user from OAuth data.
@@ -429,12 +433,13 @@ func (s *OAuthService) CreateOrUpdateUserFromOAuth(_ context.Context, provider O
 	// First, try to find existing user by OAuth provider and subject
 	var existingUser models.User
 	if err := s.db.Where("oauth_provider = ? AND oauth_subject = ?", string(provider), subject).First(&existingUser).Error; err == nil {
-		// Update email if it changed
+		// Update email if it changed (column-scoped, so a concurrent admin change to
+		// is_active/role is never overwritten with the stale copy loaded above).
 		if existingUser.Email != email {
-			existingUser.Email = email
-			if err := s.db.Save(&existingUser).Error; err != nil {
+			if err := s.db.Model(&models.User{}).Where("id = ?", existingUser.ID).Update("email", email).Error; err != nil {
 				return nil, err
 			}
+			existingUser.Email = email
 		}
 		return &existingUser, nil
 	}
@@ -442,12 +447,15 @@ func (s *OAuthService) CreateOrUpdateUserFromOAuth(_ context.Context, provider O
 	// Try to find existing user by email
 	var userByEmail models.User
 	if err := s.db.Where("email = ?", email).First(&userByEmail).Error; err == nil {
-		// Link OAuth to existing user
-		userByEmail.OAuthProvider = stringPtr(string(provider))
-		userByEmail.OAuthSubject = stringPtr(subject)
-		if err := s.db.Save(&userByEmail).Error; err != nil {
+		// Link OAuth to existing user (column-scoped update; see above).
+		if err := s.db.Model(&models.User{}).Where("id = ?", userByEmail.ID).Updates(map[string]any{
+			"oauth_provider": string(provider),
+			"oauth_subject":  subject,
+		}).Error; err != nil {
 			return nil, err
 		}
+		userByEmail.OAuthProvider = stringPtr(string(provider))
+		userByEmail.OAuthSubject = stringPtr(subject)
 		return &userByEmail, nil
 	}
 
@@ -458,6 +466,9 @@ func (s *OAuthService) CreateOrUpdateUserFromOAuth(_ context.Context, provider O
 	if !s.signupAllowed(email) {
 		return nil, ErrOAuthSignupNotAllowed
 	}
+	// IsActive is set explicitly and persisted as-is: the User model carries no
+	// GORM default for it, so an explicit false is written rather than replaced by
+	// a column default (which previously activated every sign-up).
 	newUser := &models.User{
 		ID:            uuid.New(),
 		Username:      username,

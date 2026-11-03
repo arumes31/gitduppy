@@ -257,6 +257,13 @@ type firehoseFrame struct {
 // ping-keepalive, and peer-disconnect handling) but subscribes to the
 // firehose instead of a single repository's channel.
 func (h *DashboardHandler) StreamDashboardLogs(c *gin.Context) {
+	// Capture the principal before upgrading so the stream is closed once the
+	// credential is revoked/expired or the account disabled (see wsPrincipal).
+	principal, deadline, ok := captureWSPrincipal(c, h.db)
+	if !ok {
+		return
+	}
+
 	ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		zap.L().Named("ws").Debug("WebSocket upgrade failed", zap.Error(err))
@@ -280,6 +287,7 @@ func (h *DashboardHandler) StreamDashboardLogs(c *gin.Context) {
 			}
 		}
 	}()
+	go principal.watch(ctx, cancel, ws, deadline)
 
 	var writeMu sync.Mutex
 	writeMessage := func(messageType int, data []byte) error {

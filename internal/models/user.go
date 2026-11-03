@@ -14,7 +14,13 @@ type User struct {
 	Email        string    `gorm:"size:255;uniqueIndex;not null" json:"email"`
 	PasswordHash *string   `gorm:"size:255" json:"-"`
 	Role         string    `gorm:"size:20;not null;default:user" json:"role"`
-	IsActive     bool      `gorm:"default:true" json:"is_active"`
+	// IsActive deliberately carries no GORM default tag. GORM omits a zero-valued
+	// field that has a default from the INSERT and lets the column default apply,
+	// so with the former `default:true` an explicit IsActive=false (an OAuth
+	// sign-up awaiting admin approval) was silently persisted as active. Without a
+	// default GORM always writes the Go value, and every creation site sets it
+	// explicitly. (AutoMigrate drops the old column default accordingly.)
+	IsActive bool `gorm:"column:is_active" json:"is_active"`
 	// Explicit column names: GORM's default naming would map these to
 	// "o_auth_provider"/"o_auth_subject", but the OAuth queries reference
 	// "oauth_provider"/"oauth_subject", so pin the columns to match.

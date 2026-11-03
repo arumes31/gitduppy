@@ -253,18 +253,28 @@ func (s *AuthService) Logout(_ context.Context, sessionToken string) error {
 
 // RefreshSession extends a session's expiry. The raw cookie value is hashed
 // before lookup to match the stored (hashed) session key.
-func (s *AuthService) RefreshSession(_ context.Context, sessionToken string) (*models.Session, error) {
+//
+// The extension is a single conditional UPDATE of the existing, unexpired row
+// (never an upsert): a read-then-Save would re-INSERT the session if a concurrent
+// logout or password change deleted it between the read and the write,
+// resurrecting a revoked session. Zero affected rows means the session is gone or
+// expired, and the refresh fails.
+func (s *AuthService) RefreshSession(ctx context.Context, sessionToken string) (*models.Session, error) {
+	tokenHash := crypto.HashToken(sessionToken)
+	now := time.Now().UTC()
+	newExpiry := now.Add(s.sessionDuration)
+
 	var session models.Session
-	if err := s.db.Where("token = ? AND expiry > ?", crypto.HashToken(sessionToken), time.Now()).First(&session).Error; err != nil {
+	res := s.db.WithContext(ctx).Model(&session).
+		Clauses(clause.Returning{}).
+		Where("token = ? AND expiry > ?", tokenHash, now).
+		Update("expiry", newExpiry)
+	if res.Error != nil {
+		return nil, res.Error
+	}
+	if res.RowsAffected != 1 {
 		return nil, errors.New("invalid or expired session")
 	}
-
-	// Extend expiry
-	session.Expiry = time.Now().UTC().Add(s.sessionDuration)
-	if err := s.db.Save(&session).Error; err != nil {
-		return nil, err
-	}
-
 	return &session, nil
 }
 
@@ -307,32 +317,46 @@ func (s *AuthService) DB() *gorm.DB {
 	return s.db
 }
 
+// errInvalidCurrentPassword is returned by ChangePassword when the supplied
+// current password does not verify.
+var errInvalidCurrentPassword = errors.New("invalid current password")
+
 // ChangePassword changes a user's password.
-func (s *AuthService) ChangePassword(_ context.Context, userID uuid.UUID, oldPassword, newPassword string) error {
-	var user models.User
-	if err := s.db.First(&user, userID).Error; err != nil {
-		return errors.New("user not found")
-	}
-
-	// Verify old password
-	if user.PasswordHash == nil || !s.passwordService.Verify(*user.PasswordHash, oldPassword) {
-		return errors.New("invalid current password")
-	}
-
-	// Hash new password
-	newHash, err := s.passwordService.Hash(newPassword)
-	if err != nil {
-		return err
-	}
-
+//
+// Only the password_hash column is written: saving the whole user row loaded at
+// the start would overwrite any concurrent admin change to is_active/role made
+// while the (slow) bcrypt verification ran. The read takes a row lock (SELECT
+// ... FOR UPDATE) inside the transaction so two concurrent changes for the same
+// user serialize and each verifies against the hash actually being replaced.
+func (s *AuthService) ChangePassword(ctx context.Context, userID uuid.UUID, oldPassword, newPassword string) error {
 	// Persist the new password and invalidate every existing session for this
 	// user in one transaction. A password change must log out all devices —
 	// including any attacker holding a stolen session cookie — otherwise the old
 	// sessions stay valid until natural expiry.
-	user.PasswordHash = &newHash
-	if err := s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Save(&user).Error; err != nil {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current models.User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id", "password_hash").
+			Where("id = ?", userID).
+			Take(&current).Error; err != nil {
+			return errors.New("user not found")
+		}
+
+		if current.PasswordHash == nil || !s.passwordService.Verify(*current.PasswordHash, oldPassword) {
+			return errInvalidCurrentPassword
+		}
+
+		newHash, err := s.passwordService.Hash(newPassword)
+		if err != nil {
 			return err
+		}
+
+		res := tx.Model(&models.User{}).Where("id = ?", userID).Update("password_hash", newHash)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected != 1 {
+			return errors.New("user not found")
 		}
 		return tx.Where("user_id = ?", userID).Delete(&models.Session{}).Error
 	}); err != nil {

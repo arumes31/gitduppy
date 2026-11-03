@@ -87,13 +87,24 @@ async function performGlobalSearch(event) {
             .replace(/"/g, "&quot;")
             .replace(/'/g, "&#039;");
 
-        list.innerHTML = data.data.map(item => {
-            const safeContent = esc(item.content);
-            const safeQuery = esc(query);
+        // Long matched lines (minified files) are clipped before any work so
+        // highlighting and DOM insertion stay cheap.
+        const MAX_LINE_CHARS = 500;
+        const safeQuery = esc(query);
+        const highlight = (raw) => {
+            let text = String(raw == null ? '' : raw);
+            const clipped = text.length > MAX_LINE_CHARS;
+            if (clipped) text = text.slice(0, MAX_LINE_CHARS);
+            // Split the raw text on the raw query and escape each piece, then
+            // join with literal highlight markup. Unlike a replace() string,
+            // split/join never interprets `$&`/`$'`-style patterns from the
+            // query, and matching before escaping cannot cut an HTML entity.
+            const parts = query ? text.split(query) : [text];
+            return parts.map(esc).join(`<span class="search-highlight">${safeQuery}</span>`) + (clipped ? ' …' : '');
+        };
 
-            // Highlight matches. Both the content and the query are already
-            // HTML-escaped, so the highlight wrapper is the only markup injected.
-            const highlighted = safeContent.replaceAll(safeQuery, `<span class="search-highlight">${safeQuery}</span>`);
+        list.innerHTML = data.data.map(item => {
+            const highlighted = highlight(item.content);
 
             return `
             <div class="search-result-item glass-panel">
