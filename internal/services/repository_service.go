@@ -159,7 +159,7 @@ func (s *RepositoryService) CreateRepository(_ context.Context, req *CreateRepos
 	// import) are held to the same rules. Names flow into e-mail subjects and log
 	// lines, so control characters (CR/LF header injection) are refused.
 	if !validator.ValidateRepositoryName(req.Name) {
-		return nil, fmt.Errorf("%w: repository name must be 1-255 characters without control characters", ErrValidation)
+		return nil, fmt.Errorf("%w: repository name must be 1-255 bytes without control characters", ErrValidation)
 	}
 	if !validator.ValidateGitURL(req.URL) {
 		return nil, fmt.Errorf("%w: invalid git repository URL", ErrValidation)
@@ -356,7 +356,7 @@ func (s *RepositoryService) UpdateRepository(ctx context.Context, id uuid.UUID, 
 func (s *RepositoryService) applyUpdateFields(repo *models.Repository, req *UpdateRepositoryRequest) error {
 	if req.Name != nil {
 		if !validator.ValidateRepositoryName(*req.Name) {
-			return fmt.Errorf("%w: repository name must be 1-255 characters without control characters", ErrValidation)
+			return fmt.Errorf("%w: repository name must be 1-255 bytes without control characters", ErrValidation)
 		}
 		repo.Name = *req.Name
 	}

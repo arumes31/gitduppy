@@ -134,6 +134,7 @@ func (s *WebhookService) Stop() {
 		s.workers.Wait()
 		if n := len(s.queue); n > 0 {
 			zap.L().Named("webhook-service").Warn("dropping queued webhook deliveries on shutdown", zap.Int("count", n))
+			metrics.WebhookDeliveriesTotal.WithLabelValues("failed").Add(float64(n))
 		}
 	})
 }

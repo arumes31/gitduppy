@@ -551,16 +551,15 @@ var hexObjectID = regexp.MustCompile(`^[0-9a-fA-F]{4,64}$`)
 // anything else (options, ranges, "rev^{...}" or ":path" expressions) is
 // rejected before reaching git.
 func resolveCommitParam(ctx context.Context, gitRepo *gogit.Repository, dir, param string) (string, bool) {
+	// Branch and tag names win over the hex interpretation, so refs named like
+	// "CAFE" or "deadbeef" stay reachable by name.
 	candidate := ""
-	switch {
-	case hexObjectID.MatchString(param):
+	if ref, err := gitRepo.Reference(plumbing.NewBranchReferenceName(param), true); err == nil {
+		candidate = ref.Hash().String()
+	} else if ref, err := gitRepo.Reference(plumbing.NewTagReferenceName(param), true); err == nil {
+		candidate = ref.Hash().String()
+	} else if hexObjectID.MatchString(param) {
 		candidate = strings.ToLower(param)
-	default:
-		if ref, err := gitRepo.Reference(plumbing.NewBranchReferenceName(param), true); err == nil {
-			candidate = ref.Hash().String()
-		} else if ref, err := gitRepo.Reference(plumbing.NewTagReferenceName(param), true); err == nil {
-			candidate = ref.Hash().String()
-		}
 	}
 	if candidate == "" {
 		return "", false

@@ -422,10 +422,17 @@ func (s *OAuthService) LinkOAuthAccount(_ context.Context, userID uuid.UUID, pro
 
 	// Link the OAuth account. Write only the two OAuth columns: saving the whole
 	// row loaded above would overwrite a concurrent admin change (is_active/role).
-	return s.db.Model(&models.User{}).Where("id = ?", user.ID).Updates(map[string]any{
+	res := s.db.Model(&models.User{}).Where("id = ?", user.ID).Updates(map[string]any{
 		"oauth_provider": string(provider),
 		"oauth_subject":  subject,
-	}).Error
+	})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return errors.New("user not found")
+	}
+	return nil
 }
 
 // CreateOrUpdateUserFromOAuth creates or updates a user from OAuth data.

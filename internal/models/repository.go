@@ -103,6 +103,10 @@ func RedactURLCredentials(raw string) string {
 		scheme, rest, _ := strings.Cut(raw, "://")
 		authority, path, hasPath := strings.Cut(rest, "/")
 		if i := strings.LastIndex(authority, "@"); i >= 0 {
+			// An ssh login user without a password is not a secret.
+			if strings.EqualFold(scheme, "ssh") && !strings.Contains(authority[:i], ":") {
+				return raw
+			}
 			authority = authority[i+1:]
 		}
 		if hasPath {

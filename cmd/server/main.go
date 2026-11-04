@@ -82,8 +82,9 @@ func main() {
 
 	// Surface config problems found during Load (deprecated or unknown keys);
 	// they are not fatal, but a mistyped key would otherwise be silently ignored.
+	// Written to stderr directly so they are visible at every logging.level.
 	for _, w := range cfg.Warnings {
-		zapLogger.Warn("configuration: " + w)
+		fmt.Fprintln(os.Stderr, "WARNING: configuration: "+w)
 	}
 
 	// Install the password policy (security.password_*) used by every code path
@@ -367,7 +368,11 @@ func createDefaultAdmin() error {
 			// the password. Ignoring these errors could otherwise leave the admin
 			// with an unknown/unchanged password while reporting a reset.
 			bootstrapPassword := os.Getenv("GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD")
-			if bootstrapPassword == "" {
+			if bootstrapPassword != "" {
+				if err := validator.ValidatePassword(bootstrapPassword); err != nil {
+					return fmt.Errorf("GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD does not meet the password policy: %w", err)
+				}
+			} else {
 				pw, genErr := generateBootstrapPassword(24)
 				if genErr != nil {
 					return fmt.Errorf("failed to generate bootstrap admin password: %w", genErr)
@@ -407,7 +412,13 @@ func createDefaultAdmin() error {
 	// This avoids baking a universal default password into every deployment.
 	bootstrapPassword := os.Getenv("GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD")
 	generated := false
-	if bootstrapPassword == "" {
+	if bootstrapPassword != "" {
+		// Only the operator-supplied value is checked; the generated one is
+		// long and random but may not match every configured character rule.
+		if err := validator.ValidatePassword(bootstrapPassword); err != nil {
+			return fmt.Errorf("GITMIRRORS_BOOTSTRAP_ADMIN_PASSWORD does not meet the password policy: %w", err)
+		}
+	} else {
 		pw, genErr := generateBootstrapPassword(24)
 		if genErr != nil {
 			return fmt.Errorf("failed to generate bootstrap admin password: %w", genErr)

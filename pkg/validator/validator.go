@@ -61,10 +61,12 @@ func ValidateEmail(email string) bool {
 // still name the login user (git@host:path, ssh://git@host/path) as long as no
 // password is attached.
 func ValidateGitURL(rawURL string) bool {
-	rawURL = strings.TrimSpace(rawURL)
+	// Check before trimming: callers store the untrimmed value, so a trailing
+	// CR/LF must not slip through.
 	if containsControlChar(rawURL) {
 		return false
 	}
+	rawURL = strings.TrimSpace(rawURL)
 
 	// Check SSH format: git@github.com:user/repo.git
 	if gitSSHRegex.MatchString(rawURL) {

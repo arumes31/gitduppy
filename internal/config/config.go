@@ -362,7 +362,9 @@ func migrateLegacyKeys(v *viper.Viper) []string {
 		if !v.InConfig(oldKey) {
 			continue
 		}
-		if _, envSet := os.LookupEnv(envName(newKey)); v.InConfig(newKey) || envSet {
+		// Viper ignores empty environment values, so only a non-empty override
+		// counts as set.
+		if envSet := os.Getenv(envName(newKey)) != ""; v.InConfig(newKey) || envSet {
 			warnings = append(warnings, fmt.Sprintf(
 				"deprecated config key %q is ignored because %q is also set; remove it", oldKey, newKey))
 			continue
@@ -421,8 +423,10 @@ const maxAuditRetentionDays = int(math.MaxInt64 / int64(24*time.Hour))
 
 func (c *Config) validate() error {
 	var errs []error
-	if c.Security.RateLimit.AuthRequestsPerMinute <= 0 {
-		errs = append(errs, errors.New("security.rate_limit.auth_requests_per_minute must be positive"))
+	// The OAuth redirect and its callback share the auth budget, so a budget of
+	// one would rate-limit every callback.
+	if c.Security.RateLimit.AuthRequestsPerMinute < 2 {
+		errs = append(errs, errors.New("security.rate_limit.auth_requests_per_minute must be at least 2"))
 	}
 	if c.Security.RateLimit.APIRequestsPerMinute <= 0 {
 		errs = append(errs, errors.New("security.rate_limit.api_requests_per_minute must be positive"))

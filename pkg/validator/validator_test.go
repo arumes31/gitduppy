@@ -279,6 +279,8 @@ func TestValidateRepositoryName(t *testing.T) {
 		"tab\tname":               false,
 		"sep arator":              false,
 		string(make([]byte, 256)): false,
+		strings.Repeat("a", 255):  true,
+		strings.Repeat("a", 256):  false,
 	}
 	for in, want := range cases {
 		if got := ValidateRepositoryName(in); got != want {

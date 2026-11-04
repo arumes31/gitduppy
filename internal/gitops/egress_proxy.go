@@ -293,7 +293,10 @@ func nativeEgressArgs(proxyURL string, policy netguard.Policy) []string {
 	args = append(args, "-c", "lfs.transfer.enablehrefrewrite=true")
 	// One rewrite base per prefix so each url.<base>.insteadOf has a single value.
 	n := 0
-	for _, prefix := range []string{"localhost", "127.", "[::1]", "[::ffff:", "[0:0:0:0:0:0:0:1]"} {
+	// "[::" and "[0" cover every spelling of ::1 and of IPv4-mapped/compatible
+	// loopback (e.g. [::0:1], [0:0:0:0:0:ffff:7f00:1], [0000::1]); global
+	// unicast IPv6 never starts with either.
+	for _, prefix := range []string{"localhost", "127.", "[::", "[0"} {
 		for _, scheme := range []string{"http://", "https://"} {
 			base := fmt.Sprintf("%s%d/", loopbackRewriteBase, n)
 			args = append(args, "-c", "url."+base+".insteadOf="+scheme+prefix)
