@@ -22,6 +22,10 @@ const wsRevalidateInterval = 30 * time.Second
 // wsCloseWriteTimeout bounds the policy-violation close frame write.
 const wsCloseWriteTimeout = time.Second
 
+// wsRevalidateTimeout bounds one credential re-validation query; a timed-out
+// check counts as a failure and closes the socket.
+const wsRevalidateTimeout = 10 * time.Second
+
 // wsPrincipal is the identity and credential a WebSocket was authenticated with,
 // captured from the gin context at upgrade time.
 type wsPrincipal struct {
@@ -52,7 +56,9 @@ func captureWSPrincipal(c *gin.Context, db *gorm.DB) (*wsPrincipal, time.Time, b
 }
 
 func (p *wsPrincipal) revalidate(ctx context.Context) (time.Time, error) {
-	return middleware.RevalidateCredential(ctx, p.db, p.authType, p.credentialHash, p.userID)
+	qctx, cancel := context.WithTimeout(ctx, wsRevalidateTimeout)
+	defer cancel()
+	return middleware.RevalidateCredential(qctx, p.db, p.authType, p.credentialHash, p.userID)
 }
 
 // watch re-validates the principal every wsRevalidateInterval and at the

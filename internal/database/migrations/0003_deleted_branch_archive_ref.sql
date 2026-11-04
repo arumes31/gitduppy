@@ -24,4 +24,10 @@ ALTER TABLE deleted_branches ADD COLUMN IF NOT EXISTS archive_ref varchar(1024) 
 -- +goose Down
 -- Keep the column: dropping it would orphan the per-event refs that rows
 -- created since this migration rely on for cleanup.
+--
+-- Rollback limit: once rows with a non-empty archive_ref exist, do not run a
+-- pre-0003 binary against this database. It only knows the shared
+-- refs/paperbin/heads/<branch> refs, so it would leave refs/paperbin/events/*
+-- refs unreleased (pinning those commits) and a restore could delete a shared
+-- legacy ref that still protects an older deletion event.
 SELECT 1;

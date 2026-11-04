@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"reflect"
 	"sort"
@@ -414,6 +415,10 @@ func envName(key string) string {
 }
 
 // validate rejects settings that would otherwise silently weaken security.
+// maxAuditRetentionDays is the largest day count whose conversion to
+// time.Duration fits in an int64.
+const maxAuditRetentionDays = int(math.MaxInt64 / int64(24*time.Hour))
+
 func (c *Config) validate() error {
 	var errs []error
 	if c.Security.RateLimit.AuthRequestsPerMinute <= 0 {
@@ -427,6 +432,11 @@ func (c *Config) validate() error {
 	}
 	if c.Logging.AuditRetentionDays < 0 {
 		errs = append(errs, errors.New("logging.audit_retention_days must not be negative (0 keeps audit logs forever)"))
+	}
+	// Larger values overflow the conversion to time.Duration (int64 ns) and
+	// would wrap to a tiny retention window.
+	if c.Logging.AuditRetentionDays > maxAuditRetentionDays {
+		errs = append(errs, fmt.Errorf("logging.audit_retention_days must not exceed %d", maxAuditRetentionDays))
 	}
 	if c.Server.TLS.Enabled {
 		// Fail at startup rather than when the listener starts (or, worse, run

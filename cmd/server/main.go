@@ -159,7 +159,10 @@ func main() {
 	authService := services.NewAuthService(cfg.Security.SessionDuration, auditService)
 	userService := services.NewUserService()
 	repoService := services.NewRepositoryService(encryptionService, cfg.Storage.BasePath)
-	repoService.WarnEmbeddedURLCredentials(context.Background())
+	// Best-effort and bounded so a slow database cannot stall startup.
+	scanCtx, cancelScan := context.WithTimeout(context.Background(), 15*time.Second)
+	repoService.WarnEmbeddedURLCredentials(scanCtx)
+	cancelScan()
 	cloneService := services.NewCloneService()
 	apiKeyService := services.NewAPIKeyService()
 	webhookService := services.NewWebhookService(cloneService, encryptionService)

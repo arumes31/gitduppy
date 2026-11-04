@@ -89,7 +89,9 @@ func (s *Service) SendEmail(to []string, subject, body string) error {
 		ServerName: s.config.SMTPHost,
 		MinVersion: tls.VersionTLS12,
 	}
-	dialer := &net.Dialer{Timeout: smtpTimeout}
+	// One deadline covers the whole session, dial included.
+	deadline := time.Now().Add(smtpTimeout)
+	dialer := &net.Dialer{Deadline: deadline}
 
 	var conn net.Conn
 	if s.config.SMTPPort == 465 {
@@ -101,7 +103,7 @@ func (s *Service) SendEmail(to []string, subject, body string) error {
 		return err
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(smtpTimeout))
+	_ = conn.SetDeadline(deadline)
 
 	client, err := smtp.NewClient(conn, s.config.SMTPHost)
 	if err != nil {

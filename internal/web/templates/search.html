@@ -93,8 +93,11 @@ async function performGlobalSearch(event) {
         const safeQuery = esc(query);
         const highlight = (raw) => {
             let text = String(raw == null ? '' : raw);
-            const clipped = text.length > MAX_LINE_CHARS;
-            if (clipped) text = text.slice(0, MAX_LINE_CHARS);
+            // Clip by code points, matching the server's rune limit, so a
+            // non-BMP character cannot push the match out of the kept text.
+            const chars = Array.from(text);
+            const clipped = chars.length > MAX_LINE_CHARS;
+            if (clipped) text = chars.slice(0, MAX_LINE_CHARS).join('');
             // Split the raw text on the raw query and escape each piece, then
             // join with literal highlight markup. Unlike a replace() string,
             // split/join never interprets `$&`/`$'`-style patterns from the

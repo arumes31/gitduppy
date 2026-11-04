@@ -17,6 +17,8 @@ func TestRedactURLCredentials(t *testing.T) {
 		"ssh://git@host/a/b.git":                "ssh://git@host/a/b.git",
 		"git@github.com:user/repo.git":          "git@github.com:user/repo.git",
 		"https://github.com/a/b.git":            "https://github.com/a/b.git",
+		"https://host/a.git?token=secret":       "https://host/a.git",
+		"https://u:p@host/a.git?x=1#f":          "https://host/a.git",
 		"https://us er:t%zz@host/a.git":         "https://host/a.git", // unparseable
 		"":                                      "",
 	}

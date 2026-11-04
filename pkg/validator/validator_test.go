@@ -2,6 +2,7 @@ package validator
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -199,6 +200,9 @@ func TestValidateGitURLRejectsEmbeddedCredentials(t *testing.T) {
 		"ssh://git@host:2222/a/b.git":           true,
 		"git@github.com:user/repo.git":          true,
 		"https://github.com/a/b.git\r\nX: y":    false,
+		"https://host/a/b.git?token=secret":     false,
+		"https://host/a/b.git?":                 false,
+		"https://host/a/b.git#frag":             false,
 	}
 	for in, want := range cases {
 		if got := ValidateGitURL(in); got != want {
@@ -238,6 +242,8 @@ func TestValidateGitRefName(t *testing.T) {
 		"new\nline":               false,
 		"del\x7f":                 false,
 		string(make([]byte, 256)): false,
+		strings.Repeat("a", 255):  true,
+		strings.Repeat("a", 256):  false,
 	}
 	for in, want := range cases {
 		if got := ValidateGitRefName(in); got != want {

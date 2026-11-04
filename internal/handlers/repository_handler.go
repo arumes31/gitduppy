@@ -496,8 +496,13 @@ func (h *RepositoryHandler) PermanentDeleteBranch(c *gin.Context) {
 
 	repo, err := h.repoService.GetRepositoryByID(c, repoID)
 	if err == nil && h.repoService.IsValidStoragePath(repo) {
+		// Keep the record when the ref cannot be released: it is the only
+		// handle a retry has on the archival ref, which otherwise pins the
+		// commit forever.
 		if relErr := gitops.ReleaseArchivalRef(c, db, repo.StoragePath, &delBranch); relErr != nil {
 			logServerError(c, relErr)
+			response.InternalError(c, "Failed to release the archived branch ref; please retry")
+			return
 		}
 	}
 

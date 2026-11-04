@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -299,9 +300,12 @@ func ReleaseArchivalRef(ctx context.Context, db *gorm.DB, repoPath string, br *m
 	// ref always starts with "refs/", so it cannot be parsed as an option.
 	current, err := RunGitCommand(ctx, repoPath, "rev-parse", "--verify", "--quiet", ref)
 	if err != nil {
-		// rev-parse --verify --quiet exits non-zero without output when the ref
-		// does not exist; anything else is a real failure.
-		if strings.TrimSpace(current) == "" {
+		// rev-parse --verify --quiet exits with status 1 and no output when the
+		// ref does not exist. Cancellation, a failed start or any other status
+		// is a real failure: the caller must keep the record so a retry can
+		// release the ref.
+		var exitErr *exec.ExitError
+		if ctx.Err() == nil && errors.As(err, &exitErr) && exitErr.ExitCode() == 1 && strings.TrimSpace(current) == "" {
 			return nil
 		}
 		return fmt.Errorf("resolve archival ref: %w", err)

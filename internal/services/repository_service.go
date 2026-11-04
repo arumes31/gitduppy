@@ -453,8 +453,15 @@ func gitRemoteOrigin(raw string) string {
 	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host)
 }
 
-// WarnEmbeddedURLCredentials logs a warning listing the IDs of repositories
-// whose stored URL still embeds credentials in its userinfo. Such URLs are no
+// Bounds for the startup scan in WarnEmbeddedURLCredentials.
+const (
+	embeddedCredentialScanLimit = 10000
+	embeddedCredentialLogSample = 20
+)
+
+// WarnEmbeddedURLCredentials logs a warning with the count (and a sample of the
+// IDs) of repositories whose stored URL still embeds credentials in its
+// userinfo or query string. Such URLs are no
 // longer accepted on create/update and are redacted in every API response, but
 // existing rows are left intact (rewriting them would silently break clones
 // that depend on the embedded secret). Operators should move the secret into
@@ -467,20 +474,26 @@ func (s *RepositoryService) WarnEmbeddedURLCredentials(ctx context.Context) {
 		URL string
 	}
 	if err := s.db.WithContext(ctx).Unscoped().Model(&models.Repository{}).
-		Select("id", "url").Where("url LIKE ?", "%://%@%").Find(&rows).Error; err != nil {
+		Select("id", "url").Where("url LIKE ? OR url LIKE ? OR url LIKE ?", "%://%@%", "%?%", "%#%").
+		Limit(embeddedCredentialScanLimit).Find(&rows).Error; err != nil {
 		zap.L().Named("repository-service").Warn("could not scan repositories for embedded URL credentials", zap.Error(err))
 		return
 	}
 	var ids []string
+	count := 0
 	for _, r := range rows {
 		if models.URLHasCredentials(r.URL) {
-			ids = append(ids, r.ID.String())
+			count++
+			if len(ids) < embeddedCredentialLogSample {
+				ids = append(ids, r.ID.String())
+			}
 		}
 	}
-	if len(ids) > 0 {
+	if count > 0 {
 		zap.L().Named("repository-service").Warn(
 			"repositories have credentials embedded in their URL; move them to the encrypted credentials field and rotate the exposed secrets",
-			zap.Strings("repository_ids", ids))
+			zap.Int("count", count), zap.Bool("scan_truncated", len(rows) == embeddedCredentialScanLimit),
+			zap.Strings("sample_repository_ids", ids))
 	}
 }
 

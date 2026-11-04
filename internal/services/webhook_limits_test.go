@@ -56,7 +56,7 @@ func TestClampDeliveryLimits(t *testing.T) {
 			t.Errorf("clampAttempts(%d) = %d, want %d", in, got, want)
 		}
 	}
-	for in, want := range map[int]time.Duration{0: 30 * time.Second, 45: 45 * time.Second, 99999: webhookMaxTimeoutSeconds * time.Second} {
+	for in, want := range map[int]time.Duration{-1: 30 * time.Second, 0: 30 * time.Second, 45: 45 * time.Second, 99999: webhookMaxTimeoutSeconds * time.Second} {
 		if got := clampTimeout(in); got != want {
 			t.Errorf("clampTimeout(%d) = %v, want %v", in, got, want)
 		}

@@ -96,6 +96,12 @@ func ValidateGitURL(rawURL string) bool {
 		return false
 	}
 
+	// Git remotes never need a query string or fragment, and they are a common
+	// place to smuggle tokens (https://host/repo.git?token=...).
+	if parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(rawURL, "#") {
+		return false
+	}
+
 	if parsed.User != nil {
 		if _, hasPassword := parsed.User.Password(); hasPassword {
 			return false

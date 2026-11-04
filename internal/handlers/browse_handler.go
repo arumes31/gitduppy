@@ -491,8 +491,13 @@ func (c *commitSummaryCache) get(hash, author, subject string) commitSummary {
 	if s, ok := c.byHash[hash]; ok {
 		return s
 	}
-	s := commitSummary{author: truncateRunes(author, maxSubjectRunes)}
-	c.budget -= len(s.author)
+	var s commitSummary
+	// Authors and messages share the per-response byte budget; once it is
+	// spent, further commits are reported without either.
+	if a := truncateRunes(author, maxSubjectRunes); len(a) <= c.budget {
+		s.author = a
+		c.budget -= len(a)
+	}
 	if msg := truncateRunes(subject, maxSubjectRunes); len(msg) <= c.budget {
 		s.message = msg
 		c.budget -= len(msg)
@@ -624,6 +629,15 @@ func (h *BrowseHandler) GetCommits(c *gin.Context) {
 		response.InternalError(c, "Failed to read commit log")
 		return
 	}
+	if gerr != nil {
+		// Truncated: keep only complete records so a cut-off date (or other
+		// field) is never parsed.
+		if i := strings.LastIndexByte(out, '\n'); i >= 0 {
+			out = out[:i]
+		} else {
+			out = ""
+		}
+	}
 
 	var commits []CommitEntry
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
@@ -691,11 +705,19 @@ func (h *BrowseHandler) GetCommit(c *gin.Context) {
 		response.NotFound(c, "Commit not found")
 		return
 	}
+	// A message/--stat section over the cap loses the sentinel and the file
+	// stats; flag it so the client can say so instead of showing it as whole.
+	messageTruncated := errors.Is(gerr, gitops.ErrOutputTooLarge)
 
 	// Get the actual diff (unified)
 	diffOut, derr := gitops.GitOutputLimited(ctx, repo.StoragePath, maxCommitDiffBytes,
 		"show", "--unified=3", "--format=", sha, "--")
 	diffTruncated := errors.Is(derr, gitops.ErrOutputTooLarge)
+	if derr != nil && !diffTruncated {
+		logServerError(c, derr)
+		response.InternalError(c, "Failed to read commit diff")
+		return
+	}
 
 	// Split at the \x1e sentinel: everything before it is the metadata line plus
 	// the verbatim %B message body; everything after is the --stat section.
@@ -759,6 +781,8 @@ func (h *BrowseHandler) GetCommit(c *gin.Context) {
 		"diff":           strings.Split(diffOut, "\n"),
 		"diff_truncated": diffTruncated,
 		"file_stats":     fileStats,
+		// Message and file stats were cut at the output cap.
+		"message_truncated": messageTruncated,
 	})
 }
 

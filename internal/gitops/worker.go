@@ -706,9 +706,16 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 					logger.Error("failed to save deleted branches in DB", zap.Int("count", len(deletedBranches)), zap.Error(dbErr))
 					// No record will ever reference these refs, so drop them
 					// rather than pinning the commits forever.
+					// opCtx may already be expired here, so use a fresh bounded
+					// context derived from the worker's lifetime.
+					cleanupCtx, cancelCleanup := context.WithTimeout(w.ctx, 30*time.Second)
 					for _, br := range deletedBranches {
-						_, _ = RunGitCommand(opCtx, repoPath, "update-ref", "-d", br.ArchiveRef, br.CommitSHA)
+						if out, rmErr := RunGitCommand(cleanupCtx, repoPath, "update-ref", "-d", br.ArchiveRef, br.CommitSHA); rmErr != nil {
+							logger.Error("failed to remove orphaned archive ref", zap.String("ref", br.ArchiveRef),
+								zap.String("output", strings.TrimSpace(out)), zap.Error(rmErr))
+						}
 					}
+					cancelCleanup()
 				}
 			}
 		}

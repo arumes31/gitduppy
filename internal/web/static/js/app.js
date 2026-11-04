@@ -1616,12 +1616,14 @@ if (repoBrowser) {
             logRenderer.pushText(text);
         };
 
-        logWS.onerror = (error) => {
+        logWS.onerror = (event) => {
+            if (event.target !== logWS) return; // replaced stream
             logsStatus.className = 'status-badge error';
             logsStatus.textContent = 'error';
         };
 
-        logWS.onclose = () => {
+        logWS.onclose = (event) => {
+            if (event.target !== logWS) return; // replaced stream
             logsStatus.className = 'status-badge success';
             logsStatus.textContent = 'idle';
         };
@@ -1974,6 +1976,19 @@ if (commitPage) {
 
             // Render diff
             renderDiff(c.diff || [], c.file_stats || []);
+
+            // The server caps message/stat and diff output; say so rather than
+            // presenting a partial commit as complete.
+            const notes = [];
+            if (c.message_truncated) notes.push('The commit message and file statistics were too large and have been truncated.');
+            if (c.diff_truncated) notes.push('The diff is too large and has been truncated; later files are not shown.');
+            if (notes.length) {
+                const container = document.getElementById('diff-container');
+                const notice = document.createElement('div');
+                notice.className = 'text-muted text-center py-2';
+                notice.textContent = notes.join(' ');
+                container.prepend(notice);
+            }
         } catch (e) {
             document.getElementById('diff-container').innerHTML = '<div class="text-muted text-center py-4">Failed to load commit: ' + escHtml(e.message) + '</div>';
         }

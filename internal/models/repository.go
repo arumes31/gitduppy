@@ -88,7 +88,9 @@ func (r Repository) MarshalJSON() ([]byte, error) {
 // RedactURLCredentials strips secrets from a git remote URL. For http(s)/git
 // URLs the whole userinfo is removed, since a bare "username" there is often a
 // token; for ssh:// URLs only the password is dropped and the login user is
-// kept. scp-like remotes (git@host:path) carry no secret and are returned as is.
+// kept. A query string or fragment (e.g. ?token=...) is dropped as well, since
+// git remotes never need one. scp-like remotes (git@host:path) carry no secret
+// and are returned as is.
 func RedactURLCredentials(raw string) string {
 	if !strings.Contains(raw, "://") {
 		return raw
@@ -107,6 +109,12 @@ func RedactURLCredentials(raw string) string {
 			return scheme + "://" + authority + "/" + path
 		}
 		return scheme + "://" + authority
+	}
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" {
+		u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = "", false, "", ""
+		if u.User == nil {
+			return u.String()
+		}
 	}
 	if u.User == nil {
 		return raw
