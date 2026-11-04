@@ -22,7 +22,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 
 # git and git-lfs are required at runtime by the mirroring engine, so a
 # distroless/scratch base is not viable; a pinned Alpine keeps the image small.
-FROM alpine:3.24@sha256:71e9b7bae160ba167fa17414401b94cbcdaf3c32feeab9298bd794a2a0614c35
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 # safe.directory '*' is baked into the system git config so the appuser can always
 # operate on mirrored repositories regardless of their on-disk owner (e.g. repos
 # created by a different UID, or when running under a read-only root filesystem
