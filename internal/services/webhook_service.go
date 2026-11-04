@@ -60,14 +60,16 @@ const (
 	webhookDeliveryWorkers     = 8
 	webhookDeliveryQueueLength = 256
 	// webhookDBTimeout bounds each delivery-record query. It is derived from
-	// context.Background so the final status write still happens during
-	// shutdown, but a stalled database cannot block a worker (and Stop) forever.
+	// the caller's context without its cancellation, so the final status write
+	// still happens during shutdown, but a stalled database cannot block a worker (and Stop) forever.
 	webhookDBTimeout = 10 * time.Second
 )
 
-// dbCtx returns a context bounding one delivery-record query.
-func dbCtx() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), webhookDBTimeout)
+// dbCtx returns a context bounding one delivery-record query. It keeps
+// parent's values but not its cancellation, so the final status write still
+// happens during shutdown.
+func dbCtx(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), webhookDBTimeout)
 }
 
 // ErrWebhookQueueFull is returned when a delivery cannot be queued because the
@@ -405,7 +407,7 @@ func (s *WebhookService) DeleteWebhook(_ context.Context, id uuid.UUID) error {
 }
 
 // SendEvent sends a webhook event to all subscribed webhooks.
-func (s *WebhookService) SendEvent(_ context.Context, eventType string, payload map[string]any) error {
+func (s *WebhookService) SendEvent(ctx context.Context, eventType string, payload map[string]any) error {
 	// events is a JSONB array column, so the containment operand must be a JSON
 	// array literal (e.g. ["clone.failed"]). Passing a Go []string encodes a
 	// Postgres text[] instead, which errors with "invalid input syntax for type
@@ -428,8 +430,11 @@ func (s *WebhookService) SendEvent(_ context.Context, eventType string, payload 
 			zap.L().Named("webhook-service").Error("dropping webhook delivery",
 				zap.String("webhook_id", webhook.ID.String()), zap.String("event", eventType), zap.Error(err))
 			// Keep the drop visible in the deliveries listing.
-			payloadJSON, _ := json.Marshal(payload)
-			s.recordTerminalFailure(webhook.ID, eventType, string(payloadJSON), "delivery dropped: "+err.Error())
+			payloadJSON, mErr := json.Marshal(payload)
+			if mErr != nil {
+				payloadJSON = []byte("{}")
+			}
+			s.recordTerminalFailure(ctx, webhook.ID, eventType, string(payloadJSON), "delivery dropped: "+err.Error())
 		}
 	}
 
@@ -466,7 +471,7 @@ func webhookRetryDelay(attempt int) time.Duration {
 func (s *WebhookService) deliverWebhook(parent context.Context, webhook models.WebhookConfig, eventType string, payload map[string]any) {
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
-		s.recordTerminalFailure(webhook.ID, eventType,
+		s.recordTerminalFailure(parent, webhook.ID, eventType,
 			fmt.Sprintf("{\"marshal_error\": %q}", err.Error()), "payload marshal failed: "+err.Error())
 		return
 	}
@@ -491,7 +496,7 @@ func (s *WebhookService) deliverWebhook(parent context.Context, webhook models.W
 		AttemptNumber:   0,
 		DeliveredAt:     time.Now().UTC(),
 	}
-	cctx, ccancel := dbCtx()
+	cctx, ccancel := dbCtx(parent)
 	err = s.db.WithContext(cctx).Create(delivery).Error
 	ccancel()
 	if err != nil {
@@ -505,9 +510,9 @@ func (s *WebhookService) deliverWebhook(parent context.Context, webhook models.W
 		// the webhook before every attempt so disabling or deleting it, or
 		// changing its URL or secret, takes effect for queued and retrying
 		// deliveries too: nothing is sent to a destination no longer configured.
-		current, reason := s.reloadWebhook(webhook.ID, eventType)
+		current, reason := s.reloadWebhook(ctx, webhook.ID, eventType)
 		if current == nil {
-			s.updateDelivery(delivery, attempt-1, 0, "delivery cancelled: "+reason, false, true)
+			s.updateDelivery(ctx, delivery, attempt-1, 0, "delivery cancelled: "+reason, false, true)
 			return
 		}
 		webhook = *current
@@ -518,7 +523,7 @@ func (s *WebhookService) deliverWebhook(parent context.Context, webhook models.W
 		if aborted {
 			detail += " (delivery aborted: deadline exceeded or shutting down)"
 		}
-		s.updateDelivery(delivery, attempt, httpStatus, detail, ok, ok || aborted || attempt == retries)
+		s.updateDelivery(ctx, delivery, attempt, httpStatus, detail, ok, ok || aborted || attempt == retries)
 		if ok || aborted || attempt == retries {
 			return
 		}
@@ -527,7 +532,7 @@ func (s *WebhookService) deliverWebhook(parent context.Context, webhook models.W
 		case <-timer.C:
 		case <-ctx.Done():
 			timer.Stop()
-			s.updateDelivery(delivery, attempt, httpStatus,
+			s.updateDelivery(ctx, delivery, attempt, httpStatus,
 				detail+" (delivery aborted before retry: deadline exceeded or shutting down)", false, true)
 			return
 		}
@@ -537,8 +542,8 @@ func (s *WebhookService) deliverWebhook(parent context.Context, webhook models.W
 // reloadWebhook returns the webhook's current configuration, or nil plus a
 // reason when it was deleted or (except for explicit test deliveries)
 // deactivated, or cannot be read.
-func (s *WebhookService) reloadWebhook(id uuid.UUID, eventType string) (*models.WebhookConfig, string) {
-	ctx, cancel := dbCtx()
+func (s *WebhookService) reloadWebhook(parent context.Context, id uuid.UUID, eventType string) (*models.WebhookConfig, string) {
+	ctx, cancel := dbCtx(parent)
 	defer cancel()
 	var current models.WebhookConfig
 	if err := s.db.WithContext(ctx).Where("id = ?", id).Take(&current).Error; err != nil {
@@ -626,7 +631,7 @@ func (s *WebhookService) generateHMACSignature(payload []byte, secret string) st
 // updateDelivery records the outcome of one attempt onto the delivery row,
 // moving it to a terminal status once the attempt succeeded ("success") or the
 // retry budget is exhausted ("failed"); otherwise it stays "pending".
-func (s *WebhookService) updateDelivery(delivery *models.WebhookDelivery, attempt, httpStatus int, detail string, success, terminal bool) {
+func (s *WebhookService) updateDelivery(ctx context.Context, delivery *models.WebhookDelivery, attempt, httpStatus int, detail string, success, terminal bool) {
 	status := "pending"
 	switch {
 	case success:
@@ -642,7 +647,7 @@ func (s *WebhookService) updateDelivery(delivery *models.WebhookDelivery, attemp
 	delivery.Status = status
 	delivery.DeliveredAt = time.Now().UTC()
 
-	uctx, ucancel := dbCtx()
+	uctx, ucancel := dbCtx(ctx)
 	defer ucancel()
 	if err := s.db.WithContext(uctx).Model(delivery).Updates(map[string]any{
 		"attempt_number": attempt,
@@ -669,7 +674,7 @@ func (s *WebhookService) updateDelivery(delivery *models.WebhookDelivery, attemp
 // payload could not be marshalled, or it was dropped because the delivery
 // queue was full) as a single terminal "failed" row, so the failure is still
 // visible in the deliveries listing.
-func (s *WebhookService) recordTerminalFailure(webhookID uuid.UUID, eventType, payload, detail string) {
+func (s *WebhookService) recordTerminalFailure(parent context.Context, webhookID uuid.UUID, eventType, payload, detail string) {
 	status := 0
 	delivery := &models.WebhookDelivery{
 		ID:              uuid.New(),
@@ -683,7 +688,7 @@ func (s *WebhookService) recordTerminalFailure(webhookID uuid.UUID, eventType, p
 		AttemptNumber:   1,
 		DeliveredAt:     time.Now().UTC(),
 	}
-	ctx, cancel := dbCtx()
+	ctx, cancel := dbCtx(parent)
 	defer cancel()
 	if err := s.db.WithContext(ctx).Create(delivery).Error; err != nil {
 		zap.L().Named("webhook-service").Error("failed to record terminal webhook delivery failure",
