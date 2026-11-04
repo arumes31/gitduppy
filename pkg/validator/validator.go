@@ -7,9 +7,13 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/go-playground/validator/v10"
 )
+
+// maxRepositoryNameLength matches the size of the repositories.name column.
+const maxRepositoryNameLength = 255
 
 //nolint:gochecknoglobals
 var (
@@ -17,9 +21,8 @@ var (
 	gitURLRegex     = regexp.MustCompile(`^(https?|git|ssh|git@[\w.-]+):\/\/?[\w.-]+(:\d+)?[\/\w.-]+\.git$`)
 	gitSSHRegex     = regexp.MustCompile(`^git@[\w.-]+:[\w.-]+\/[\w.-]+\.git$`)
 	branchNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
-	letterRegex     = regexp.MustCompile(`[a-zA-Z]`)
-	numberRegex     = regexp.MustCompile(`[0-9]`)
 	hexColorRegex   = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+	commitSHARegex  = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 )
 
 // Init initializes the validator.
@@ -50,7 +53,19 @@ func ValidateEmail(email string) bool {
 }
 
 // ValidateGitURL checks if a string is a valid git URL.
+//
+// URLs carrying credentials in their userinfo are rejected: a password (or a
+// token used as the http(s) username) embedded in the URL would be persisted in
+// plaintext and echoed back to every reader of the repository record. Such
+// secrets belong in the encrypted credentials field instead. SSH remotes may
+// still name the login user (git@host:path, ssh://git@host/path) as long as no
+// password is attached.
 func ValidateGitURL(rawURL string) bool {
+	// Check before trimming: callers store the untrimmed value, so a trailing
+	// CR/LF must not slip through.
+	if containsControlChar(rawURL) {
+		return false
+	}
 	rawURL = strings.TrimSpace(rawURL)
 
 	// Check SSH format: git@github.com:user/repo.git
@@ -83,6 +98,23 @@ func ValidateGitURL(rawURL string) bool {
 		return false
 	}
 
+	// Git remotes never need a query string or fragment, and they are a common
+	// place to smuggle tokens (https://host/repo.git?token=...).
+	if parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(rawURL, "#") {
+		return false
+	}
+
+	if parsed.User != nil {
+		if _, hasPassword := parsed.User.Password(); hasPassword {
+			return false
+		}
+		// Over http(s)/git a bare username is how tokens are commonly smuggled
+		// in (https://<token>@host/...), so no userinfo is accepted at all.
+		if parsed.Scheme != "ssh" {
+			return false
+		}
+	}
+
 	// Path should end with .git
 	return strings.HasSuffix(parsed.Path, ".git")
 }
@@ -95,23 +127,68 @@ func ValidateBranchName(name string) bool {
 	return branchNameRegex.MatchString(name)
 }
 
+// ValidateGitRefName reports whether name is a safe branch name to hand to git
+// as a positional argument. It follows `git check-ref-format --branch` (no "..",
+// "@{" or "//", no ASCII control characters or any of space ~ ^ : ? * [ \, no
+// component starting with "." or ending in ".lock", no leading/trailing "/",
+// not "@", no trailing ".") and additionally rejects a leading "-" so the name
+// can never be parsed as a command-line option.
+func ValidateGitRefName(name string) bool {
+	if name == "" || len(name) > 255 || name == "@" {
+		return false
+	}
+	if strings.HasPrefix(name, "-") || strings.HasPrefix(name, "/") ||
+		strings.HasSuffix(name, "/") || strings.HasSuffix(name, ".") {
+		return false
+	}
+	if strings.Contains(name, "..") || strings.Contains(name, "@{") || strings.Contains(name, "//") {
+		return false
+	}
+	if containsControlChar(name) || strings.ContainsAny(name, " ~^:?*[\\") {
+		return false
+	}
+	for _, component := range strings.Split(name, "/") {
+		if strings.HasPrefix(component, ".") || strings.HasSuffix(component, ".lock") {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidateCommitSHA reports whether sha is a full lowercase hex object name
+// (SHA-1 or SHA-256).
+func ValidateCommitSHA(sha string) bool {
+	return commitSHARegex.MatchString(sha)
+}
+
+// ValidateRepositoryName reports whether name is acceptable as a repository
+// display name: non-blank, at most 255 bytes, and free of control characters.
+// CR/LF in particular must never reach the name, since it is interpolated into
+// notification e-mail subjects and log lines.
+func ValidateRepositoryName(name string) bool {
+	if strings.TrimSpace(name) == "" || len(name) > maxRepositoryNameLength {
+		return false
+	}
+	return !containsControlChar(name)
+}
+
+// containsControlChar reports whether s contains a C0/C1 control character
+// (including CR, LF, TAB and DEL) or a Unicode line/paragraph separator.
+func containsControlChar(s string) bool {
+	for _, r := range s {
+		if unicode.IsControl(r) || r == ' ' || r == ' ' {
+			return true
+		}
+	}
+	return false
+}
+
 // ValidateUsername checks if a username is valid.
 func ValidateUsername(username string) bool {
 	if len(username) < 3 || len(username) > 64 {
 		return false
 	}
 	return branchNameRegex.MatchString(username)
-}
-
-// ValidatePassword checks if a password meets requirements.
-func ValidatePassword(password string) bool {
-	if len(password) < 8 {
-		return false
-	}
-	// At least one letter and one number
-	hasLetter := letterRegex.MatchString(password)
-	hasNumber := numberRegex.MatchString(password)
-	return hasLetter && hasNumber
 }
 
 // ValidateTagName checks if a tag name is valid.

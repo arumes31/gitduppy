@@ -105,8 +105,9 @@ func (g *GitOperations) CloneRepository(ctx context.Context, opts *CloneOptions)
 
 			// Fetch remote objects
 			fetchOpts := &git.FetchOptions{
-				Progress: opts.Progress,
-				Auth:     auth,
+				RemoteURL: opts.URL,
+				Progress:  opts.Progress,
+				Auth:      auth,
 			}
 			err = r.FetchContext(ctx, fetchOpts)
 			if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
@@ -273,10 +274,19 @@ func (g *GitOperations) FetchRepository(ctx context.Context, opts *CloneOptions)
 		return fmt.Errorf("failed to open repository: %w", err)
 	}
 
+	// Credentials belong to the repository's current URL, which an owner may
+	// have edited since this mirror was cloned. Bring the on-disk origin in line
+	// with it and fetch from that URL explicitly, so they are never sent to a
+	// previous (possibly no longer authorized) origin.
+	if err := reconcileOriginURL(repo, opts.URL); err != nil {
+		return err
+	}
+
 	// Build fetch options
 	fetchOpts := &git.FetchOptions{
-		Progress: opts.Progress,
-		Prune:    true,
+		RemoteURL: opts.URL,
+		Progress:  opts.Progress,
+		Prune:     true,
 	}
 
 	if auth != nil {
@@ -313,13 +323,51 @@ func (g *GitOperations) FetchRepository(ctx context.Context, opts *CloneOptions)
 		}
 	}
 
-	// Handle Git LFS fetch if enabled
+	// Handle Git LFS if enabled. Native checkouts run with LFS smudging
+	// disabled (see RunGitCommand), so a non-bare mirror needs "lfs pull"
+	// (fetch + checkout) to materialize LFS content in the worktree; a bare
+	// mirror only stores the objects.
 	if opts.LFS {
-		if err := g.runLFSFetch(ctx, opts.Path, opts.URL); err != nil {
-			return fmt.Errorf("git lfs fetch failed: %w", err)
+		if opts.Bare {
+			if err := g.runLFSFetch(ctx, opts.Path, opts.URL); err != nil {
+				return fmt.Errorf("git lfs fetch failed: %w", err)
+			}
+		} else if err := g.runLFSPull(ctx, opts.Path, opts.URL); err != nil {
+			return fmt.Errorf("git lfs pull failed: %w", err)
 		}
 	}
 
+	return nil
+}
+
+// reconcileOriginURL points the repository's "origin" remote at authorizedURL
+// when it differs, and verifies the result. An empty authorizedURL is
+// rejected: without it there is nothing to bind credentials to.
+func reconcileOriginURL(repo *git.Repository, authorizedURL string) error {
+	if strings.TrimSpace(authorizedURL) == "" {
+		return errors.New("repository URL is empty")
+	}
+	cfg, err := repo.Config()
+	if err != nil {
+		return fmt.Errorf("failed to read repository config: %w", err)
+	}
+	rc, ok := cfg.Remotes["origin"]
+	if !ok || rc == nil {
+		return errors.New("repository has no origin remote")
+	}
+	if len(rc.URLs) == 1 && rc.URLs[0] == authorizedURL {
+		return nil
+	}
+	rc.URLs = []string{authorizedURL}
+	if err := repo.SetConfig(cfg); err != nil {
+		return fmt.Errorf("failed to update origin remote URL: %w", err)
+	}
+	// Re-read to make sure the stored origin really is the authorized URL
+	// before any credential is attached to a fetch from it.
+	remote, err := repo.Remote("origin")
+	if err != nil || len(remote.Config().URLs) != 1 || remote.Config().URLs[0] != authorizedURL {
+		return errors.New("origin remote URL does not match the repository URL; refusing to send credentials")
+	}
 	return nil
 }
 
@@ -336,34 +384,140 @@ func (g *GitOperations) runLFSInstall(ctx context.Context, path string) error {
 	return cmd.Run()
 }
 
-// runLFSPull pulls Git LFS objects.
+// runLFSPull pulls Git LFS objects (fetch + worktree checkout).
 func (g *GitOperations) runLFSPull(ctx context.Context, path, remoteURL string) error {
-	// #nosec G204 -- fixed subcommand; the only variable argument is the
-	// lfs.url value derived from the repository's own validated remote URL.
-	cmd := exec.CommandContext(ctx, GetGitExecutable(), append(lfsConfigArgs(remoteURL), "lfs", "pull")...)
-	cmd.Dir = path
-	configureProcessGroup(cmd)
-	return cmd.Run()
+	return runLFSTransfer(ctx, path, remoteURL, "pull")
 }
 
 // runLFSFetch fetches Git LFS objects.
 func (g *GitOperations) runLFSFetch(ctx context.Context, path, remoteURL string) error {
-	// #nosec G204 -- see runLFSPull.
-	cmd := exec.CommandContext(ctx, GetGitExecutable(), append(lfsConfigArgs(remoteURL), "lfs", "fetch")...)
-	cmd.Dir = path
-	configureProcessGroup(cmd)
-	return cmd.Run()
+	return runLFSTransfer(ctx, path, remoteURL, "fetch")
 }
 
-// lfsConfigArgs pins the LFS endpoint of an HTTP(S) remote to git-lfs's default
-// location (<remote>.git/info/lfs) via "git -c lfs.url=...". Command-line git
-// config takes precedence over a mirrored repository's .lfsconfig, so an
-// untrusted upstream cannot redirect LFS transfers to an arbitrary (e.g.
-// internal) server. Credentials embedded in the URL are dropped. SSH and other
-// remotes resolve their endpoint through the git host and are left as-is.
+// runLFSTransfer runs "git lfs <subcommand>" with the LFS endpoint pinned to
+// one derived from the validated remote and all HTTP(S) traffic of git and
+// git-lfs forced through the policy-enforcing egress proxy (see
+// egress_proxy.go). Object download URLs returned by the LFS API are
+// server-controlled, so pinning the API endpoint alone is not enough.
+func runLFSTransfer(ctx context.Context, path, remoteURL, subcommand string) error {
+	endpointArgs, err := lfsEndpointArgs(ctx, path, remoteURL)
+	if err != nil {
+		return err
+	}
+	proxy, err := sharedEgressProxy()
+	if err != nil {
+		return err
+	}
+	args := nativeEgressArgs(proxy.URL(), EgressPolicy())
+	args = append(args, endpointArgs...)
+	args = append(args, "lfs", subcommand)
+	// #nosec G204 -- fixed subcommand; the variable arguments are the local
+	// egress proxy URL and the lfs.url value derived from the repository's own
+	// validated remote URL.
+	cmd := exec.CommandContext(ctx, GetGitExecutable(), args...)
+	cmd.Dir = path
+	cmd.Env = nativeEgressEnv(proxy.URL())
+	// Same tree-kill on cancellation as RunGitCommand: git-lfs forks transfer
+	// workers that a plain single-process kill would orphan.
+	configureProcessGroup(cmd)
+	stderr := &limitedBuffer{max: 4 << 10, truncate: true}
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(stderr.buf.String()); msg != "" {
+			return fmt.Errorf("%w: %s", err, msg)
+		}
+		return err
+	}
+	return nil
+}
+
+// lfsEndpointArgs returns the "git -c" arguments that pin the LFS endpoint for
+// remoteURL. SSH remotes resolve their endpoint through git-lfs-authenticate
+// on the (validated) SSH host and are not pinned; for them a repository
+// .lfsconfig that redirects the endpoint is refused instead.
+func lfsEndpointArgs(ctx context.Context, path, remoteURL string) ([]string, error) {
+	if args := lfsConfigArgs(remoteURL); args != nil {
+		return args, nil
+	}
+	if !isSSHRemote(remoteURL) {
+		return nil, errors.New("git lfs is only supported for http(s), git:// and ssh remotes")
+	}
+	if err := refuseLFSEndpointOverride(ctx, path); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+// isSSHRemote reports whether remoteURL is an ssh:// URL or scp-like
+// "user@host:path" remote.
+func isSSHRemote(remoteURL string) bool {
+	remoteURL = strings.TrimSpace(remoteURL)
+	if i := strings.Index(remoteURL, "://"); i >= 0 {
+		switch strings.ToLower(remoteURL[:i]) {
+		case "ssh", "git+ssh", "ssh+git":
+			return true
+		}
+		return false
+	}
+	host, _, found := strings.Cut(remoteURL, ":")
+	// A single-letter "host" is a Windows drive path (C:\repo), not scp syntax.
+	return found && len(host) > 1 && !strings.ContainsAny(host, `/\`)
+}
+
+// lfsEndpointKeyPattern matches the configuration keys through which a
+// repository's .lfsconfig can redirect the LFS endpoint.
+const lfsEndpointKeyPattern = `^(lfs\.url|remote\..*\.lfsurl)$`
+
+// refuseLFSEndpointOverride fails when the repository's .lfsconfig (worktree
+// file, index or HEAD blob, the locations git-lfs reads) sets an LFS endpoint.
+func refuseLFSEndpointOverride(ctx context.Context, path string) error {
+	var sources [][]string
+	if _, err := os.Stat(filepath.Join(path, ".lfsconfig")); err == nil {
+		sources = append(sources, []string{"--file", filepath.Join(path, ".lfsconfig")})
+	}
+	for _, spec := range []string{":.lfsconfig", "HEAD:.lfsconfig"} {
+		if _, err := RunGitCommandLimited(ctx, path, 4<<10, "cat-file", "-e", spec); err == nil {
+			sources = append(sources, []string{"--blob", spec})
+		}
+	}
+	for _, src := range sources {
+		args := append([]string{"config"}, src...)
+		args = append(args, "--get-regexp", lfsEndpointKeyPattern)
+		out, err := RunGitCommandLimited(ctx, path, 64<<10, args...)
+		if err == nil && strings.TrimSpace(out) != "" {
+			return errors.New("repository .lfsconfig overrides the LFS endpoint, which is not allowed for ssh remotes")
+		}
+		// "git config --get-regexp" exits 1 when nothing matches.
+		var exitErr *exec.ExitError
+		if err != nil && (!errors.As(err, &exitErr) || exitErr.ExitCode() != 1) {
+			return fmt.Errorf("failed to inspect .lfsconfig: %w", err)
+		}
+	}
+	return nil
+}
+
+// lfsConfigArgs pins the LFS endpoint of an HTTP(S) or git:// remote to
+// git-lfs's default location (<remote>.git/info/lfs over http(s)) via
+// "git -c lfs.url=...". Command-line git config takes precedence over a
+// mirrored repository's .lfsconfig, so an untrusted upstream cannot redirect
+// LFS transfers to an arbitrary (e.g. internal) server. Credentials embedded
+// in the URL are dropped. Other remotes return nil.
 func lfsConfigArgs(remoteURL string) []string {
 	u, err := url.Parse(strings.TrimSpace(remoteURL))
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+	if err != nil || u.Host == "" {
+		return nil
+	}
+	switch u.Scheme {
+	case "http", "https":
+	case "git":
+		// git-lfs derives https://<host>/<path> for git:// remotes; the git
+		// daemon port does not carry over.
+		u.Scheme = "https"
+		u.Host = u.Hostname()
+		if strings.Contains(u.Host, ":") {
+			u.Host = "[" + u.Host + "]"
+		}
+	default:
 		return nil
 	}
 	u.User = nil
@@ -385,9 +539,11 @@ func (g *GitOperations) PushRepository(ctx context.Context, opts *CloneOptions) 
 		return fmt.Errorf("failed to open repository: %w", err)
 	}
 
-	// Build push options
+	// Build push options. Push to the authorized URL explicitly rather than
+	// whatever origin currently says (see reconcileOriginURL).
 	pushOpts := &git.PushOptions{
-		Progress: opts.Progress,
+		RemoteURL: opts.URL,
+		Progress:  opts.Progress,
 	}
 
 	auth, err := g.buildAuth(opts)
@@ -599,8 +755,96 @@ func RunGitCommand(ctx context.Context, dir string, args ...string) (string, err
 	// runs — CI lints on Linux — the suppression lives in .golangci.yml's
 	// exclude-rules instead, which applies regardless of GOOS.
 	configureProcessGroup(cmd)
+	cmd.Env = nativeGitEnv()
 	output, err := cmd.CombinedOutput()
 	return string(output), err
+}
+
+// nativeGitEnv is the environment for local (non-transfer) git subprocesses.
+// GIT_LFS_SKIP_SMUDGE keeps checkouts and resets from triggering git-lfs
+// downloads through a globally installed smudge filter: LFS content is only
+// transferred by the explicit, proxy-routed runLFSTransfer.
+func nativeGitEnv() []string {
+	return append(os.Environ(), "GIT_LFS_SKIP_SMUDGE=1")
+}
+
+// ErrOutputTooLarge is returned by the limited git command runners when the
+// command produced more output than allowed. The output returned alongside it
+// is truncated to the limit.
+var ErrOutputTooLarge = errors.New("git command output exceeds limit")
+
+// limitedBuffer collects up to max bytes and records overflow. Unless
+// truncate is set, a write past the limit fails, which stops exec's copy
+// goroutine; onFull lets the caller kill the process at that point. With
+// truncate, excess output is silently discarded so the child never blocks on
+// a full pipe.
+type limitedBuffer struct {
+	buf      strings.Builder
+	max      int
+	truncate bool
+	exceeded bool
+	onFull   func()
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if remaining := b.max - b.buf.Len(); len(p) > remaining {
+		if remaining > 0 {
+			b.buf.Write(p[:remaining])
+		}
+		if !b.exceeded {
+			b.exceeded = true
+			if b.onFull != nil {
+				b.onFull()
+			}
+		}
+		if b.truncate {
+			return len(p), nil
+		}
+		return 0, ErrOutputTooLarge
+	}
+	return b.buf.Write(p)
+}
+
+// RunGitCommandLimited is RunGitCommand with the combined stdout+stderr
+// capped at maxBytes. Past the cap the process is killed and the truncated
+// output is returned together with ErrOutputTooLarge.
+func RunGitCommandLimited(ctx context.Context, dir string, maxBytes int, args ...string) (string, error) {
+	return runGitLimited(ctx, dir, maxBytes, true, args)
+}
+
+// GitOutputLimited runs a git command and returns only its stdout, capped at
+// maxBytes like RunGitCommandLimited. Up to 4 KiB of stderr is included in a
+// returned error.
+func GitOutputLimited(ctx context.Context, dir string, maxBytes int, args ...string) (string, error) {
+	return runGitLimited(ctx, dir, maxBytes, false, args)
+}
+
+func runGitLimited(ctx context.Context, dir string, maxBytes int, combined bool, args []string) (string, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	// #nosec G204 -- callers pass fixed subcommands; see RunGitCommand.
+	cmd := exec.CommandContext(ctx, GetGitExecutable(), args...)
+	cmd.Dir = dir
+	configureProcessGroup(cmd)
+	cmd.Env = nativeGitEnv()
+	out := &limitedBuffer{max: maxBytes, onFull: cancel}
+	stderr := &limitedBuffer{max: 4 << 10, truncate: true}
+	cmd.Stdout = out
+	if combined {
+		cmd.Stderr = out
+	} else {
+		cmd.Stderr = stderr
+	}
+	err := cmd.Run()
+	if out.exceeded {
+		return out.buf.String(), ErrOutputTooLarge
+	}
+	if err != nil && !combined {
+		if msg := strings.TrimSpace(stderr.buf.String()); msg != "" {
+			err = fmt.Errorf("%w: %s", err, msg)
+		}
+	}
+	return out.buf.String(), err
 }
 
 // GetReferences returns all references in the repository at the given path.
@@ -687,9 +931,16 @@ func (g *GitOperations) updatePool(ctx context.Context, url string, auth transpo
 		}
 	}
 
+	// The pool directory is keyed by the URL, so its origin should already be
+	// url; reconcile anyway so credentials are only ever sent to url.
+	if err := reconcileOriginURL(r, url); err != nil {
+		return "", err
+	}
+
 	fetchOpts := &git.FetchOptions{
-		Progress: progress,
-		Auth:     auth,
+		RemoteURL: url,
+		Progress:  progress,
+		Auth:      auth,
 		RefSpecs: []config.RefSpec{
 			"refs/heads/*:refs/heads/*",
 			"refs/tags/*:refs/tags/*",

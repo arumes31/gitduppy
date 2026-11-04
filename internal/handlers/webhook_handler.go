@@ -232,6 +232,12 @@ func (h *WebhookHandler) TestWebhook(c *gin.Context) {
 	}
 
 	if testErr := h.webhookService.TestWebhook(c, id); testErr != nil {
+		// Deliveries run on a bounded queue; report saturation as a retryable 429.
+		if errors.Is(testErr, services.ErrWebhookQueueFull) {
+			c.Header("Retry-After", "30")
+			response.ErrorResponse(c, http.StatusTooManyRequests, "WEBHOOK_QUEUE_FULL", testErr.Error())
+			return
+		}
 		respondServiceError(c, testErr)
 		return
 	}

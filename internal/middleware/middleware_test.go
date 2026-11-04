@@ -155,7 +155,7 @@ func TestRequireAdmin(t *testing.T) {
 }
 
 func TestRateLimiterAllowsThenBlocks(t *testing.T) {
-	rl := NewRateLimiter(0, 2) // burst 2, no refill
+	rl := NewRateLimiter(RateBudget{RPS: 0, Burst: 2}, RateBudget{}) // burst 2, no refill
 	t.Cleanup(rl.Stop)
 	r := gin.New()
 	r.Use(rl.Middleware())

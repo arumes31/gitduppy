@@ -1,5 +1,9 @@
 # GitDuppy Configuration Example
-# This file contains all available configuration options with their default values
+# Every key below is read by the loader (internal/config/config.go); values
+# shown are the defaults unless noted. Unknown keys are logged as warnings at
+# startup and ignored. Any key can also be set through an environment variable:
+# GITMIRRORS_<SECTION>_<KEY> (dots become underscores), e.g.
+# GITMIRRORS_SERVER_TLS_ENABLED=true.
 
 # Server configuration
 server:
@@ -7,77 +11,86 @@ server:
   port: 8080
   # Host to bind to (use "0.0.0.0" to accept connections from any interface)
   host: "0.0.0.0"
-  # Enable TLS/SSL (requires tls_cert and tls_key to be set)
-  tls_enabled: false
-  # Path to TLS certificate file (PEM format)
-  tls_cert: ""
-  # Path to TLS private key file (PEM format)
-  tls_key: ""
+  read_timeout: "30s"
+  write_timeout: "300s"
+  idle_timeout: "120s"
+  # Public URL of this instance. An https:// URL also makes the session cookie
+  # Secure by default.
+  base_url: "http://localhost:8080"
+  # Reverse proxies (IPs or CIDRs) allowed to set X-Forwarded-For/X-Real-IP.
+  trusted_proxies: []
+  # Native TLS. When enabled, cert and key must point to readable PEM files or
+  # the server refuses to start (it never falls back to plaintext).
+  # The flat keys tls_enabled/tls_cert/tls_key from older examples are
+  # deprecated: they are still mapped onto this block with a warning.
+  tls:
+    enabled: false
+    # Path to TLS certificate file (PEM format)
+    cert: ""
+    # Path to TLS private key file (PEM format)
+    key: ""
 
-# Database configuration
+# Database configuration (PostgreSQL)
 database:
-  # Database connection string (PostgreSQL format)
-  # Format: postgres://username:password@host:port/database?sslmode=disable
-  url: "postgres://gitduppy:password@localhost:5432/gitduppy?sslmode=disable"
+  host: "localhost"
+  port: 5432
+  name: "gitmirrors"
+  user: "gitmirrors"
+  password: ""  # prefer GITMIRRORS_DATABASE_PASSWORD
+  sslmode: "disable"
   # Maximum number of open connections to the database
-  max_connections: 25
+  max_open_conns: 25
   # Maximum number of idle connections in the pool
-  max_idle_connections: 5
-  # Maximum amount of time a connection may be reused (seconds)
-  connection_max_lifetime: 300
+  max_idle_conns: 5
+  # Maximum amount of time a connection may be reused
+  conn_max_lifetime: "1h"
 
 # Security configuration
 security:
-  # Secret used for JWT token generation (minimum 32 characters recommended)
-  jwt_secret: "change-this-to-a-secure-random-string"
-  # 32-byte encryption key for encrypting sensitive data in the database
-  encryption_key: "change-this-to-a-32-byte-random-key"
-  # Email address for the initial admin user (required on first run)
-  admin_email: "admin@example.com"
-  # Minimum password length requirement
+  # 32-char AES-256 key for credential encryption (openssl rand -hex 16).
+  # Required; prefer GITMIRRORS_SECURITY_MASTER_KEY.
+  master_key: ""
+  session_duration: "24h"
+  # Outbound webhooks/clone URLs may not reach private or loopback addresses
+  # unless this is true. Link-local/metadata addresses stay blocked.
+  allow_private_network_targets: false
+  rate_limit:
+    # Per-client budget for /api/v1/auth and /api/v1/oauth (login attempts)
+    auth_requests_per_minute: 10
+    # Per-client budget for other API calls
+    api_requests_per_minute: 60
+  # Password policy, enforced whenever a password is set (change password,
+  # user creation). Minimum length can be raised (8-72), never lowered below 8.
   password_min_length: 8
   # Require uppercase letters in passwords
-  password_require_uppercase: true
+  password_require_uppercase: false
   # Require lowercase letters in passwords
-  password_require_lowercase: true
+  password_require_lowercase: false
   # Require numbers in passwords
-  password_require_numbers: true
+  password_require_numbers: false
   # Require special characters in passwords
-  password_require_special: true
+  password_require_special: false
 
-# Git operations configuration
-git:
-  # Timeout for git clone operations (seconds)
-  clone_timeout: 300
-  # Timeout for git fetch operations (seconds)
-  fetch_timeout: 120
+# Background clone worker
+worker:
   # Maximum number of concurrent git clone operations
-  max_concurrent_clones: 5
+  max_concurrent: 3
+  # Timeout for a clone/fetch operation (seconds)
+  clone_timeout: 3600
   # Number of retry attempts for failed operations
-  retry_attempts: 3
-  # Delay between retry attempts (seconds)
-  retry_delay: 30
-
-# Webhook configuration
-webhooks:
-  # Enable webhook notifications
-  enabled: true
-  # Timeout for webhook requests (seconds)
-  timeout: 30
-  # Maximum number of retry attempts for failed webhooks
-  max_retries: 3
-  # Delay between webhook retry attempts (seconds)
-  retry_delay: 60
+  retry_max_attempts: 3
+  # Base delay between retry attempts
+  retry_base_delay: "30s"
 
 # Logging configuration
 logging:
   # Log level (debug, info, warn, error)
   level: "info"
-  # Log format (json or text)
+  # Log format (json or console)
   format: "json"
-  # Enable audit logging for security and compliance
-  audit_enabled: true
-  # Number of days to retain audit logs
+  output: "stdout"  # stdout/file
+  file_path: "/app/logs/app.log"
+  # Number of days to retain audit logs (security records); 0 keeps them forever
   audit_retention_days: 90
 
 # Email configuration (for notifications)
@@ -86,45 +99,28 @@ email:
   enabled: false
   # SMTP server hostname
   smtp_host: "smtp.example.com"
-  # SMTP server port
+  # SMTP server port. 465 uses implicit TLS; any other port requires STARTTLS.
   smtp_port: 587
-  # SMTP username (usually your email address)
-  smtp_username: ""
+  # SMTP username (usually your email address); empty skips authentication
+  smtp_user: ""
   # SMTP password or app-specific password
   smtp_password: ""
   # Email address to send notifications from
-  from_address: "noreply@example.com"
+  from: "noreply@example.com"
+  # Allow plaintext delivery when the server does not offer STARTTLS (e.g. a
+  # local relay on localhost:25). Credentials are still never sent in the clear
+  # to a non-local host.
+  allow_insecure: false
 
-# Middleware configuration
-middleware:
-  # CORS configuration
-  cors:
-    # List of allowed origins (use ["*"] for development only)
-    allowed_origins:
-      - "https://your-frontend.example.com"
-      - "http://localhost:3000"
-    # List of allowed methods
-    allowed_methods:
-      - "GET"
-      - "POST"
-      - "PUT"
-      - "DELETE"
-      - "OPTIONS"
-    # List of allowed headers
-    allowed_headers:
-      - "Authorization"
-      - "Content-Type"
-      - "X-Requested-With"
-    # Allow credentials (cookies, authorization headers)
-    allow_credentials: true
-    # Max age for preflight requests (seconds)
-    max_age: 86400
-  
-  # Rate limiting configuration
-  rate_limit:
-    # Enable rate limiting
-    enabled: true
-    # Maximum requests per minute per IP address
-    requests_per_minute: 60
-    # Burst limit (additional requests allowed temporarily)
-    burst: 10
+# Storage paths
+storage:
+  base_path: "/app/storage/repos"
+  ssh_path: "/app/storage/ssh"
+  backup_path: "/app/storage/backups"
+  dedupe_enabled: true
+
+# Monitoring
+monitoring:
+  metrics_enabled: true
+  metrics_path: "/metrics"
+  health_check_interval: "15m"

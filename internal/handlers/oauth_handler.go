@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,9 @@ const oauthExchangeTimeout = 15 * time.Second
 type OAuthHandler struct {
 	oauthService *services.OAuthService
 	authService  *services.AuthService
+	// states holds the server-side, one-time initiation records that bind each
+	// OAuth state to its provider, browser session and user (see oauth_state.go).
+	states *oauthStateStore
 }
 
 // NewOAuthHandler creates a new OAuth handler.
@@ -36,6 +40,7 @@ func NewOAuthHandler(oauthService *services.OAuthService, authService *services.
 	return &OAuthHandler{
 		oauthService: oauthService,
 		authService:  authService,
+		states:       newOAuthStateStore(),
 	}
 }
 
@@ -60,18 +65,38 @@ func isSafeRedirect(target string) bool {
 	return true
 }
 
-// currentSessionUser resolves the user for the request's existing session cookie,
-// or nil when there is no valid session.
-func (h *OAuthHandler) currentSessionUser(c *gin.Context) *models.User {
+// currentSessionUser resolves the user for the request's existing session cookie
+// together with the at-rest hash of that session token, or (nil, "") when there
+// is no valid session.
+func (h *OAuthHandler) currentSessionUser(c *gin.Context) (*models.User, string) {
 	token, err := c.Cookie("session")
 	if err != nil || token == "" {
-		return nil
+		return nil, ""
 	}
 	user, err := h.authService.ValidateSession(c, token)
 	if err != nil {
-		return nil
+		return nil, ""
 	}
-	return user
+	return user, crypto.HashToken(token)
+}
+
+// beginOAuthFlow issues a one-time random state bound to provider, the
+// initiating user and session hash, sets the browser-binding cookie, and returns
+// the provider authorization URL carrying that state. It writes an error
+// response and returns ok=false on failure.
+func (h *OAuthHandler) beginOAuthFlow(c *gin.Context, oauthConfig *oauth2.Config, provider string, userID uuid.UUID, sessionHash string) (string, bool) {
+	state, err := h.states.issue(oauthStateRecord{
+		provider:    provider,
+		sessionHash: sessionHash,
+		userID:      userID,
+	})
+	if err != nil {
+		logServerError(c, err)
+		response.InternalError(c, "Failed to start OAuth flow")
+		return "", false
+	}
+	setOAuthStateCookie(c, state, int(oauthStateTTL.Seconds()))
+	return oauthConfig.AuthCodeURL(state, oauth2.AccessTypeOffline), true
 }
 
 // finishOAuthRedirect sends the browser to the post-login redirect target (query
@@ -123,9 +148,18 @@ func (h *OAuthHandler) LoginWithProvider(c *gin.Context) {
 		return
 	}
 
-	// Generate state parameter to prevent CSRF
-	state := uuid.New().String()
-	c.SetCookie("oauth_state", state, 3600, "/", "", requestIsHTTPS(c), true)
+	// Generate a one-time state bound to this browser session (if any) and the
+	// logged-in user, so the callback can only link an identity to the account
+	// that actually started the flow.
+	var initiator uuid.UUID
+	current, sessionHash := h.currentSessionUser(c)
+	if current != nil {
+		initiator = current.ID
+	}
+	authURL, ok := h.beginOAuthFlow(c, oauthConfig, provider, initiator, sessionHash)
+	if !ok {
+		return
+	}
 
 	// Remember where to send the browser after a successful login. This makes
 	// browser-initiated logins (including the automated App-setup flow) land on a
@@ -138,8 +172,7 @@ func (h *OAuthHandler) LoginWithProvider(c *gin.Context) {
 		c.SetCookie("oauth_redirect", redirectTarget, 600, "/", "", requestIsHTTPS(c), true)
 	}
 
-	url := oauthConfig.AuthCodeURL(state, oauth2.AccessTypeOffline)
-	c.Redirect(http.StatusFound, url)
+	c.Redirect(http.StatusFound, authURL)
 }
 
 // Callback handles GET /api/v1/oauth/:provider/callback.
@@ -147,17 +180,10 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 	provider := c.Param("provider")
 	oauthProvider := services.OAuthProvider(provider)
 
-	// Verify state parameter
-	stateCookie, err := c.Cookie("oauth_state")
-	if err != nil {
-		response.BadRequest(c, "INVALID_STATE", "Invalid or missing state parameter")
-		return
-	}
-	c.SetCookie("oauth_state", "", -1, "/", "", requestIsHTTPS(c), true)
-
-	state := c.Query("state")
-	if state != stateCookie {
-		response.BadRequest(c, "INVALID_STATE", "State parameter mismatch")
+	// Verify and consume the state: it must match the browser-binding cookie AND
+	// a server-side initiation record for this provider.
+	flow, ok := h.takeOAuthState(c, provider)
+	if !ok {
 		return
 	}
 
@@ -193,11 +219,20 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 		username = email[:idx]
 	}
 
-	// If the browser already has a valid session, link this OAuth identity to that
-	// existing account and keep the current session, instead of creating (and
-	// switching to) a separate user. This prevents an admin who connects GitHub
-	// during App setup from being silently downgraded to a fresh non-admin account.
-	if current := h.currentSessionUser(c); current != nil {
+	// If the flow was started from a logged-in session, link this OAuth identity
+	// to that existing account and keep the current session, instead of creating
+	// (and switching to) a separate user. This prevents an admin who connects
+	// GitHub during App setup from being silently downgraded to a fresh non-admin
+	// account. Linking requires the initiation record to be bound to the very
+	// same session and user that is presenting the callback; a flow started
+	// anonymously never links, even if a session cookie is present now.
+	if flow.userID != uuid.Nil {
+		current, sessionHash := h.currentSessionUser(c)
+		if current == nil || current.ID != flow.userID ||
+			sessionHash == "" || subtle.ConstantTimeCompare([]byte(sessionHash), []byte(flow.sessionHash)) != 1 {
+			response.BadRequest(c, "INVALID_STATE", "The session changed during the OAuth flow; please try again")
+			return
+		}
 		if linkErr := h.oauthService.LinkOAuthAccount(c, current.ID, oauthProvider, subject); linkErr == nil {
 			h.maybeMirrorGitHubRepos(oauthProvider, current.ID, token)
 			h.finishOAuthRedirect(c, gin.H{"user": current}, "GitHub account linked")
@@ -272,7 +307,7 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 
 // LinkAccount handles POST /api/v1/oauth/:provider/link.
 func (h *OAuthHandler) LinkAccount(c *gin.Context) {
-	_, ok := middleware.GetCurrentUser(c)
+	user, ok := middleware.GetCurrentUser(c)
 	if !ok {
 		response.Unauthorized(c, "Not authenticated")
 		return
@@ -287,12 +322,14 @@ func (h *OAuthHandler) LinkAccount(c *gin.Context) {
 		return
 	}
 
-	// Generate state parameter
-	state := uuid.New().String()
-	c.SetCookie("oauth_link_state", state, 3600, "/", "", requestIsHTTPS(c), true)
+	// Generate a one-time state bound to this user and (when authenticated by a
+	// session cookie) to this browser session.
+	authURL, ok := h.beginOAuthFlow(c, oauthConfig, provider, user.ID, sessionCredentialHash(c))
+	if !ok {
+		return
+	}
 
-	url := oauthConfig.AuthCodeURL(state, oauth2.AccessTypeOffline)
-	c.JSON(http.StatusOK, gin.H{"auth_url": url})
+	c.JSON(http.StatusOK, gin.H{"auth_url": authURL})
 }
 
 // LinkCallback handles GET /api/v1/oauth/:provider/link/callback.
@@ -306,17 +343,16 @@ func (h *OAuthHandler) LinkCallback(c *gin.Context) {
 	provider := c.Param("provider")
 	oauthProvider := services.OAuthProvider(provider)
 
-	// Verify state parameter
-	stateCookie, err := c.Cookie("oauth_link_state")
-	if err != nil {
-		response.BadRequest(c, "INVALID_STATE", "Invalid or missing state parameter")
+	// Verify and consume the state, then require that the flow was started by
+	// this same user (and, when it was started from a browser session, from this
+	// same session).
+	flow, ok := h.takeOAuthState(c, provider)
+	if !ok {
 		return
 	}
-	c.SetCookie("oauth_link_state", "", -1, "/", "", requestIsHTTPS(c), true)
-
-	state := c.Query("state")
-	if state != stateCookie {
-		response.BadRequest(c, "INVALID_STATE", "State parameter mismatch")
+	if flow.userID != user.ID ||
+		(flow.sessionHash != "" && subtle.ConstantTimeCompare([]byte(flow.sessionHash), []byte(sessionCredentialHash(c))) != 1) {
+		response.BadRequest(c, "INVALID_STATE", "OAuth state does not belong to this session")
 		return
 	}
 
@@ -351,6 +387,15 @@ func (h *OAuthHandler) LinkCallback(c *gin.Context) {
 	}
 
 	response.SuccessWithMessage(c, "OAuth account linked successfully", nil)
+}
+
+// sessionCredentialHash returns the session-token hash recorded by the auth
+// middleware when the request was authenticated by a session cookie, or "".
+func sessionCredentialHash(c *gin.Context) string {
+	if authType, hash, ok := middleware.GetCredential(c); ok && authType == middleware.AuthTypeSession {
+		return hash
+	}
+	return ""
 }
 
 // UnlinkAccount handles POST /api/v1/oauth/:provider/unlink.

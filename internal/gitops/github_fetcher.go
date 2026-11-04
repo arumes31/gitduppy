@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -11,7 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
+	"path"
 	"regexp"
 	"sort"
 	"strconv"
@@ -25,6 +26,19 @@ import (
 // maxMediaBytes caps the size of any single archived media asset to keep
 // disk usage bounded when mirroring issue/PR attachments.
 const maxMediaBytes = 100 << 20 // 100 MB
+
+// Per-sync media budgets. A single metadata sync (issues + PRs + releases)
+// stops starting new media downloads once either is exhausted, so attacker-
+// controlled issue bodies cannot make one sync fetch an unbounded number of
+// assets or bytes. Bytes read from failed or discarded downloads count too.
+const (
+	maxMediaDownloadsPerSync       = 500
+	maxMediaBytesPerSync     int64 = 1 << 30 // 1 GiB
+)
+
+// backupDirName is the directory, inside the repository checkout, that holds
+// the archived GitHub metadata JSON and its media/ subdirectory.
+const backupDirName = "github_backup"
 
 type cacheEntry struct {
 	value      any
@@ -66,32 +80,41 @@ func (f *GitHubMetadataFetcher) FetchMetadata(ctx context.Context, repoURL, stor
 	owner, repoName, err := f.parseGitHubURL(repoURL)
 	if err != nil {
 		f.logger.Warn("Not a standard GitHub URL, skipping metadata fetch", zap.String("url", repoURL))
-		return nil //nolint:nilerr
+		return nil
 	}
 
-	backupDir := filepath.Join(storagePath, "github_backup")
-	if err := os.MkdirAll(backupDir, 0o750); err != nil {
-		return fmt.Errorf("failed to create backup directory: %w", err)
+	// The backup lives inside the checkout, whose contents the upstream
+	// controls: a committed symlink at github_backup/ (or at any file name
+	// written below) must not redirect these writes elsewhere on disk. All
+	// filesystem access therefore goes through an os.Root anchored at the
+	// repository, which refuses to resolve any path that escapes it, and the
+	// backup directory itself must be a real directory, not a link.
+	backupRoot, err := openBackupRoot(storagePath)
+	if err != nil {
+		return fmt.Errorf("failed to open backup directory: %w", err)
 	}
+	defer backupRoot.Close()
+
+	budget := &mediaBudget{downloadsLeft: maxMediaDownloadsPerSync, bytesLeft: maxMediaBytesPerSync}
 
 	var errs []error
 	if issues {
 		// When both issues and PRs are mirrored, filter out PRs from /issues
 		// (GitHub's /issues endpoint returns PRs too via the pull_request key).
 		filterPRs := prs
-		if err := f.fetchPaginatedJSON(ctx, owner, repoName, "issues?state=all&per_page=100", filepath.Join(backupDir, "issues.json"), token, filterPRs); err != nil {
+		if err := f.fetchPaginatedJSON(ctx, owner, repoName, "issues?state=all&per_page=100", backupRoot, "issues.json", token, filterPRs, budget); err != nil {
 			f.logger.Error("Failed to fetch issues", zap.Error(err))
 			errs = append(errs, fmt.Errorf("failed to fetch issues: %w", err))
 		}
 	}
 	if prs {
-		if err := f.fetchPaginatedJSON(ctx, owner, repoName, "pulls?state=all&per_page=100", filepath.Join(backupDir, "pull_requests.json"), token, false); err != nil {
+		if err := f.fetchPaginatedJSON(ctx, owner, repoName, "pulls?state=all&per_page=100", backupRoot, "pull_requests.json", token, false, budget); err != nil {
 			f.logger.Error("Failed to fetch pull requests", zap.Error(err))
 			errs = append(errs, fmt.Errorf("failed to fetch pull requests: %w", err))
 		}
 	}
 	if releases {
-		if err := f.fetchPaginatedJSON(ctx, owner, repoName, "releases?per_page=100", filepath.Join(backupDir, "releases.json"), token, false); err != nil {
+		if err := f.fetchPaginatedJSON(ctx, owner, repoName, "releases?per_page=100", backupRoot, "releases.json", token, false, budget); err != nil {
 			f.logger.Error("Failed to fetch releases", zap.Error(err))
 			errs = append(errs, fmt.Errorf("failed to fetch releases: %w", err))
 		}
@@ -210,10 +233,10 @@ func (f *GitHubMetadataFetcher) FetchRepositoryInfo(ctx context.Context, repoURL
 }
 
 // fetchPaginatedJSON fetches all pages from a GitHub API list endpoint and
-// writes the combined results to filePath as a JSON array.
+// writes the combined results to fileName (inside backupRoot) as a JSON array.
 // If filterPRs is true, items with a "pull_request" key are excluded (used to
 // de-duplicate when mirroring both issues and PRs).
-func (f *GitHubMetadataFetcher) fetchPaginatedJSON(ctx context.Context, owner, repoName, endpoint, filePath, token string, filterPRs bool) error {
+func (f *GitHubMetadataFetcher) fetchPaginatedJSON(ctx context.Context, owner, repoName, endpoint string, backupRoot *os.Root, fileName, token string, filterPRs bool, budget *mediaBudget) error {
 	var allItems []json.RawMessage
 
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/%s", owner, repoName, endpoint)
@@ -333,9 +356,108 @@ func (f *GitHubMetadataFetcher) fetchPaginatedJSON(ctx context.Context, owner, r
 	}
 
 	// Archive media and rewrite remote URLs to local path
-	data = f.archiveMedia(ctx, filepath.Dir(filePath), token, data)
+	data = f.archiveMedia(ctx, backupRoot, token, data, budget)
 
-	return os.WriteFile(filePath, data, 0o600)
+	return writeFileReplacing(backupRoot, fileName, data)
+}
+
+// mediaBudget tracks how many media downloads and bytes a single metadata sync
+// may still spend.
+type mediaBudget struct {
+	downloadsLeft int
+	bytesLeft     int64
+}
+
+// openBackupRoot returns an os.Root for <storagePath>/github_backup, creating
+// the directory if needed. It refuses a backup path that is a symlink or not a
+// directory.
+func openBackupRoot(storagePath string) (*os.Root, error) {
+	repoRoot, err := os.OpenRoot(storagePath)
+	if err != nil {
+		return nil, err
+	}
+	defer repoRoot.Close()
+	return openRealSubdir(repoRoot, backupDirName)
+}
+
+// openRealSubdir opens (creating if absent) the directory name directly under
+// parent as its own os.Root, refusing it if it exists as a symlink or as
+// anything other than a directory. os.Root already keeps every access inside
+// parent; the explicit Lstat additionally stops an in-tree symlink from
+// redirecting writes into some other part of the checkout.
+func openRealSubdir(parent *os.Root, name string) (*os.Root, error) {
+	if err := parent.Mkdir(name, 0o750); err != nil && !errors.Is(err, os.ErrExist) {
+		return nil, err
+	}
+	fi, err := parent.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refusing to use %s: it is a symlink", name)
+	}
+	if !fi.IsDir() {
+		return nil, fmt.Errorf("refusing to use %s: not a directory", name)
+	}
+	return parent.OpenRoot(name)
+}
+
+// writeFileReplacing writes data to name inside root without ever following a
+// pre-existing file there: the bytes go to a freshly created (O_EXCL) temp file
+// that is then renamed over name, so a symlink planted at name is replaced
+// rather than written through.
+func writeFileReplacing(root *os.Root, name string, data []byte) error {
+	tmp, tmpName, err := createTempIn(root, name)
+	if err != nil {
+		return err
+	}
+	_, writeErr := tmp.Write(data)
+	closeErr := tmp.Close()
+	if writeErr != nil || closeErr != nil {
+		_ = root.Remove(tmpName)
+		return errors.Join(writeErr, closeErr)
+	}
+	return renameReplacing(root, tmpName, name)
+}
+
+// createTempIn creates a new, exclusively-owned temp file next to name inside
+// root. O_EXCL means it fails rather than opening anything that already exists
+// (including a symlink) at the chosen name.
+func createTempIn(root *os.Root, name string) (*os.File, string, error) {
+	var lastErr error
+	for range 8 {
+		var rnd [8]byte
+		if _, err := rand.Read(rnd[:]); err != nil {
+			return nil, "", err
+		}
+		tmpName := fmt.Sprintf(".%s.tmp-%x", name, rnd)
+		file, err := root.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			return file, tmpName, nil
+		}
+		lastErr = err
+		if !errors.Is(err, os.ErrExist) {
+			break
+		}
+	}
+	return nil, "", lastErr
+}
+
+// renameReplacing moves tmpName over name inside root. A symlink already at
+// name is removed first (Remove deletes the link itself, never its target) so
+// the rename can never be redirected through it on any platform.
+func renameReplacing(root *os.Root, tmpName, name string) error {
+	if fi, err := root.Lstat(name); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		if err := root.Remove(name); err != nil {
+			_ = root.Remove(tmpName)
+			return err
+		}
+	}
+	if err := root.Rename(tmpName, name); err != nil {
+		_ = root.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 // candidateMediaURLRe finds URL-shaped tokens in a JSON payload. It deliberately
@@ -369,36 +491,76 @@ func isArchivableGitHubMediaURL(raw string) bool {
 	return host == "githubusercontent.com" || strings.HasSuffix(host, ".githubusercontent.com")
 }
 
-// archiveMedia scans JSON bytes for external GitHub media URLs, downloads them, and rewrites URLs locally.
-func (f *GitHubMetadataFetcher) archiveMedia(ctx context.Context, backupDir string, token string, jsonBytes []byte) []byte {
-	mediaDir := filepath.Join(backupDir, "media")
+// normalizeMediaURL returns the URL actually fetched for a media reference: the
+// same URL with any fragment removed. Fragments are never sent to the server,
+// so "x.png#a" and "x.png#b" are the same asset and must share one download
+// and one archived file.
+func normalizeMediaURL(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", false
+	}
+	u.Fragment = ""
+	u.RawFragment = ""
+	return u.String(), true
+}
 
+// mediaFilename derives the archived file name for a (normalized) media URL:
+// a short sha256 of the URL plus a scrubbed extension taken from the URL path.
+func mediaFilename(fetchURL string) string {
+	hash := sha256.Sum256([]byte(fetchURL))
+	hexHash := fmt.Sprintf("%x", hash[:8]) // Keep it short and clean
+
+	ext := ""
+	if u, err := url.Parse(fetchURL); err == nil {
+		ext = path.Ext(u.Path)
+	}
+	// Keep only alphanumerics and dots, and fall back to .png for anything
+	// missing or implausibly long.
+	extClean := ""
+	for _, char := range ext {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '.' {
+			extClean += string(char)
+		}
+	}
+	if extClean == "" || extClean == "." || len(extClean) > 5 {
+		extClean = ".png"
+	}
+	return fmt.Sprintf("media-%s%s", hexHash, extClean)
+}
+
+// archiveMedia scans JSON bytes for external GitHub media URLs, downloads them, and rewrites URLs locally.
+func (f *GitHubMetadataFetcher) archiveMedia(ctx context.Context, backupRoot *os.Root, token string, jsonBytes []byte, budget *mediaBudget) []byte {
 	matches := candidateMediaURLRe.FindAll(jsonBytes, -1)
 	if len(matches) == 0 {
 		return jsonBytes
 	}
 
 	// Deduplicate, keeping only first-party GitHub media hosts. The map is keyed by
-	// the raw matched token (what we replace in the JSON) and holds the cleaned URL
-	// (what we fetch). Off-allowlist hosts are dropped here so the token below is
-	// never sent to a user-influenced host.
+	// the raw matched token (what we replace in the JSON) and holds the
+	// normalized, fragment-free URL (what we fetch and hash). Off-allowlist hosts
+	// are dropped here so the token below is never sent to a user-influenced host.
 	uniqueURLs := make(map[string]string)
 	for _, match := range matches {
 		raw := string(match)
 		cleanURL := strings.Trim(strings.ReplaceAll(raw, `\"`, ""), `"'`)
-		if isArchivableGitHubMediaURL(cleanURL) {
-			uniqueURLs[raw] = cleanURL
+		if !isArchivableGitHubMediaURL(cleanURL) {
+			continue
+		}
+		if fetchURL, ok := normalizeMediaURL(cleanURL); ok {
+			uniqueURLs[raw] = fetchURL
 		}
 	}
 	if len(uniqueURLs) == 0 {
 		return jsonBytes
 	}
 
-	// Create media directory
-	if err := os.MkdirAll(mediaDir, 0o750); err != nil {
-		f.logger.Error("Failed to create media directory", zap.Error(err))
+	mediaRoot, err := openRealSubdir(backupRoot, "media")
+	if err != nil {
+		f.logger.Error("Failed to open media directory", zap.Error(err))
 		return jsonBytes
 	}
+	defer mediaRoot.Close()
 
 	jsonStr := string(jsonBytes)
 
@@ -417,89 +579,96 @@ func (f *GitHubMetadataFetcher) archiveMedia(ctx context.Context, backupDir stri
 		return sortedURLs[i] < sortedURLs[j]
 	})
 
+	// Outcome per normalized URL, so every raw variant of one asset (differing
+	// only in fragment) triggers at most one download attempt.
+	archived := make(map[string]bool, len(uniqueURLs))
 	for _, urlStr := range sortedURLs {
-		cleanURL := uniqueURLs[urlStr]
-		// Check context cancellation
 		if ctx.Err() != nil {
 			break
 		}
+		fetchURL := uniqueURLs[urlStr]
+		filename := mediaFilename(fetchURL)
 
-		// Determine filename
-		hash := sha256.Sum256([]byte(cleanURL))
-		hexHash := fmt.Sprintf("%x", hash[:8]) // Keep it short and clean
-
-		ext := filepath.Ext(cleanURL)
-		if ext == "" {
-			ext = ".png" // Default fallback
-		} else {
-			// Strip query parameters
-			if idx := strings.Index(ext, "?"); idx >= 0 {
-				ext = ext[:idx]
-			}
-			// Strip any non-alphanumeric chars at the end of extension
-			extClean := ""
-			for _, char := range ext {
-				if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '.' {
-					extClean += string(char)
-				}
-			}
-			ext = extClean
-			if len(ext) > 5 {
-				ext = ".png"
-			}
-		}
-		filename := fmt.Sprintf("media-%s%s", hexHash, ext)
-		destPath := filepath.Join(mediaDir, filename)
-
-		// Download if it doesn't exist
-		if _, err := os.Stat(destPath); os.IsNotExist(err) {
-			f.logger.Info("Archiving external media asset", zap.String("url", cleanURL))
-
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, cleanURL, nil)
-			if err == nil {
-				if token != "" {
-					req.Header.Set("Authorization", "token "+token)
-				}
-				resp, err := f.client.Do(req)
-				if err == nil {
-					if resp.StatusCode == http.StatusOK {
-						switch {
-						case resp.ContentLength > maxMediaBytes:
-							f.logger.Warn("skipping oversized media asset", zap.String("url", cleanURL), zap.Int64("content_length", resp.ContentLength))
-						default:
-							// #nosec G304 -- destPath is built from a sha256 hash of
-							// cleanURL plus a scrubbed extension (see above), always
-							// under mediaDir; it is never a user-supplied path.
-							outFile, createErr := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-							if createErr == nil {
-								// Cap the bytes written so a huge or unknown-length
-								// asset cannot grow disk usage without bound.
-								written, copyErr := io.Copy(outFile, io.LimitReader(resp.Body, maxMediaBytes+1))
-								closeErr := outFile.Close()
-								if copyErr != nil || written > maxMediaBytes || closeErr != nil {
-									// Partial/oversized download — discard it.
-									_ = os.Remove(destPath)
-									f.logger.Warn("media asset exceeded size cap or failed, discarded", zap.String("url", cleanURL))
-								}
-							}
-						}
-					}
-					_ = resp.Body.Close()
-				}
-			}
+		ok, seen := archived[fetchURL]
+		if !seen {
+			ok = f.ensureMediaAsset(ctx, mediaRoot, filename, fetchURL, token, budget)
+			archived[fetchURL] = ok
 		}
 
 		// If download succeeded (or already existed), replace URL in JSON.
 		// Use a path relative to the metadata JSON file (which lives in the
 		// github_backup dir alongside the media/ subdirectory) so the rewritten
 		// URL resolves to the archived asset regardless of how it is served.
-		if _, err := os.Stat(destPath); err == nil {
-			localURL := "media/" + filename
-			jsonStr = strings.ReplaceAll(jsonStr, urlStr, localURL)
+		if ok {
+			jsonStr = strings.ReplaceAll(jsonStr, urlStr, "media/"+filename)
 		}
 	}
 
 	return []byte(jsonStr)
+}
+
+// ensureMediaAsset makes sure filename in mediaRoot holds the asset at
+// fetchURL, downloading it if needed (within budget). It reports whether a
+// regular file is in place afterwards.
+func (f *GitHubMetadataFetcher) ensureMediaAsset(ctx context.Context, mediaRoot *os.Root, filename, fetchURL, token string, budget *mediaBudget) bool {
+	if fi, err := mediaRoot.Lstat(filename); err == nil {
+		if fi.Mode().IsRegular() {
+			return true
+		}
+		// A symlink (e.g. planted by the upstream checkout) is never used or
+		// written through; drop the link itself and re-download. Any other
+		// non-regular entry is left alone and the remote URL kept.
+		if fi.Mode()&os.ModeSymlink == 0 || mediaRoot.Remove(filename) != nil {
+			return false
+		}
+	}
+
+	if budget.downloadsLeft <= 0 || budget.bytesLeft <= 0 {
+		f.logger.Debug("media archive budget exhausted for this sync, leaving remote URL", zap.String("url", fetchURL))
+		return false
+	}
+	budget.downloadsLeft--
+
+	f.logger.Info("Archiving external media asset", zap.String("url", fetchURL))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
+	if err != nil {
+		return false
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "token "+token)
+	}
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+
+	limit := min(int64(maxMediaBytes), budget.bytesLeft)
+	if resp.ContentLength > limit {
+		f.logger.Warn("skipping oversized media asset", zap.String("url", fetchURL), zap.Int64("content_length", resp.ContentLength))
+		return false
+	}
+
+	tmp, tmpName, err := createTempIn(mediaRoot, filename)
+	if err != nil {
+		return false
+	}
+	// Cap the bytes written so a huge or unknown-length asset cannot grow disk
+	// usage without bound; everything read counts against the sync budget,
+	// whether or not the file is kept.
+	written, copyErr := io.Copy(tmp, io.LimitReader(resp.Body, limit+1))
+	closeErr := tmp.Close()
+	budget.bytesLeft -= written
+	if copyErr != nil || closeErr != nil || written > limit {
+		// Partial/oversized download — discard it.
+		_ = mediaRoot.Remove(tmpName)
+		f.logger.Warn("media asset exceeded size cap or failed, discarded", zap.String("url", fetchURL))
+		return false
+	}
+	return renameReplacing(mediaRoot, tmpName, filename) == nil
 }
 
 // parseNextLink extracts the "next" URL from a GitHub Link header.

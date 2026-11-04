@@ -7,6 +7,7 @@ server:
   read_timeout: "30s"
   write_timeout: "300s"
   idle_timeout: "120s"
+  # When enabled, cert and key must be readable PEM files or startup fails.
   tls:
     enabled: false
     cert: ""
@@ -62,8 +63,16 @@ security:
   # GITMIRRORS_SECURITY_COOKIE_SECURE (e.g. set true behind a TLS-terminating proxy).
   # cookie_secure: false
   rate_limit:
+    # Per-client budget for /api/v1/auth and /api/v1/oauth (login attempts).
     auth_requests_per_minute: 10
     api_requests_per_minute: 60
+  # Password policy enforced whenever a password is set (change password, user
+  # creation). The minimum length can be raised (8-72) but never below 8.
+  password_min_length: 8
+  password_require_uppercase: false
+  password_require_lowercase: false
+  password_require_numbers: false
+  password_require_special: false
 
 oauth:
   # Restrict OAuth self-registration to these email domains (empty = any).
@@ -95,6 +104,10 @@ email:
   smtp_password: ""
   from: "noreply@gitmirrors.local"
   enabled: false
+  # Port 465 uses implicit TLS; any other port requires STARTTLS and delivery
+  # fails if the server does not offer it. Set true only for a trusted local
+  # relay without TLS (e.g. localhost:25).
+  allow_insecure: false
 
 worker:
   max_concurrent: 3
@@ -107,6 +120,8 @@ logging:
   format: "json"
   output: "stdout"  # stdout/file
   file_path: "/app/logs/app.log"
+  # Days to keep audit log entries (security records); 0 keeps them forever.
+  audit_retention_days: 90
 
 storage:
   base_path: "/app/storage/repos"

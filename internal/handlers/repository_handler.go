@@ -426,12 +426,19 @@ func (h *RepositoryHandler) RestoreBranch(c *gin.Context) {
 		return
 	}
 
-	paperbinRef := "refs/paperbin/heads/" + delBranch.BranchName
+	// The stored branch name and sha originate from the upstream remote. Re-check
+	// them before they reach the git command line (rows recorded before
+	// insert-time validation may hold anything), and terminate options with "--"
+	// so neither can be parsed as a flag.
+	if !validator.ValidateGitRefName(delBranch.BranchName) || !validator.ValidateCommitSHA(delBranch.CommitSHA) {
+		response.BadRequest(c, "INVALID_BRANCH", "Archived branch name or commit is not valid and cannot be restored")
+		return
+	}
 
 	// Recreate branch
-	_, gitErr := gitops.RunGitCommand(c, repo.StoragePath, "branch", delBranch.BranchName, delBranch.CommitSHA)
+	_, gitErr := gitops.RunGitCommand(c, repo.StoragePath, "branch", "--", delBranch.BranchName, delBranch.CommitSHA)
 	if gitErr != nil {
-		_, gitErr = gitops.RunGitCommand(c, repo.StoragePath, "branch", "-f", delBranch.BranchName, delBranch.CommitSHA)
+		_, gitErr = gitops.RunGitCommand(c, repo.StoragePath, "branch", "-f", "--", delBranch.BranchName, delBranch.CommitSHA)
 	}
 
 	if gitErr != nil {
@@ -440,8 +447,11 @@ func (h *RepositoryHandler) RestoreBranch(c *gin.Context) {
 		return
 	}
 
-	// Delete the paperbin ref
-	_, _ = gitops.RunGitCommand(c, repo.StoragePath, "update-ref", "-d", paperbinRef)
+	// Delete this event's paperbin ref; the restored branch now keeps the commit
+	// reachable. Best-effort: a leftover ref only pins the commit a little longer.
+	if relErr := gitops.ReleaseArchivalRef(c, db, repo.StoragePath, &delBranch); relErr != nil {
+		logServerError(c, relErr)
+	}
 
 	// Delete DeletedBranch record
 	if err := db.Delete(&delBranch).Error; err != nil {
@@ -486,8 +496,14 @@ func (h *RepositoryHandler) PermanentDeleteBranch(c *gin.Context) {
 
 	repo, err := h.repoService.GetRepositoryByID(c, repoID)
 	if err == nil && h.repoService.IsValidStoragePath(repo) {
-		paperbinRef := "refs/paperbin/heads/" + delBranch.BranchName
-		_, _ = gitops.RunGitCommand(c, repo.StoragePath, "update-ref", "-d", paperbinRef)
+		// Keep the record when the ref cannot be released: it is the only
+		// handle a retry has on the archival ref, which otherwise pins the
+		// commit forever.
+		if relErr := gitops.ReleaseArchivalRef(c, db, repo.StoragePath, &delBranch); relErr != nil {
+			logServerError(c, relErr)
+			response.InternalError(c, "Failed to release the archived branch ref; please retry")
+			return
+		}
 	}
 
 	if err := db.Delete(&delBranch).Error; err != nil {
@@ -581,6 +597,14 @@ type logFrame struct {
 func (h *RepositoryHandler) StreamRepositoryLogs(c *gin.Context) {
 	repoID := c.Param("id")
 
+	// Capture the authenticated principal + credential before upgrading so the
+	// stream can be re-validated (and closed) once the session/API key is revoked
+	// or expires, or the account is disabled. See wsPrincipal.watch.
+	principal, deadline, ok := captureWSPrincipal(c, h.db)
+	if !ok {
+		return
+	}
+
 	ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		zap.L().Named("ws").Debug("WebSocket upgrade failed", zap.Error(err))
@@ -606,6 +630,7 @@ func (h *RepositoryHandler) StreamRepositoryLogs(c *gin.Context) {
 			}
 		}
 	}()
+	go principal.watch(ctx, cancel, ws, deadline)
 
 	// Both the keep-alive goroutine and the log-streaming loop write to the same
 	// websocket connection, so serialize all writes through a single mutex —
@@ -737,8 +762,17 @@ func (h *RepositoryHandler) GlobalSearch(c *gin.Context) {
 
 			repoCtx, cancel := context.WithTimeout(overallCtx, perRepoTimeout)
 			defer cancel()
-			output, err := gitops.RunGitCommand(repoCtx, repo.StoragePath, "grep", "-nI", "--no-color", "-e", query, "HEAD")
-			if err != nil {
+			// Cap each repo's grep output: matched lines (e.g. minified files)
+			// are upstream content of arbitrary length. On overflow keep the
+			// complete lines read so far and drop the cut-off last one.
+			output, err := gitops.RunGitCommandLimited(repoCtx, repo.StoragePath, maxSearchOutputBytes, "grep", "-nI", "--no-color", "-e", query, "HEAD")
+			if isOutputTruncated(err) {
+				if i := strings.LastIndexByte(output, '\n'); i >= 0 {
+					output = output[:i]
+				} else {
+					output = ""
+				}
+			} else if err != nil {
 				// git grep exits 1 when there are no matches, which is normal.
 				return
 			}
@@ -764,7 +798,7 @@ func (h *RepositoryHandler) GlobalSearch(c *gin.Context) {
 					RepoName:   repo.Name,
 					File:       strings.TrimPrefix(parts[0]+":"+parts[1], "HEAD:"),
 					LineNumber: parts[2],
-					Content:    parts[3],
+					Content:    truncateRunes(parts[3], maxSearchLineRunes),
 				})
 				mu.Unlock()
 			}

@@ -2,6 +2,8 @@ package middleware
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -10,7 +12,21 @@ import (
 	"github.com/gitduppy/gitduppy/internal/models"
 	"github.com/gitduppy/gitduppy/pkg/crypto"
 	"github.com/gitduppy/gitduppy/pkg/response"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
+)
+
+// Context keys set by the auth middlewares alongside "user". The credential hash
+// is the at-rest SHA-256 of the presented session token or API key (never the raw
+// secret); long-lived handlers such as the log WebSockets capture it at upgrade
+// so they can periodically re-check that the credential is still valid (see
+// RevalidateCredential).
+const (
+	ContextKeyAuthType       = "auth_type"
+	ContextKeyCredentialHash = "auth_credential_hash" //nolint:gosec // G101: context key name, not a credential
+
+	AuthTypeSession = "session"
+	AuthTypeAPIKey  = "api_key"
 )
 
 // AuthMiddleware handles session and API key authentication.
@@ -70,7 +86,8 @@ func (m *AuthMiddleware) Middleware() gin.HandlerFunc {
 			user, err := m.validateAPIKey(c.Request.Context(), apiKey)
 			if err == nil {
 				c.Set("user", user)
-				c.Set("auth_type", "api_key")
+				c.Set(ContextKeyAuthType, AuthTypeAPIKey)
+				c.Set(ContextKeyCredentialHash, crypto.HashToken(apiKey))
 				c.Next()
 				return
 			}
@@ -82,7 +99,8 @@ func (m *AuthMiddleware) Middleware() gin.HandlerFunc {
 			user, err := m.validateSession(c.Request.Context(), sessionCookie)
 			if err == nil {
 				c.Set("user", user)
-				c.Set("auth_type", "session")
+				c.Set(ContextKeyAuthType, AuthTypeSession)
+				c.Set(ContextKeyCredentialHash, crypto.HashToken(sessionCookie))
 				c.Next()
 				return
 			}
@@ -103,7 +121,8 @@ func (m *AuthMiddleware) WebMiddleware() gin.HandlerFunc {
 			user, err := m.validateSession(c.Request.Context(), sessionCookie)
 			if err == nil {
 				c.Set("user", user)
-				c.Set("auth_type", "session")
+				c.Set(ContextKeyAuthType, AuthTypeSession)
+				c.Set(ContextKeyCredentialHash, crypto.HashToken(sessionCookie))
 				c.Next()
 				return
 			}
@@ -135,10 +154,14 @@ func (m *AuthMiddleware) validateAPIKey(ctx context.Context, key string) (*model
 	// Fast path: a recently validated key is served from cache, skipping both DB
 	// queries. Bounded by authCacheTTL (a revoked/expired key is honored at most
 	// that long); see AuthCache.
+	var gen uint64
 	if m.cache != nil {
 		if user, ok := m.cache.get(keyHash); ok {
 			return user, nil
 		}
+		// Capture the eviction generation BEFORE reading the DB so a revocation
+		// that lands mid-validation stops the result from being cached.
+		gen = m.cache.begin()
 	}
 
 	db := m.db
@@ -177,7 +200,7 @@ func (m *AuthMiddleware) validateAPIKey(ctx context.Context, key string) (*model
 	}
 
 	if m.cache != nil {
-		m.cache.set(keyHash, &user)
+		m.cache.store(keyHash, &user, gen)
 	}
 	return &user, nil
 }
@@ -191,10 +214,12 @@ func (m *AuthMiddleware) validateSession(ctx context.Context, token string) (*mo
 	// Fast path: a recently validated session is served from cache, skipping the
 	// session lookup and user fetch. Bounded by authCacheTTL (a logged-out or
 	// deactivated user is served at most that long unless evicted); see AuthCache.
+	var gen uint64
 	if m.cache != nil {
 		if user, ok := m.cache.get(tokenHash); ok {
 			return user, nil
 		}
+		gen = m.cache.begin() // see validateAPIKey
 	}
 
 	db := m.db
@@ -220,9 +245,79 @@ func (m *AuthMiddleware) validateSession(ctx context.Context, token string) (*mo
 	}
 
 	if m.cache != nil {
-		m.cache.set(tokenHash, &user)
+		m.cache.store(tokenHash, &user, gen)
 	}
 	return &user, nil
+}
+
+// GetCredential returns the auth type and at-rest credential hash the auth
+// middleware recorded for this request, or ok=false when the request was not
+// authenticated by it.
+func GetCredential(c *gin.Context) (authType, credentialHash string, ok bool) {
+	authType = c.GetString(ContextKeyAuthType)
+	credentialHash = c.GetString(ContextKeyCredentialHash)
+	if authType == "" || credentialHash == "" {
+		return "", "", false
+	}
+	return authType, credentialHash, true
+}
+
+// ErrCredentialInvalid is returned by RevalidateCredential when the credential
+// was revoked or has expired, or its user is gone or disabled.
+var ErrCredentialInvalid = errors.New("credential is no longer valid")
+
+// RevalidateCredential re-checks a previously accepted credential directly
+// against the database, bypassing the auth cache: the session row must still
+// exist and be unexpired (or the API key must be active and unexpired), it must
+// still belong to userID, and that user must still be active. It returns the
+// credential's expiry (zero when it never expires) so long-lived connections can
+// also stop at that deadline. Any failure — including a DB error — is reported
+// as an error so callers fail closed.
+func RevalidateCredential(ctx context.Context, db *gorm.DB, authType, credentialHash string, userID uuid.UUID) (time.Time, error) {
+	if db == nil {
+		return time.Time{}, ErrCredentialInvalid
+	}
+	now := time.Now().UTC()
+	var (
+		ownerID  uuid.UUID
+		deadline time.Time
+	)
+	switch authType {
+	case AuthTypeSession:
+		var session models.Session
+		err := db.WithContext(ctx).Where("token = ? AND expiry > ?", credentialHash, now).First(&session).Error
+		if err != nil {
+			return time.Time{}, fmt.Errorf("%w: %w", ErrCredentialInvalid, err)
+		}
+		ownerID, deadline = session.UserID, session.Expiry
+	case AuthTypeAPIKey:
+		var apiKey models.APIKey
+		err := db.WithContext(ctx).Where("key_hash = ? AND is_active = true", credentialHash).First(&apiKey).Error
+		if err != nil {
+			return time.Time{}, fmt.Errorf("%w: %w", ErrCredentialInvalid, err)
+		}
+		if apiKey.ExpiresAt != nil {
+			if !apiKey.ExpiresAt.After(now) {
+				return time.Time{}, ErrCredentialInvalid
+			}
+			deadline = *apiKey.ExpiresAt
+		}
+		ownerID = apiKey.UserID
+	default:
+		return time.Time{}, ErrCredentialInvalid
+	}
+	if ownerID != userID {
+		return time.Time{}, ErrCredentialInvalid
+	}
+
+	var user models.User
+	if err := db.WithContext(ctx).Select("id", "is_active").First(&user, "id = ?", userID).Error; err != nil {
+		return time.Time{}, fmt.Errorf("%w: %w", ErrCredentialInvalid, err)
+	}
+	if !user.IsActive {
+		return time.Time{}, ErrCredentialInvalid
+	}
+	return deadline, nil
 }
 
 // RequireAdmin returns a middleware that requires admin role.

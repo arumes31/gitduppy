@@ -56,20 +56,39 @@ func (rl *rateLimiter) allow() (allowed bool, remaining, retryAfter float64) {
 	return false, rl.tokens, retryAfter
 }
 
+// RateBudget is a token-bucket budget: a refill rate in requests per second and
+// a burst (bucket capacity).
+type RateBudget struct {
+	RPS   float64
+	Burst int
+}
+
+// PerMinute builds a budget from a requests-per-minute figure, refilling at
+// n/60 per second with one minute's worth of tokens as burst.
+func PerMinute(n int) RateBudget {
+	return RateBudget{RPS: float64(n) / 60.0, Burst: n}
+}
+
 // RateLimiter handles rate limiting per client.
 type RateLimiter struct {
 	limiters sync.Map // map[string]*rateLimiter
 	rps      float64
 	burst    int
+	// auth is the dedicated budget for authentication endpoints
+	// (security.rate_limit.auth_requests_per_minute). A zero value falls back
+	// to a sixth of the API budget.
+	auth     RateBudget
 	done     chan struct{}
 	stopOnce sync.Once
 }
 
-// NewRateLimiter creates a new rate limiter.
-func NewRateLimiter(requestsPerSecond float64, burstSize int) *RateLimiter {
+// NewRateLimiter creates a new rate limiter with the default API budget and a
+// separate budget for authentication endpoints.
+func NewRateLimiter(api, auth RateBudget) *RateLimiter {
 	rl := &RateLimiter{
-		rps:   requestsPerSecond,
-		burst: burstSize,
+		rps:   api.RPS,
+		burst: api.Burst,
+		auth:  auth,
 		done:  make(chan struct{}),
 	}
 
@@ -134,7 +153,11 @@ func (rl *RateLimiter) limitFor(path string) (prefix string, rps float64, burst 
 	switch {
 	case strings.HasPrefix(path, "/api/v1/auth"),
 		strings.HasPrefix(path, "/api/v1/oauth"):
-		// Auth is the most abuse-prone surface (credential stuffing).
+		// Auth is the most abuse-prone surface (credential stuffing), so it
+		// gets its own configured budget.
+		if rl.auth.RPS > 0 && rl.auth.Burst > 0 {
+			return "auth:", rl.auth.RPS, rl.auth.Burst
+		}
 		return "auth:", rl.rps / 6, max(1, rl.burst/6)
 	case strings.HasPrefix(path, "/api/v1/search"):
 		// Global search fans out across every repository's index, so keep it

@@ -1,6 +1,9 @@
 package models
 
 import (
+	"encoding/json"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -66,4 +69,73 @@ func (r *Repository) BeforeCreate(*gorm.DB) error {
 		r.ID = uuid.New()
 	}
 	return nil
+}
+
+// MarshalJSON serializes the repository with any credentials embedded in the
+// remote URL's userinfo removed (see RedactURLCredentials). Every API response
+// that carries a Repository — directly, in a list, or preloaded onto a clone
+// job or paperbin entry — goes through here, so a legacy row whose URL still
+// holds https://user:token@host/... never leaks the secret to readers. The
+// in-memory struct is left untouched, so clone/fetch code keeps using the real
+// URL.
+func (r Repository) MarshalJSON() ([]byte, error) {
+	type repositoryJSON Repository // drops the method set, avoiding recursion
+	out := repositoryJSON(r)
+	out.URL = RedactURLCredentials(r.URL)
+	return json.Marshal(out)
+}
+
+// RedactURLCredentials strips secrets from a git remote URL. For http(s)/git
+// URLs the whole userinfo is removed, since a bare "username" there is often a
+// token; for ssh:// URLs only the password is dropped and the login user is
+// kept. A query string or fragment (e.g. ?token=...) is dropped as well, since
+// git remotes never need one. scp-like remotes (git@host:path) carry no secret
+// and are returned as is.
+func RedactURLCredentials(raw string) string {
+	if !strings.Contains(raw, "://") {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		// Unparseable: strip anything between "://" and the last "@" that
+		// precedes the first path separator, so a malformed URL cannot smuggle
+		// a credential past redaction.
+		scheme, rest, _ := strings.Cut(raw, "://")
+		authority, path, hasPath := strings.Cut(rest, "/")
+		if i := strings.LastIndex(authority, "@"); i >= 0 {
+			// An ssh login user without a password is not a secret.
+			if strings.EqualFold(scheme, "ssh") && !strings.Contains(authority[:i], ":") {
+				return raw
+			}
+			authority = authority[i+1:]
+		}
+		if hasPath {
+			return scheme + "://" + authority + "/" + path
+		}
+		return scheme + "://" + authority
+	}
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" {
+		u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = "", false, "", ""
+		if u.User == nil {
+			return u.String()
+		}
+	}
+	if u.User == nil {
+		return raw
+	}
+	if strings.EqualFold(u.Scheme, "ssh") {
+		if _, hasPassword := u.User.Password(); !hasPassword {
+			return raw
+		}
+		u.User = url.User(u.User.Username())
+	} else {
+		u.User = nil
+	}
+	return u.String()
+}
+
+// URLHasCredentials reports whether a git remote URL embeds a secret that
+// RedactURLCredentials would remove.
+func URLHasCredentials(raw string) bool {
+	return RedactURLCredentials(raw) != raw
 }

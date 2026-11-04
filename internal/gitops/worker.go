@@ -216,6 +216,10 @@ const defaultShutdownGrace = 20 * time.Second
 
 // NewCloneWorker creates a new clone worker.
 func NewCloneWorker(config *WorkerConfig, gitOps *GitOperations, encryption *crypto.EncryptionService) *CloneWorker {
+	// Apply the same address policy used for the up-front host check to every
+	// connection the clone/fetch transports and the LFS egress proxy make.
+	SetEgressPolicy(netguard.Policy{AllowPrivate: true, AllowLoopback: config.AllowLoopbackTargets})
+
 	// context.Background is the correct root here: the worker pool's lifetime spans
 	// the whole process, not any single request. cancel() is called on Stop().
 	ctx, cancel := context.WithCancel(context.Background())
@@ -658,11 +662,27 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 							continue
 						}
 
+						// The branch name comes from the upstream remote and is later
+						// handed to `git branch` on restore, so only names that pass
+						// check-ref-format rules (and cannot look like an option) are
+						// archived.
+						if !validator.ValidateGitRefName(branchName) || !validator.ValidateCommitSHA(sha) {
+							logger.Warn("pruned branch has an invalid name or sha, not archiving it",
+								zap.String("branch", branchName), zap.String("sha", sha))
+							continue
+						}
+
 						logger.Info("pruned branch detected (deleted online)", zap.String("branch", branchName), zap.String("sha", sha))
 
-						// Create a paperbin ref in the local repo to keep the commit alive.
-						paperbinRef := "refs/paperbin/heads/" + branchName
-						_, updateErr := RunGitCommand(opCtx, repoPath, "update-ref", paperbinRef, sha)
+						// Create a paperbin ref in the local repo to keep the commit
+						// alive. The ref is unique per deletion event (keyed by the
+						// record ID) so a later deletion of the same branch name can
+						// never share it, and expiring one event cannot unprotect
+						// another. The empty old-value makes git refuse to overwrite an
+						// existing ref.
+						eventID := uuid.New()
+						paperbinRef := models.DeletedBranchEventRef(eventID)
+						_, updateErr := RunGitCommand(opCtx, repoPath, "update-ref", paperbinRef, sha, "")
 						if updateErr != nil {
 							// Without the paperbin ref the commit is not protected, so the
 							// branch would not actually be restorable. Skip recording it.
@@ -671,10 +691,11 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 						}
 
 						deletedBranches = append(deletedBranches, models.DeletedBranch{
-							ID:           uuid.New(),
+							ID:           eventID,
 							RepositoryID: repo.ID,
 							BranchName:   branchName,
 							CommitSHA:    sha,
+							ArchiveRef:   paperbinRef,
 							DeletedAt:    time.Now().UTC(),
 						})
 					}
@@ -683,6 +704,18 @@ func (w *CloneWorker) processJob(logger *zap.Logger, job *models.CloneJob) {
 			if len(deletedBranches) > 0 {
 				if dbErr := w.db.Create(&deletedBranches).Error; dbErr != nil {
 					logger.Error("failed to save deleted branches in DB", zap.Int("count", len(deletedBranches)), zap.Error(dbErr))
+					// No record will ever reference these refs, so drop them
+					// rather than pinning the commits forever.
+					// opCtx may already be expired here, so use a fresh bounded
+					// context derived from the worker's lifetime.
+					cleanupCtx, cancelCleanup := context.WithTimeout(w.ctx, 30*time.Second)
+					for _, br := range deletedBranches {
+						if out, rmErr := RunGitCommand(cleanupCtx, repoPath, "update-ref", "-d", br.ArchiveRef, br.CommitSHA); rmErr != nil {
+							logger.Error("failed to remove orphaned archive ref", zap.String("ref", br.ArchiveRef),
+								zap.String("output", strings.TrimSpace(out)), zap.Error(rmErr))
+						}
+					}
+					cancelCleanup()
 				}
 			}
 		}

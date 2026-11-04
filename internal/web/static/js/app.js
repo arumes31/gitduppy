@@ -522,12 +522,10 @@ if (document.getElementById('stats-container')) {
         const statusEl = document.getElementById('firehose-status');
         if (!consoleEl || !statusEl) return;
 
-        // Auto-scroll unless the operator has scrolled up to read history — same
-        // idea as a terminal: new output doesn't yank you back down mid-read.
-        let userScrolledUp = false;
-        consoleEl.addEventListener('scroll', () => {
-            userScrolledUp = consoleEl.scrollTop + consoleEl.clientHeight < consoleEl.scrollHeight - 20;
-        });
+        // Bounded, rAF-batched rendering. Auto-scrolls unless the operator has
+        // scrolled up to read history — same idea as a terminal: new output
+        // doesn't yank you back down mid-read.
+        const renderer = createLogRenderer(consoleEl, { maxLines: FIREHOSE_MAX_LINES });
 
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsUrl = `${protocol}//${window.location.host}/api/v1/dashboard/logs/stream`;
@@ -582,21 +580,16 @@ if (document.getElementById('stats-container')) {
                 const repoName = frame.repository_name || frame.repository_id || 'unknown';
                 const color = repoColor(repoName);
 
+                // Built with textContent (no HTML parsing of untrusted text).
                 const line = document.createElement('div');
-                const tsSpan = stamp ? `[${escHtml(stamp)}] ` : '';
-                line.innerHTML = `${tsSpan}<span style="color:${color}; font-weight:600;">[${escHtml(repoName)}]</span> ${escHtml(frame.line)}`;
-                consoleEl.appendChild(line);
-
-                while (consoleEl.childElementCount > FIREHOSE_MAX_LINES) {
-                    if (consoleEl.firstElementChild) {
-                        consoleEl.removeChild(consoleEl.firstElementChild);
-                    } else {
-                        break;
-                    }
-                }
-                if (!userScrolledUp) {
-                    consoleEl.scrollTop = consoleEl.scrollHeight;
-                }
+                if (stamp) line.appendChild(document.createTextNode(`[${stamp}] `));
+                const tag = document.createElement('span');
+                tag.style.color = color;
+                tag.style.fontWeight = '600';
+                tag.textContent = `[${renderer.truncate(repoName)}]`;
+                line.appendChild(tag);
+                line.appendChild(document.createTextNode(' ' + renderer.truncate(frame.line)));
+                renderer.push(line);
             };
 
             ws.onerror = () => {
@@ -1575,6 +1568,7 @@ if (repoBrowser) {
     let allRefs = [];
 
     let logWS = null;
+    let logRenderer = null;
     function startLiveLogStream(id) {
         if (logWS) {
             logWS.close();
@@ -1590,13 +1584,18 @@ if (repoBrowser) {
         if (!logsPanel || !logsConsole || !logsStatus) return;
 
         logsPanel.style.display = 'block';
-        logsConsole.textContent = '';
+        // One renderer per console (it owns the scroll listener); reset it for
+        // each new stream so the previous run's lines are cleared.
+        if (!logRenderer) logRenderer = createLogRenderer(logsConsole, { maxLines: 2000 });
+        logRenderer.clear();
         logsStatus.className = 'status-badge warning';
         logsStatus.textContent = 'streaming...';
 
         logWS = new WebSocket(wsUrl);
         
         logWS.onmessage = (event) => {
+            // Ignore late frames from a stream that has since been replaced.
+            if (event.target !== logWS) return;
             // Item 76: log lines arrive as JSON frames {type:"log", ts, line}.
             // Render "[HH:MM:SS] line" from the timestamp; fall back to the raw
             // payload for anything unparseable or of an unknown frame type so a
@@ -1614,16 +1613,17 @@ if (repoBrowser) {
             } catch (_) {
                 text = event.data;
             }
-            logsConsole.textContent += text + '\n';
-            logsConsole.scrollTop = logsConsole.scrollHeight;
+            logRenderer.pushText(text);
         };
 
-        logWS.onerror = (error) => {
+        logWS.onerror = (event) => {
+            if (event.target !== logWS) return; // replaced stream
             logsStatus.className = 'status-badge error';
             logsStatus.textContent = 'error';
         };
 
-        logWS.onclose = () => {
+        logWS.onclose = (event) => {
+            if (event.target !== logWS) return; // replaced stream
             logsStatus.className = 'status-badge success';
             logsStatus.textContent = 'idle';
         };
@@ -1976,6 +1976,19 @@ if (commitPage) {
 
             // Render diff
             renderDiff(c.diff || [], c.file_stats || []);
+
+            // The server caps message/stat and diff output; say so rather than
+            // presenting a partial commit as complete.
+            const notes = [];
+            if (c.message_truncated) notes.push('The commit message and file statistics were too large and have been truncated.');
+            if (c.diff_truncated) notes.push('The diff is too large and has been truncated; later files are not shown.');
+            if (notes.length) {
+                const container = document.getElementById('diff-container');
+                const notice = document.createElement('div');
+                notice.className = 'text-muted text-center py-2';
+                notice.textContent = notes.join(' ');
+                container.prepend(notice);
+            }
         } catch (e) {
             document.getElementById('diff-container').innerHTML = '<div class="text-muted text-center py-4">Failed to load commit: ' + escHtml(e.message) + '</div>';
         }
@@ -2149,6 +2162,72 @@ function visibilityBadge(visibility) {
 function escHtml(str) {
     if (!str) return '';
     return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// createLogRenderer drives a bounded, incrementally rendered log console. Log
+// lines come from untrusted sources (a git remote's progress output), so the
+// console must stay cheap however fast or large the stream is:
+//   - push() only queues a DOM node; no layout is read or written per frame.
+//   - Queued nodes are appended once per animation frame, and the console keeps
+//     at most maxLines lines (oldest dropped), so work per frame is bounded
+//     instead of re-rendering the whole accumulated text every message.
+//   - Each line is truncated to maxLineChars, and the pending queue is capped so
+//     a burst while the tab is hidden (rAF paused) cannot grow memory unbounded.
+//   - Auto-scroll happens once per flush and only if the user had not scrolled
+//     up to read history.
+function createLogRenderer(consoleEl, { maxLines = 2000, maxLineChars = 2000 } = {}) {
+    let pending = [];
+    let scheduled = false;
+    let userScrolledUp = false;
+    consoleEl.addEventListener('scroll', () => {
+        userScrolledUp = consoleEl.scrollTop + consoleEl.clientHeight < consoleEl.scrollHeight - 20;
+    });
+
+    function flush() {
+        scheduled = false;
+        if (pending.length === 0) return;
+        const frag = document.createDocumentFragment();
+        for (const node of pending) frag.appendChild(node);
+        pending = [];
+        consoleEl.appendChild(frag);
+        let excess = consoleEl.childElementCount - maxLines;
+        while (excess-- > 0 && consoleEl.firstElementChild) {
+            consoleEl.removeChild(consoleEl.firstElementChild);
+        }
+        if (!userScrolledUp) {
+            consoleEl.scrollTop = consoleEl.scrollHeight;
+        }
+    }
+
+    return {
+        // truncate clips an untrusted line to the per-line display budget.
+        truncate(text) {
+            const s = String(text);
+            return s.length > maxLineChars ? s.slice(0, maxLineChars) + ' …' : s;
+        },
+        // push queues one line element (built with textContent, never innerHTML).
+        push(node) {
+            pending.push(node);
+            if (pending.length > maxLines) {
+                pending.splice(0, pending.length - maxLines);
+            }
+            if (!scheduled) {
+                scheduled = true;
+                requestAnimationFrame(flush);
+            }
+        },
+        pushText(text) {
+            const line = document.createElement('div');
+            line.style.whiteSpace = 'pre-wrap';
+            line.textContent = this.truncate(text);
+            this.push(line);
+        },
+        clear() {
+            pending = [];
+            userScrolledUp = false;
+            consoleEl.textContent = '';
+        },
+    };
 }
 
 // jsArg produces an HTML-attribute-safe, JS-safe quoted literal for use as an

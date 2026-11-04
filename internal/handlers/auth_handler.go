@@ -92,6 +92,16 @@ type LoginRequest struct {
 
 // Login handles POST /api/v1/auth/login.
 func (h *AuthHandler) Login(c *gin.Context) {
+	// Require a JSON body. ShouldBindJSON parses regardless of Content-Type, so
+	// without this a cross-site HTML form (text/plain or urlencoded — "simple"
+	// requests that skip the CORS preflight) could post a JSON-shaped body and log
+	// the victim's browser into an attacker's account. Origin validation for this
+	// endpoint is enforced by the CrossOriginProtection middleware as well.
+	if c.ContentType() != "application/json" {
+		response.ErrorResponse(c, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json")
+		return
+	}
+
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "INVALID_REQUEST", err.Error())
@@ -215,7 +225,7 @@ func (h *AuthHandler) ChangePassword(c *gin.Context) {
 
 	var req struct {
 		OldPassword string `json:"old_password" validate:"required"`
-		NewPassword string `json:"new_password" validate:"required,min=8"`
+		NewPassword string `json:"new_password" validate:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "INVALID_REQUEST", err.Error())
@@ -223,6 +233,11 @@ func (h *AuthHandler) ChangePassword(c *gin.Context) {
 	}
 
 	if err := validator.ValidateStruct(&req); err != nil {
+		response.BadRequest(c, "VALIDATION_ERROR", err.Error())
+		return
+	}
+	// Enforce the configured password policy (security.password_*).
+	if err := validator.ValidatePassword(req.NewPassword); err != nil {
 		response.BadRequest(c, "VALIDATION_ERROR", err.Error())
 		return
 	}

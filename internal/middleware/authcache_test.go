@@ -99,3 +99,9 @@ func TestAuthCacheEvictUser(t *testing.T) {
 		t.Error("another user's entry must not be evicted")
 	}
 }
+
+// set unconditionally caches a user (no generation check) to prime the cache in
+// tests; request paths must use begin/store.
+func (ac *AuthCache) set(key string, user *models.User) {
+	ac.store(key, user, ac.begin())
+}

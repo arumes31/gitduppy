@@ -27,12 +27,18 @@ func Connect(cfg *config.DatabaseConfig) error {
 	// results — callers handle gorm.ErrRecordNotFound explicitly (e.g. optional
 	// system settings like maintenance_mode / paperbin_quota_gb), so logging each
 	// miss (with its SQL) is pure noise.
+	//
+	// ParameterizedQueries keeps bound values out of the logged SQL: otherwise a
+	// slow or failing query would interpolate attacker-controlled input (e.g. a
+	// login username containing newlines) into stdout, enabling log injection and
+	// leaking secrets such as token hashes into the logs.
 	ormLogger := logger.New(
 		log.New(os.Stdout, "", log.LstdFlags),
 		logger.Config{
 			SlowThreshold:             200 * time.Millisecond,
 			LogLevel:                  logger.Warn,
 			IgnoreRecordNotFoundError: true,
+			ParameterizedQueries:      true,
 			Colorful:                  false,
 		},
 	)
