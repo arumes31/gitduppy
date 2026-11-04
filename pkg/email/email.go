@@ -95,7 +95,7 @@ func (s *Service) SendEmail(to []string, subject, body string) error {
 	if s.config.SMTPPort == 465 {
 		conn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsConfig) //nolint:noctx
 	} else {
-		conn, err = dialer.Dial("tcp", addr) //nolint:noctx
+		conn, err = dialer.Dial("tcp", addr)
 	}
 	if err != nil {
 		return err

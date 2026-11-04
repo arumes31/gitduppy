@@ -423,7 +423,7 @@ func (c *Config) validate() error {
 		errs = append(errs, errors.New("security.rate_limit.api_requests_per_minute must be positive"))
 	}
 	if n := c.Security.PasswordMinLength; n < 8 || n > 72 {
-		errs = append(errs, fmt.Errorf("security.password_min_length must be between 8 and 72, got %d", n))
+		errs = append(errs, errors.New("security.password_min_length must be between 8 and 72"))
 	}
 	if c.Logging.AuditRetentionDays < 0 {
 		errs = append(errs, errors.New("logging.audit_retention_days must not be negative (0 keeps audit logs forever)"))

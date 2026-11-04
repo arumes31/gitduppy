@@ -86,7 +86,7 @@ func (p *wsPrincipal) watch(ctx context.Context, cancel context.CancelFunc, ws *
 		}
 		if err != nil {
 			zap.L().Named("ws").Info("closing websocket: credential no longer valid",
-				zap.String("user_id", p.userID.String()), zap.String("auth_type", p.authType))
+				zap.String("user_id", p.userID.String()))
 			// WriteControl is safe to call concurrently with the stream's writes.
 			_ = ws.WriteControl(websocket.CloseMessage,
 				websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "authentication expired or revoked"),

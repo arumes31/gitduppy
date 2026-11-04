@@ -23,7 +23,7 @@ import (
 // RevalidateCredential).
 const (
 	ContextKeyAuthType       = "auth_type"
-	ContextKeyCredentialHash = "auth_credential_hash"
+	ContextKeyCredentialHash = "auth_credential_hash" //nolint:gosec // G101: context key name, not a credential
 
 	AuthTypeSession = "session"
 	AuthTypeAPIKey  = "api_key"

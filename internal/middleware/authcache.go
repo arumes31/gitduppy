@@ -108,12 +108,6 @@ func (ac *AuthCache) store(key string, user *models.User, gen uint64) bool {
 	return true
 }
 
-// set unconditionally caches a user (no generation check). It exists to prime
-// the cache in tests; request paths must use begin/store.
-func (ac *AuthCache) set(key string, user *models.User) {
-	ac.store(key, user, ac.begin())
-}
-
 // Evict removes a single cached entry by credential hash. Called on logout so a
 // deleted session is not served from cache for up to the TTL. Bumping the
 // generation also discards any in-flight validation of the same credential.

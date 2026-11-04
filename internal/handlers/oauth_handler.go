@@ -80,10 +80,11 @@ func (h *OAuthHandler) currentSessionUser(c *gin.Context) (*models.User, string)
 	return user, crypto.HashToken(token)
 }
 
-// beginOAuthFlow issues a one-time state bound to provider, the initiating user
-// and session hash, sets the browser-binding cookie, and returns the state. It
-// writes an error response and returns ok=false on failure.
-func (h *OAuthHandler) beginOAuthFlow(c *gin.Context, provider string, userID uuid.UUID, sessionHash string) (string, bool) {
+// beginOAuthFlow issues a one-time random state bound to provider, the
+// initiating user and session hash, sets the browser-binding cookie, and returns
+// the provider authorization URL carrying that state. It writes an error
+// response and returns ok=false on failure.
+func (h *OAuthHandler) beginOAuthFlow(c *gin.Context, oauthConfig *oauth2.Config, provider string, userID uuid.UUID, sessionHash string) (string, bool) {
 	state, err := h.states.issue(oauthStateRecord{
 		provider:    provider,
 		sessionHash: sessionHash,
@@ -95,7 +96,7 @@ func (h *OAuthHandler) beginOAuthFlow(c *gin.Context, provider string, userID uu
 		return "", false
 	}
 	setOAuthStateCookie(c, state, int(oauthStateTTL.Seconds()))
-	return state, true
+	return oauthConfig.AuthCodeURL(state, oauth2.AccessTypeOffline), true
 }
 
 // finishOAuthRedirect sends the browser to the post-login redirect target (query
@@ -155,7 +156,7 @@ func (h *OAuthHandler) LoginWithProvider(c *gin.Context) {
 	if current != nil {
 		initiator = current.ID
 	}
-	state, ok := h.beginOAuthFlow(c, provider, initiator, sessionHash)
+	authURL, ok := h.beginOAuthFlow(c, oauthConfig, provider, initiator, sessionHash)
 	if !ok {
 		return
 	}
@@ -171,8 +172,7 @@ func (h *OAuthHandler) LoginWithProvider(c *gin.Context) {
 		c.SetCookie("oauth_redirect", redirectTarget, 600, "/", "", requestIsHTTPS(c), true)
 	}
 
-	url := oauthConfig.AuthCodeURL(state, oauth2.AccessTypeOffline)
-	c.Redirect(http.StatusFound, url)
+	c.Redirect(http.StatusFound, authURL)
 }
 
 // Callback handles GET /api/v1/oauth/:provider/callback.
@@ -324,13 +324,12 @@ func (h *OAuthHandler) LinkAccount(c *gin.Context) {
 
 	// Generate a one-time state bound to this user and (when authenticated by a
 	// session cookie) to this browser session.
-	state, ok := h.beginOAuthFlow(c, provider, user.ID, sessionCredentialHash(c))
+	authURL, ok := h.beginOAuthFlow(c, oauthConfig, provider, user.ID, sessionCredentialHash(c))
 	if !ok {
 		return
 	}
 
-	url := oauthConfig.AuthCodeURL(state, oauth2.AccessTypeOffline)
-	c.JSON(http.StatusOK, gin.H{"auth_url": url})
+	c.JSON(http.StatusOK, gin.H{"auth_url": authURL})
 }
 
 // LinkCallback handles GET /api/v1/oauth/:provider/link/callback.

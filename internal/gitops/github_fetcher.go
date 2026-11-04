@@ -80,7 +80,7 @@ func (f *GitHubMetadataFetcher) FetchMetadata(ctx context.Context, repoURL, stor
 	owner, repoName, err := f.parseGitHubURL(repoURL)
 	if err != nil {
 		f.logger.Warn("Not a standard GitHub URL, skipping metadata fetch", zap.String("url", repoURL))
-		return nil //nolint:nilerr
+		return nil
 	}
 
 	// The backup lives inside the checkout, whose contents the upstream
