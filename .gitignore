@@ -80,3 +80,7 @@ coverage.txt
 lint-report.txt
 vulncheck-report.txt
 .claudeignore
+
+.stfolder/
+.stignore
+.kimi-code/
