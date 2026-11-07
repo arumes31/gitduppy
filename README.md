@@ -2,8 +2,8 @@
 
 <p align="center"><img src="static/images/logo.png" width="300" alt="GitDuppy Logo"></p>
 
-[![Go Version](https://img.shields.io/badge/go-1.26.4-blue)](https://go.dev)
-[![CI/CD](https://github.com/gitduppy/gitduppy/actions/workflows/build.yml/badge.svg)](https://github.com/gitduppy/gitduppy/actions)
+[![Go Version](https://img.shields.io/badge/go-1.26.10-blue)](https://go.dev)
+[![CI/CD](https://github.com/arumes31/gitduppy/actions/workflows/build.yml/badge.svg)](https://github.com/arumes31/gitduppy/actions)
 [![Code Quality](https://img.shields.io/badge/golangci--lint-passing-brightgreen)](https://golangci-lint.run/)
 [![Security Scans](https://img.shields.io/badge/gosec-passing-brightgreen)](https://github.com/securego/gosec)
 [![Secret Scanning](https://img.shields.io/badge/gitleaks-passing-brightgreen)](https://gitleaks.io/)
@@ -20,24 +20,20 @@ A modern, secure Git repository mirroring and management platform designed for e
 - Comprehensive audit logging for all operations
 - Webhook notifications for repository events
 - Built-in health monitoring and alerting
-- Docker-first deployment with Kubernetes support
+- Docker-first deployment with Docker Compose
 - End-to-end encryption for sensitive data
 - OAuth2 authentication support
 - REST API for programmatic management
 
-## Screenshots
+## Web Interface
 
-<p align="center"><img src="docs/screenshots/01-dashboard.png" alt="GitDuppy dashboard" width="900"></p>
+GitDuppy provides a clean, responsive web interface for managing repositories:
 
-<p align="center"><em>Dashboard — live sync timeline, aggregate stats, and recent jobs across all mirrored repositories.</em></p>
-
-| Repositories | In‑browser Git browser |
-|---|---|
-| [![Repositories](docs/screenshots/02-repos.png)](docs/screenshots/02-repos.png) | [![Repository browser](docs/screenshots/05-repo-browse.png)](docs/screenshots/05-repo-browse.png) |
-| **Commit history** | **Commit diff** |
-| [![Commit history](docs/screenshots/06-commits.png)](docs/screenshots/06-commits.png) | [![Commit diff](docs/screenshots/07-commit-diff.png)](docs/screenshots/07-commit-diff.png) |
-| **Settings** | **Sign in** |
-| [![Settings](docs/screenshots/04-config.png)](docs/screenshots/04-config.png) | [![Login](docs/screenshots/00-login.png)](docs/screenshots/00-login.png) |
+- **Dashboard** (`/dashboard`): Live sync timeline, aggregate stats, and recent jobs across mirrored repositories.
+- **Repository List** (`/repos`): Searchable grid of all mirrored repositories with health status and quick actions.
+- **In-Browser Git Browser** (`/repos/:id`): Browse files and directories with branch/tag switcher and file syntax highlighting.
+- **Commit History & Diffs** (`/repos/:id/commits`, `/repos/:id/commit/:sha`): Paginated commit log with line-by-line diff viewing.
+- **Settings** (`/config`): Application configuration, OAuth integrations, maintenance mode, and quota controls.
 
 ## Quick Start
 
@@ -45,7 +41,7 @@ The easiest way to get started is using Docker Compose:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourorg/gitduppy.git
+git clone https://github.com/arumes31/gitduppy.git
 cd gitduppy
 
 # Copy the example configuration file
@@ -142,7 +138,20 @@ go build -o gitduppy ./cmd/server
 
 ## API Reference
 
-See the full API documentation in [docs/api-reference.md](docs/api-reference.md).
+GitDuppy exposes a RESTful API under `/api/v1/`:
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `POST` | `/api/v1/auth/login` | Authenticate with username and password |
+| `GET` | `/api/v1/auth/me` | Retrieve profile of the current authenticated user |
+| `GET` | `/api/v1/repositories` | List all mirrored repositories (supports pagination & filtering) |
+| `POST` | `/api/v1/repositories` | Register a new repository for mirroring |
+| `GET` | `/api/v1/repositories/:id` | Get details and health metrics for a repository |
+| `POST` | `/api/v1/repositories/:id/sync` | Trigger an immediate sync/clone job |
+| `GET` | `/api/v1/clone-jobs` | List recent sync and clone execution jobs |
+| `POST` | `/api/v1/clone-jobs/:id/cancel` | Cancel an in-progress sync job |
+| `POST` | `/api/v1/webhooks/receive` | Signed webhook receiver for upstream Git provider push events |
+| `GET` | `/api/v1/health` | Service health status check |
 
 ## Deployment
 
@@ -155,7 +164,13 @@ The Caddy configuration is located at [deployments/caddy/Caddyfile](deployments/
 
 ## Security
 
-For comprehensive security guidelines, see [docs/security.md](docs/security.md).
+GitDuppy implements defense-in-depth security:
+
+- **Credential Encryption**: Sensitive credentials (personal access tokens, SSH keys) are encrypted in PostgreSQL using AES-256 GCM via `GITMIRRORS_SECURITY_MASTER_KEY`.
+- **CSRF & Origin Hardening**: Cookie-authenticated state changes require matching origin headers (`Sec-Fetch-Site` and `Origin` validation).
+- **SSRF Prevention**: Webhook dispatch and clone URL resolution enforce strict private-network and link-local address blocking by default (`security.allow_private_network_targets: false`).
+- **Rate Limiting**: Multi-tiered rate limiters protect authentication, expensive search queries, and general API endpoints.
+- **Audit Logging**: Comprehensive structured audit logs capture every access and administrative mutation.
 
 ## Web UI
 
@@ -203,7 +218,3 @@ Contributions are welcome! Please follow these steps:
 ## License
 
 GitDuppy is licensed under the MIT License. See [LICENSE](LICENSE) for details.
-
----
-
-For detailed documentation, see the [docs/](docs/) directory.
