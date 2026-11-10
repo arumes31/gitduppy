@@ -73,7 +73,7 @@ func TestRepositoryMarshalJSONOmitsCreatorAccount(t *testing.T) {
 	if strings.Contains(s, "created_by_user") || strings.Contains(s, "admin@example.com") {
 		t.Errorf("creator account record must not be serialized: %s", s)
 	}
-	if !strings.Contains(s, creator.String()) {
+	if !strings.Contains(s, `"created_by":"`+creator.String()+`"`) {
 		t.Errorf("opaque created_by id should still be present: %s", s)
 	}
 }
