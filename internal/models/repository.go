@@ -52,7 +52,10 @@ type Repository struct {
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`
 
 	// Relations
-	CreatedByUser *User      `gorm:"foreignKey:CreatedBy" json:"created_by_user,omitempty"`
+	// CreatedByUser is never serialized: repository reads are open to every
+	// authenticated user, while account records (email, role, last login) are
+	// admin-only via /api/v1/users. Clients get the opaque created_by UUID.
+	CreatedByUser *User      `gorm:"foreignKey:CreatedBy" json:"-"`
 	Tags          []Tag      `gorm:"many2many:repository_tags" json:"tags,omitempty"`
 	CloneJobs     []CloneJob `gorm:"foreignKey:RepositoryID" json:"-"`
 }

@@ -52,3 +52,28 @@ func TestRepositoryMarshalJSONRedactsURL(t *testing.T) {
 		t.Error("marshal must not mutate the in-memory URL used for cloning")
 	}
 }
+
+func TestRepositoryMarshalJSONOmitsCreatorAccount(t *testing.T) {
+	creator := uuid.New()
+	repo := Repository{
+		ID:        uuid.New(),
+		Name:      "r",
+		CreatedBy: &creator,
+		CreatedByUser: &User{
+			ID:    creator,
+			Email: "admin@example.com",
+			Role:  "admin",
+		},
+	}
+	out, err := json.Marshal(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if strings.Contains(s, "created_by_user") || strings.Contains(s, "admin@example.com") {
+		t.Errorf("creator account record must not be serialized: %s", s)
+	}
+	if !strings.Contains(s, `"created_by":"`+creator.String()+`"`) {
+		t.Errorf("opaque created_by id should still be present: %s", s)
+	}
+}

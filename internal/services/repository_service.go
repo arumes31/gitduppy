@@ -73,7 +73,7 @@ func (s *RepositoryService) ListRepositories(_ context.Context, filter *Reposito
 		filter.PerPage = maxRepositoriesPerPage
 	}
 
-	query := s.db.Model(&models.Repository{}).Preload("Tags").Preload("CreatedByUser")
+	query := s.db.Model(&models.Repository{}).Preload("Tags")
 
 	// Apply filters
 	if filter.Status != nil && *filter.Status != "" {
@@ -123,7 +123,7 @@ func (s *RepositoryService) ListRepositories(_ context.Context, filter *Reposito
 // GetRepositoryByID retrieves a repository by ID.
 func (s *RepositoryService) GetRepositoryByID(_ context.Context, id uuid.UUID) (*models.Repository, error) {
 	var repo models.Repository
-	if err := s.db.Preload("Tags").Preload("CreatedByUser").First(&repo, id).Error; err != nil {
+	if err := s.db.Preload("Tags").First(&repo, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, fmt.Errorf("%w: repository", ErrNotFound)
 		}
