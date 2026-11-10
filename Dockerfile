@@ -1,6 +1,10 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.27.3-alpine3.24@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd AS builder
+# Compile natively on the build host for the target platform (no QEMU emulation
+# of the Go toolchain in multi-arch builds).
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd AS builder
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /app
 
@@ -15,7 +19,7 @@ ARG VERSION=dev
 ARG BUILD_TIME=unknown
 # -trimpath strips local filesystem paths; -s -w drop the symbol/debug tables to
 # shrink the binary. CGO is disabled for a fully static build.
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
         -trimpath \
         -ldflags "-s -w -X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME}" \
         -o bin/gitduppy ./cmd/server
