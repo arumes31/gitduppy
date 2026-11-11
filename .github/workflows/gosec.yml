@@ -50,6 +50,9 @@ jobs:
 
       - name: Run gosec
         uses: securego/gosec@14c713478ed40c9bdfa56d35d9c2142b91608106 # Go 1.27.2 support
+        env:
+          # The action image bundles an older Go with GOTOOLCHAIN=local; let it fetch the go.mod toolchain.
+          GOTOOLCHAIN: auto
         with:
           args: -conf .gosec.json -no-fail -fmt sarif -out gosec-results.sarif ./...
 
